@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Consola de operador{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Consola del operador</p>
+        <h1>{{ partida.nombreronda }}</h1>
+        <p>{{ partida.idbingo.titulobingo }} · Estado: {{ partida.estadopartida|estado_partida_display }}</p>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <a class="btn btn-outline-light" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Detalle</a>
+        {% if puede_asignar_cartones %}
+        <a class="btn btn-primary" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">Generar cartón</a>
+        {% else %}
+        <span class="btn btn-outline-light disabled" aria-disabled="true" title="Solo disponible en Programada o En espera">Generación bloqueada</span>
+        {% endif %}
+    </div>
+</section>
+
+<section class="content-panel mb-3">
+    {% if actualizacion_estados_pendiente %}
+    <div class="alert alert-warning" role="alert">
+        La base de datos aún no permite guardar todos los estados reales de partida. Revise y ejecute manualmente <code>DATABASE/actualizar_estados_partidabingo.sql</code>.
+    </div>
+    {% endif %}
+    <div class="row g-4">
+        <div class="col-lg-4">
+            <h2 class="section-subtitle">Estado operativo</h2>
+            <dl class="detail-list mt-3">
+                <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></dd></div>
+                <div><dt>Inicio</dt><dd>{{ partida.horainicio|date:"d/m/Y H:i" }}</dd></div>
+                <div><dt>Finalización</dt><dd>{{ partida.horafin|date:"d/m/Y H:i"|default_dash }}</dd></div>
+            </dl>
+        </div>
+        <div class="col-lg-8">
+            <h2 class="section-subtitle">Acciones</h2>
+            <div class="d-flex flex-wrap gap-2 mt-3">
+                {% for accion, label, disponible, requiere_actualizacion in acciones_consola %}
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="accion" value="{{ accion }}">
+                    <button class="btn {% if disponible %}btn-primary{% else %}btn-outline-secondary{% endif %}" type="submit" {% if not disponible %}disabled{% endif %} {% if requiere_actualizacion %}title="Requiere actualizar la CHECK de estados en PostgreSQL"{% endif %}>{{ label }}</button>
+                </form>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="content-panel mb-3">
+    <div class="row g-4 align-items-stretch">
+        <div class="col-lg-4">
+            <div class="last-ball-card h-100">
+                <span>Última bola</span>
+                {% if ultima_bola_codigo %}
+                <strong>{{ ultima_bola_codigo }}</strong>
+                {% else %}
+                <strong class="last-ball-empty">—</strong>
+                <small>Aún no se han extraído bolas</small>
+                {% endif %}
+            </div>
+        </div>
+        <div class="col-lg-8">
+            <div class="draw-controls h-100">
+                <div>
+                    <p class="page-kicker text-primary mb-1">Bolillero manual</p>
+                    <h2 class="section-subtitle">{{ total_bolas_extraidas }} de 75 bolas extraídas</h2>
+                    <p class="text-muted mb-0">Faltan {{ total_bolas_faltantes }} bola{{ total_bolas_faltantes|pluralize }}.</p>
+                </div>
+                <form method="post" action="{% url 'bingos:sacar_bola' partida.idpartidabingo %}">
+                    {% csrf_token %}
+                    <button class="btn btn-primary btn-lg w-100" type="submit" {% if not puede_sacar_bola %}disabled{% endif %}>
+                        Sacar siguiente bola
+                    </button>
+                </form>
+                {% if not puede_sacar_bola %}
+                <p class="small text-muted mb-0">
+                    {% if not hay_bolas_disponibles %}
+                    Ya se extrajeron las 75 bolas.
+                    {% else %}
+                    La extracción solo está disponible cuando la partida está En curso.
+                    {% endif %}
+                </p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="content-panel mb-3">
+    <div class="section-heading">
+        <div>
+            <h2>Historial de bolas</h2>
+            <p>Orden de extracción registrado para esta partida</p>
+        </div>
+    </div>
+    {% if historial_bolas %}
+    <div class="ball-history">
+        {% for bola in historial_bolas %}
+        <span class="ball-history-item" title="Bola número {{ bola.numero }}">{{ bola.codigo }}</span>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state"><strong>No hay bolas registradas</strong><span>Usa “Sacar siguiente bola” cuando la partida esté En curso.</span></div>
+    {% endif %}
+</section>
+
+<section class="content-panel mb-3">
+    <div class="section-heading">
+        <div>
+            <h2>Tablero de 75 bolas</h2>
+            <p>Las bolas resaltadas ya fueron extraídas.</p>
+        </div>
+    </div>
+    <div class="bingo-board-wrap">
+        <div class="bingo-board">
+            {% for columna in tablero_bingo %}
+            <div class="bingo-board-column">
+                <div class="bingo-board-letter">{{ columna.letra }}</div>
+                {% for bola in columna.bolas %}
+                <div class="bingo-board-number{% if bola.extraida %} is-drawn{% endif %}" title="{{ bola.codigo }}{% if bola.extraida %} extraída{% else %} disponible{% endif %}">
+                    {{ bola.numero }}
+                </div>
+                {% endfor %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+<section class="content-panel">
+    <div class="section-heading">
+        <div>
+            <h2>Cartones de la partida</h2>
+            <p>Cartones asignados a jugadores para esta ronda</p>
+        </div>
+        {% if puede_asignar_cartones %}
+        <a class="btn btn-primary btn-sm" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">+ Generar cartón</a>
+        {% else %}
+        <span class="btn btn-outline-secondary btn-sm disabled" aria-disabled="true">Generación bloqueada</span>
+        {% endif %}
+    </div>
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead><tr><th>Código</th><th>Jugador</th><th>Precio</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
+            <tbody>
+                {% for carton in cartones %}
+                <tr>
+                    <td>{{ carton.codigocarton }}</td>
+                    <td>{{ carton.idjugador|default:"Sin jugador" }}</td>
+                    <td>${{ carton.preciopagado|floatformat:2 }}</td>
+                    <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
+                    <td class="text-end"><a class="btn btn-outline-secondary btn-sm" href="{% url 'bingos:partida_carton_editar' partida.idpartidabingo carton.idcarton %}">Editar</a></td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="5" class="text-muted">No hay cartones asignados a esta partida.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

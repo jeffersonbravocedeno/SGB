@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | Configuración{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Configuración</p>
+        <h1>Configuración</h1>
+        <p>Catálogos operativos del sistema: tipos de socio, métodos de pago, plataformas y regalos.</p>
+    </div>
+</section>
+
+<section class="dashboard-grid">
+    {% for card in cards %}
+    <a class="metric-card link-card" href="{% url card.url %}">
+        <span>{{ card.label }}</span>
+        <strong>{% if card.value is None %}No disponible{% else %}{{ card.value }}{% endif %}</strong>
+    </a>
+    {% endfor %}
+</section>
+{% endblock %}

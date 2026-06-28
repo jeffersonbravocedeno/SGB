@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | {{ titulo }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Configuración</p>
+        <h1>{{ titulo }}</h1>
+        <p>{{ config.title }}</p>
+    </div>
+</section>
+
+<form class="content-panel" method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+    <div class="row g-3">
+        {% for field in form %}
+        <div class="{% if 'descripcion' in field.name %}col-12{% else %}col-md-6{% endif %}">
+            {% include "includes/field.html" with field=field %}
+        </div>
+        {% endfor %}
+    </div>
+    <div class="form-actions">
+        {% if object %}
+        <a class="btn btn-outline-secondary" href="{% url detail_url pk %}">Cancelar</a>
+        {% else %}
+        <a class="btn btn-outline-secondary" href="{% url list_url %}">Cancelar</a>
+        {% endif %}
+        <button class="btn btn-primary" type="submit">Guardar</button>
+    </div>
+</form>
+{% endblock %}

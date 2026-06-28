@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | {{ titulo }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Cartones de partida</p>
+        <h1>{{ titulo }}</h1>
+        <p>{{ partida.nombreronda }} · {{ partida.idbingo.titulobingo }}</p>
+    </div>
+    <a class="btn btn-outline-light" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Volver</a>
+</section>
+
+<form class="content-panel" method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Asignación</h2>
+            <p>Selecciona el jugador y registra los datos del cartón para esta partida.</p>
+        </div>
+        <div class="row g-3">
+            <div class="col-md-6">{% include "includes/field.html" with field=form.idjugador %}</div>
+            <div class="col-md-6">{% include "includes/field.html" with field=form.codigocarton %}</div>
+            <div class="col-md-4">{% include "includes/field.html" with field=form.preciopagado %}</div>
+            <div class="col-md-4">{% include "includes/field.html" with field=form.fechacompra %}</div>
+            <div class="col-md-4">{% include "includes/field.html" with field=form.estadocarton %}</div>
+            <div class="col-md-4">{% include "includes/field.html" with field=form.indicevictoria %}</div>
+            <div class="col-12">{% include "includes/field.html" with field=form.matriznumeros %}</div>
+        </div>
+    </div>
+    <div class="form-actions">
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Cancelar</a>
+        <button class="btn btn-primary" type="submit">Guardar</button>
+    </div>
+</form>
+{% endblock %}

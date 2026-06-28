@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | {{ config.title }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Configuración</p>
+        <h1>{{ config.title }}</h1>
+        <p>Administración de {{ config.singular }}.</p>
+    </div>
+    <a class="btn btn-primary" href="{% url new_url %}">+ Nuevo registro</a>
+</section>
+
+<section class="content-panel">
+    <div class="toolbar">
+        <div><h2>Registros</h2><p>{{ total }} resultado{{ total|pluralize }}</p></div>
+    </div>
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead>
+                <tr>
+                    {% for column in config.columns %}<th>{{ column }}</th>{% endfor %}
+                    <th class="text-end">Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in page_obj %}
+                <tr>
+                    {% for value in row.values %}
+                    <td>{{ value|default_dash }}</td>
+                    {% endfor %}
+                    <td class="text-end">
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-outline-primary" href="{% url detail_url row.pk %}">Ver detalle</a>
+                            <a class="btn btn-outline-secondary" href="{% url edit_url row.pk %}">Editar</a>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="5" class="text-muted">No hay registros disponibles.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% include "includes/pagination.html" %}
+</section>
+{% endblock %}

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Jugadores{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Módulo Jugadores</p>
+        <h1>Jugadores</h1>
+        <p>Gestión de cuentas de jugadores, saldo de crédito y vinculación con socios.</p>
+    </div>
+    <a class="btn btn-primary" href="{% url 'jugadores:nuevo' %}">+ Nuevo jugador</a>
+</section>
+
+<section class="content-panel">
+    <div class="toolbar">
+        <div>
+            <h2>Jugadores registrados</h2>
+            <p>{{ total_jugadores }} resultado{{ total_jugadores|pluralize }}</p>
+        </div>
+        <form class="search-form" method="get">
+            <div class="input-group">
+                <input class="form-control" type="search" name="q" value="{{ busqueda }}" placeholder="Buscar por alias o correo">
+                <button class="btn btn-outline-primary" type="submit">Buscar</button>
+                {% if busqueda %}
+                <a class="btn btn-outline-secondary" href="{% url 'jugadores:lista' %}">Limpiar</a>
+                {% endif %}
+            </div>
+        </form>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table table-hover align-middle modern-table">
+            <thead>
+                <tr>
+                    <th>Alias</th>
+                    <th>Correo</th>
+                    <th>Socio relacionado</th>
+                    <th>Saldo de crédito</th>
+                    <th>Estado</th>
+                    <th class="text-end">Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for jugador in page_obj %}
+                <tr>
+                    <td><strong>{{ jugador.aliasjugador|default:"Sin alias" }}</strong></td>
+                    <td>{{ jugador.correojugador|default_dash }}</td>
+                    <td>{{ jugador.idsocio|default:"No vinculado" }}</td>
+                    <td>${{ jugador.saldocreditojugador|floatformat:2 }}</td>
+                    <td><span class="badge rounded-pill {{ jugador.estadocuentajugador|estado_class }}">{{ jugador.estadocuentajugador }}</span></td>
+                    <td class="text-end">
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-outline-primary" href="{% url 'jugadores:detalle' jugador.idjugador %}">Ver detalle</a>
+                            <a class="btn btn-outline-secondary" href="{% url 'jugadores:editar' jugador.idjugador %}">Editar</a>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="6"><div class="empty-state"><strong>No se encontraron jugadores</strong><span>Prueba otra búsqueda o registra un nuevo jugador.</span></div></td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% include "includes/pagination.html" %}
+</section>
+{% endblock %}

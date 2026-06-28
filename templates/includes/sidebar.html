@@ -1,0 +1,28 @@
+<aside class="sidebar d-none d-lg-flex">
+    <div class="sidebar-title">Menú</div>
+    <nav class="sidebar-nav" aria-label="Menú principal">
+        <a class="{% if request.resolver_match.url_name == 'home' %}active{% endif %}" href="{% url 'home' %}">Inicio</a>
+        <a class="{% if request.resolver_match.app_name == 'socios' %}active{% endif %}" href="{% url 'socios:lista' %}">Socios</a>
+        <a class="{% if request.resolver_match.app_name == 'jugadores' %}active{% endif %}" href="{% url 'jugadores:lista' %}">Jugadores</a>
+        <a class="{% if request.resolver_match.app_name == 'bingos' %}active{% endif %}" href="{% url 'bingos:lista' %}">Bingos</a>
+        <a class="{% if request.resolver_match.app_name == 'finanzas' %}active{% endif %}" href="{% url 'finanzas:dashboard' %}">Finanzas</a>
+        <a class="{% if request.resolver_match.app_name == 'configuracion' %}active{% endif %}" href="{% url 'configuracion:dashboard' %}">Configuración</a>
+    </nav>
+</aside>
+
+<div class="offcanvas offcanvas-start" tabindex="-1" id="mobileSidebar" aria-labelledby="mobileSidebarLabel">
+    <div class="offcanvas-header">
+        <h2 class="offcanvas-title h5" id="mobileSidebarLabel">SIAB</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Cerrar"></button>
+    </div>
+    <div class="offcanvas-body">
+        <nav class="sidebar-nav" aria-label="Menú móvil">
+            <a class="{% if request.resolver_match.url_name == 'home' %}active{% endif %}" href="{% url 'home' %}">Inicio</a>
+            <a class="{% if request.resolver_match.app_name == 'socios' %}active{% endif %}" href="{% url 'socios:lista' %}">Socios</a>
+            <a class="{% if request.resolver_match.app_name == 'jugadores' %}active{% endif %}" href="{% url 'jugadores:lista' %}">Jugadores</a>
+            <a class="{% if request.resolver_match.app_name == 'bingos' %}active{% endif %}" href="{% url 'bingos:lista' %}">Bingos</a>
+            <a class="{% if request.resolver_match.app_name == 'finanzas' %}active{% endif %}" href="{% url 'finanzas:dashboard' %}">Finanzas</a>
+            <a class="{% if request.resolver_match.app_name == 'configuracion' %}active{% endif %}" href="{% url 'configuracion:dashboard' %}">Configuración</a>
+        </nav>
+    </div>
+</div>

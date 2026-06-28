@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | {{ titulo }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Módulo Socios</p>
+        <h1>{{ titulo }}</h1>
+        <p>Completa la información del socio con datos claros y vigentes.</p>
+    </div>
+</section>
+
+<form class="content-panel" method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Datos personales</h2>
+            <p>Identificación, nombres y fecha de nacimiento.</p>
+        </div>
+        <div class="row g-3">
+            {% for field in form %}
+            {% if field.name in "idtiposocio,primernombresocio,segundonombresocio,primerapellidosocio,segundoapellidosocio,cisocio,fechanacimientosocio,sexosocio,estadosocio" %}
+            <div class="col-md-6">
+                {% include "includes/field.html" with field=field %}
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Contacto y direcciones</h2>
+            <p>Teléfonos y ubicación del socio.</p>
+        </div>
+        <div class="row g-3">
+            {% for field in form %}
+            {% if field.name in "telefonopersonalsocio,telefonotrabajosocio,direcciondomiciliosocio,direcciontrabajosocio" %}
+            <div class="{% if 'direccion' in field.name %}col-12{% else %}col-md-6{% endif %}">
+                {% include "includes/field.html" with field=field %}
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="form-actions">
+        {% if socio %}
+        <a class="btn btn-outline-secondary" href="{% url 'socios:detalle' socio.idsocio %}">Cancelar</a>
+        {% else %}
+        <a class="btn btn-outline-secondary" href="{% url 'socios:lista' %}">Cancelar</a>
+        {% endif %}
+        <button class="btn btn-primary" type="submit">Guardar</button>
+    </div>
+</form>
+{% endblock %}

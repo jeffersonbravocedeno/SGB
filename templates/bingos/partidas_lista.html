@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Partidas{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Partidas de bingo</p>
+        <h1>Partidas</h1>
+        <p>Consulta de rondas, estados, premios, ganadores y acceso a la consola del operador.</p>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <a class="btn btn-outline-light" href="{% url 'bingos:lista' %}">Ver bingos</a>
+        <a class="btn btn-primary" href="{% url 'bingos:cartones_lista' %}">Cartones</a>
+    </div>
+</section>
+
+<section class="content-panel">
+    <div class="toolbar">
+        <div><h2>Partidas registradas</h2><p>{{ total }} resultado{{ total|pluralize }}</p></div>
+        <form class="search-form" method="get">
+            <div class="input-group">
+                <input class="form-control" type="search" name="q" value="{{ busqueda }}" placeholder="Buscar por ronda, bingo, ganador o estado">
+                <button class="btn btn-outline-primary" type="submit">Buscar</button>
+                {% if busqueda %}<a class="btn btn-outline-secondary" href="{% url 'bingos:partidas_lista' %}">Limpiar</a>{% endif %}
+            </div>
+        </form>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover modern-table align-middle">
+            <thead>
+                <tr>
+                    <th>Ronda</th>
+                    <th>Bingo</th>
+                    <th>Inicio</th>
+                    <th>Premio</th>
+                    <th>Ganador</th>
+                    <th>Estado</th>
+                    <th class="text-end">Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for partida in page_obj %}
+                <tr>
+                    <td><strong>{{ partida.nombreronda }}</strong><div class="text-muted small">#{{ partida.idpartidabingo }}</div></td>
+                    <td>{{ partida.idbingo }}</td>
+                    <td>{{ partida.horainicio|date:"d/m/Y H:i" }}</td>
+                    <td>${{ partida.valorefectivo|floatformat:2 }}</td>
+                    <td>{{ partida.idjugadorganador|default:"Sin ganador" }}</td>
+                    <td><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></td>
+                    <td class="text-end">
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-outline-primary" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Detalle</a>
+                            <a class="btn btn-outline-secondary" href="{% url 'bingos:consola_operador' partida.idpartidabingo %}">Consola</a>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="7"><div class="empty-state"><strong>No se encontraron partidas</strong><span>Crea una partida desde el detalle de un bingo.</span></div></td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% include "includes/pagination.html" %}
+</section>
+{% endblock %}

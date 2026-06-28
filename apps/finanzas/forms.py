@@ -1,0 +1,248 @@
+from django import forms
+
+from apps.common.forms import FriendlyModelForm, validate_unique_field
+from apps.configuracion.models import Metodopago
+
+from .models import Ahorro, Aportesemanal, Pago, Prestamo
+
+
+class PrestamoForm(FriendlyModelForm):
+    date_fields = ("fechasolicitud", "fechavencimiento")
+    state_fields = ("estadoprestamo",)
+    state_choices = {
+        "estadoprestamo": (
+            ("Solicitado", "Solicitado"),
+            ("Aprobado", "Aprobado"),
+            ("En espera", "En espera"),
+            ("Liquidado", "Liquidado"),
+        )
+    }
+    non_negative_fields = (
+        "montoprestamosolicitado",
+        "tasainteres",
+        "montototalpagar",
+        "saldopendiente",
+        "numerocuotas",
+    )
+    integrity_error_map = ()
+    constraint_error_messages = {
+        "numerocuotas": "Ingrese un número de cuotas mayor o igual a uno.",
+    }
+
+    class Meta:
+        model = Prestamo
+        fields = (
+            "idsocio",
+            "montoprestamosolicitado",
+            "tasainteres",
+            "montototalpagar",
+            "saldopendiente",
+            "numerocuotas",
+            "fechasolicitud",
+            "fechavencimiento",
+            "estadoprestamo",
+        )
+        labels = {
+            "idsocio": "Socio",
+            "montoprestamosolicitado": "Monto solicitado",
+            "tasainteres": "Tasa de interés",
+            "montototalpagar": "Monto total a pagar",
+            "saldopendiente": "Saldo pendiente",
+            "numerocuotas": "Número de cuotas",
+            "fechasolicitud": "Fecha de solicitud",
+            "fechavencimiento": "Fecha de vencimiento",
+            "estadoprestamo": "Estado",
+        }
+
+    def clean_numerocuotas(self):
+        value = self.cleaned_data.get("numerocuotas")
+        if value is not None and value < 1:
+            raise forms.ValidationError("Ingrese un número de cuotas mayor o igual a uno.")
+        return value
+
+
+class PagoForm(FriendlyModelForm):
+    datetime_fields = ("fechapago",)
+    state_fields = ("estadopago",)
+    state_choices = {
+        "estadopago": (
+            ("Pendiente", "Pendiente"),
+            ("Validado", "Validado"),
+            ("Rechazado", "Rechazado"),
+        )
+    }
+    non_negative_fields = ("montopagado",)
+    integrity_error_map = (
+        (
+            "numeroreferencia",
+            ("numeroreferencia", "pago_numeroreferencia", "unique"),
+            "Este número de referencia ya existe.",
+        ),
+    )
+
+    class Meta:
+        model = Pago
+        fields = (
+            "idmetodopago",
+            "montopagado",
+            "numeroreferencia",
+            "fechapago",
+            "comprobantepago",
+            "estadopago",
+        )
+        labels = {
+            "idmetodopago": "Método de pago",
+            "montopagado": "Monto pagado",
+            "numeroreferencia": "Número de referencia",
+            "fechapago": "Fecha de pago",
+            "comprobantepago": "Comprobante de pago",
+            "estadopago": "Estado",
+        }
+        error_messages = {
+            "numeroreferencia": {
+                "unique": "Este número de referencia ya existe.",
+            }
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["idmetodopago"].queryset = Metodopago.objects.order_by("nombremetodopago")
+
+    def clean_numeroreferencia(self):
+        value = self.cleaned_data.get("numeroreferencia")
+        value = value.strip() if value else None
+        self.cleaned_data["numeroreferencia"] = value
+        return validate_unique_field(
+            self,
+            "numeroreferencia",
+            "Este número de referencia ya existe.",
+        )
+
+
+class AhorroForm(FriendlyModelForm):
+    datetime_fields = ("fechaahorro",)
+    state_fields = ("estado",)
+    state_choices = {
+        "estado": (
+            ("Activo", "Activo"),
+            ("Inactivo", "Inactivo"),
+        )
+    }
+    non_negative_fields = ("montoahorro",)
+    integrity_error_map = ()
+    constraint_error_messages = {
+        "tipoahorro": "Seleccione un tipo de ahorro válido.",
+    }
+
+    class Meta:
+        model = Ahorro
+        fields = (
+            "idsocio",
+            "idbingo",
+            "tipoahorro",
+            "montoahorro",
+            "fechaahorro",
+            "comentarioahorro",
+            "estado",
+        )
+        labels = {
+            "idsocio": "Socio",
+            "idbingo": "Bingo",
+            "tipoahorro": "Tipo de ahorro",
+            "montoahorro": "Monto",
+            "fechaahorro": "Fecha de ahorro",
+            "comentarioahorro": "Comentario",
+            "estado": "Estado",
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["tipoahorro"].widget = forms.Select(
+            choices=(
+                ("Obligatorio", "Obligatorio"),
+                ("Voluntario", "Voluntario"),
+            )
+        )
+        self.fields["tipoahorro"].widget.attrs["class"] = "form-select"
+
+    def clean_tipoahorro(self):
+        value = self.cleaned_data.get("tipoahorro")
+        if not value:
+            return value
+
+        normalized_values = {
+            "obligatorio": "Obligatorio",
+            "voluntario": "Voluntario",
+        }
+        normalized = normalized_values.get(value.strip().lower())
+        if not normalized:
+            raise forms.ValidationError("Seleccione un tipo de ahorro válido.")
+        return normalized
+
+
+class AporteSemanalForm(FriendlyModelForm):
+    datetime_fields = ("fechaplanificadada", "fechaentregareal")
+    state_fields = ("estadoaporte",)
+    state_choices = {
+        "estadoaporte": (
+            ("Al Dia", "Al día"),
+            ("Atrasado", "Atrasado"),
+        )
+    }
+    non_negative_fields = ("numerosemana",)
+    integrity_error_map = ()
+    constraint_error_messages = {
+        "metodoingreso": "Seleccione un método de ingreso válido.",
+    }
+
+    class Meta:
+        model = Aportesemanal
+        fields = (
+            "idsocio",
+            "idregalo",
+            "idpartida",
+            "numerosemana",
+            "fechaplanificadada",
+            "fechaentregareal",
+            "metodoingreso",
+            "referenciaingreso",
+            "estadoaporte",
+        )
+        labels = {
+            "idsocio": "Socio",
+            "idregalo": "Regalo",
+            "idpartida": "Partida",
+            "numerosemana": "Número de semana",
+            "fechaplanificadada": "Fecha planificada",
+            "fechaentregareal": "Fecha de entrega real",
+            "metodoingreso": "Método de ingreso",
+            "referenciaingreso": "Referencia de ingreso",
+            "estadoaporte": "Estado",
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["metodoingreso"].widget = forms.Select(
+            choices=(
+                ("Efectivo", "Efectivo"),
+                ("Transferencia", "Transferencia"),
+                ("Fisico", "Físico"),
+            )
+        )
+        self.fields["metodoingreso"].widget.attrs["class"] = "form-select"
+
+    def clean_metodoingreso(self):
+        value = self.cleaned_data.get("metodoingreso")
+        if not value:
+            return value
+
+        normalized_values = {
+            "efectivo": "Efectivo",
+            "transferencia": "Transferencia",
+            "fisico": "Fisico",
+            "físico": "Fisico",
+        }
+        normalized = normalized_values.get(value.strip().lower())
+        if not normalized:
+            raise forms.ValidationError("Seleccione un método de ingreso válido.")
+        return normalized

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | Finanzas{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Módulo Finanzas</p>
+        <h1>Finanzas</h1>
+        <p>Control de préstamos, pagos, ahorros y aportes semanales.</p>
+    </div>
+</section>
+
+<section class="dashboard-grid">
+    {% for card in cards %}
+    <article class="metric-card">
+        <span>{{ card.label }}</span>
+        <strong>{% if card.value is None %}No disponible{% else %}{{ card.value }}{% endif %}</strong>
+    </article>
+    {% endfor %}
+</section>
+
+<section class="content-panel">
+    <div class="row g-3">
+        <div class="col-md-6 col-xl-3"><a class="quick-card compact" href="{% url 'finanzas:prestamos_lista' %}"><span class="quick-code">PR</span><span class="quick-content"><strong>Préstamos</strong><small>Solicitudes y saldos pendientes.</small></span></a></div>
+        <div class="col-md-6 col-xl-3"><a class="quick-card compact" href="{% url 'finanzas:pagos_lista' %}"><span class="quick-code">PA</span><span class="quick-content"><strong>Pagos</strong><small>Pagos y referencias.</small></span></a></div>
+        <div class="col-md-6 col-xl-3"><a class="quick-card compact" href="{% url 'finanzas:ahorros_lista' %}"><span class="quick-code">AH</span><span class="quick-content"><strong>Ahorros</strong><small>Registros de ahorro.</small></span></a></div>
+        <div class="col-md-6 col-xl-3"><a class="quick-card compact" href="{% url 'finanzas:aportes_lista' %}"><span class="quick-code">AP</span><span class="quick-content"><strong>Aportes</strong><small>Aportes semanales.</small></span></a></div>
+    </div>
+</section>
+{% endblock %}

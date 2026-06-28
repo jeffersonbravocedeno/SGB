@@ -1,0 +1,19 @@
+{% load siab_tags %}
+<div class="table-responsive">
+    <table class="table modern-table align-middle">
+        <thead><tr><th>Tipo</th><th>Bingo</th><th>Monto</th><th>Fecha</th><th>Estado</th></tr></thead>
+        <tbody>
+            {% for ahorro in ahorros %}
+            <tr>
+                <td>{{ ahorro.tipoahorro }}</td>
+                <td>{{ ahorro.idbingo }}</td>
+                <td>${{ ahorro.montoahorro|floatformat:2 }}</td>
+                <td>{{ ahorro.fechaahorro|date:"d/m/Y H:i" }}</td>
+                <td><span class="badge rounded-pill {{ ahorro.estado|estado_class }}">{{ ahorro.estado }}</span></td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="5" class="text-muted">No hay ahorros registrados.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>

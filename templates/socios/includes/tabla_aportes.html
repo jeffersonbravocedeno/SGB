@@ -1,0 +1,19 @@
+{% load siab_tags %}
+<div class="table-responsive">
+    <table class="table modern-table align-middle">
+        <thead><tr><th>Semana</th><th>Regalo</th><th>Planificada</th><th>Entrega</th><th>Estado</th></tr></thead>
+        <tbody>
+            {% for aporte in aportes %}
+            <tr>
+                <td>{{ aporte.numerosemana|default_dash }}</td>
+                <td>{{ aporte.idregalo }}</td>
+                <td>{{ aporte.fechaplanificadada|date:"d/m/Y H:i" }}</td>
+                <td>{{ aporte.fechaentregareal|date:"d/m/Y H:i"|default_dash }}</td>
+                <td><span class="badge rounded-pill {{ aporte.estadoaporte|estado_class }}">{{ aporte.estadoaporte|default_dash }}</span></td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="5" class="text-muted">No hay aportes registrados.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>

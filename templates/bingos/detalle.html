@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Detalle de bingo{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Módulo Bingos</p>
+        <h1>{{ bingo.titulobingo }}</h1>
+        <p>{{ bingo.fechaprogramadabingo|date:"d/m/Y H:i" }} · {{ bingo.lugarbingo|default:"Sin lugar definido" }}</p>
+    </div>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:lista' %}">Volver</a>
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:partidas_lista' %}">Partidas</a>
+        <a class="btn btn-primary" href="{% url 'bingos:editar' bingo.idbingo %}">Editar</a>
+    </div>
+</section>
+
+<section class="content-panel">
+    <div class="row g-4">
+        <div class="col-lg-4">
+            <h2 class="section-subtitle">Datos generales</h2>
+            <dl class="detail-list">
+                <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ bingo.estadobingo|estado_class }}">{{ bingo.estadobingo }}</span></dd></div>
+                <div><dt>Tipo</dt><dd>{{ bingo.tipobingo }}</dd></div>
+                <div><dt>Precio del cartón</dt><dd>${{ bingo.preciocarton|floatformat:2 }}</dd></div>
+                <div><dt>Premio mayor</dt><dd>${{ bingo.premiomayor|floatformat:2 }}</dd></div>
+                <div><dt>Descripción premio mayor</dt><dd>{{ bingo.descripcionpremiomayor }}</dd></div>
+                <div><dt>Premios</dt><dd>{{ bingo.descripcionpremios|default_dash }}</dd></div>
+            </dl>
+        </div>
+        <div class="col-lg-8">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2 class="section-subtitle mb-0">Partidas asociadas</h2>
+                <a class="btn btn-primary btn-sm" href="{% url 'bingos:partida_nueva' bingo.idbingo %}">+ Nueva partida</a>
+            </div>
+            <div class="table-responsive mb-4">
+                <table class="table modern-table align-middle">
+                    <thead><tr><th>Ronda</th><th>Premio efectivo</th><th>Ganador</th><th>Inicio</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
+                    <tbody>
+                        {% for partida in partidas %}
+                        <tr>
+                            <td>{{ partida.nombreronda }}</td>
+                            <td>${{ partida.valorefectivo|floatformat:2 }}</td>
+                            <td>{{ partida.idjugadorganador|default:"Sin ganador" }}</td>
+                            <td>{{ partida.horainicio|date:"d/m/Y H:i" }}</td>
+                            <td><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></td>
+                            <td class="text-end">
+                                <div class="btn-group btn-group-sm">
+                                    <a class="btn btn-outline-primary" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Detalle</a>
+                                    <a class="btn btn-outline-secondary" href="{% url 'bingos:consola_operador' partida.idpartidabingo %}">Consola</a>
+                                </div>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="6" class="text-muted">No hay partidas asociadas.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <h2 class="section-subtitle">Cartones relacionados</h2>
+            <div class="table-responsive">
+                <table class="table modern-table align-middle">
+                    <thead><tr><th>Código</th><th>Jugador</th><th>Partida</th><th>Precio</th><th>Estado</th></tr></thead>
+                    <tbody>
+                        {% for carton in cartones %}
+                        <tr>
+                            <td>{{ carton.codigocarton }}</td>
+                            <td>{{ carton.idjugador|default:"Sin jugador" }}</td>
+                            <td>{{ carton.idpartida }}</td>
+                            <td>${{ carton.preciopagado|floatformat:2 }}</td>
+                            <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="5" class="text-muted">No hay cartones relacionados.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

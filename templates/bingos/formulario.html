@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | {{ titulo }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Módulo Bingos</p>
+        <h1>{{ titulo }}</h1>
+        <p>Define la programación, precio de cartón y premios visibles para el bingo.</p>
+    </div>
+</section>
+
+<form class="content-panel" method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+    <div class="form-section">
+        <div class="form-section-title"><h2>Datos generales</h2><p>Información principal del evento.</p></div>
+        <div class="row g-3">
+            <div class="col-md-8">{% include "includes/field.html" with field=form.titulobingo %}</div>
+            <div class="col-md-4">{% include "includes/field.html" with field=form.estadobingo %}</div>
+            <div class="col-md-4">{% include "includes/field.html" with field=form.fechaprogramadabingo %}</div>
+            <div class="col-md-4">{% include "includes/field.html" with field=form.tipobingo %}</div>
+            <div class="col-md-4">{% include "includes/field.html" with field=form.preciocarton %}</div>
+            <div class="col-12">{% include "includes/field.html" with field=form.lugarbingo %}</div>
+            <div class="col-12">{% include "includes/field.html" with field=form.urlsesionbingo %}</div>
+        </div>
+    </div>
+    <div class="form-section">
+        <div class="form-section-title"><h2>Premios y promoción</h2><p>Premio mayor y recursos visuales.</p></div>
+        <div class="row g-3">
+            <div class="col-md-4">{% include "includes/field.html" with field=form.premiomayor %}</div>
+            <div class="col-md-8">{% include "includes/field.html" with field=form.descripcionpremiomayor %}</div>
+            <div class="col-md-6">{% include "includes/field.html" with field=form.rutaimagenpremiomayor %}</div>
+            <div class="col-md-6">{% include "includes/field.html" with field=form.urlvideopromocional %}</div>
+            <div class="col-12">{% include "includes/field.html" with field=form.descripcionpremios %}</div>
+        </div>
+    </div>
+    <div class="form-actions">
+        {% if bingo %}<a class="btn btn-outline-secondary" href="{% url 'bingos:detalle' bingo.idbingo %}">Cancelar</a>{% else %}<a class="btn btn-outline-secondary" href="{% url 'bingos:lista' %}">Cancelar</a>{% endif %}
+        <button class="btn btn-primary" type="submit">Guardar</button>
+    </div>
+</form>
+{% endblock %}

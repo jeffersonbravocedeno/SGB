@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Detalle de partida{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Partidas de bingo</p>
+        <h1>{{ partida.nombreronda }}</h1>
+        <p>{{ partida.idbingo.titulobingo }}</p>
+    </div>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:detalle' partida.idbingo_id %}">Volver</a>
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:consola_operador' partida.idpartidabingo %}">Consola</a>
+        {% if puede_asignar_cartones %}
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">Generar cartón</a>
+        {% else %}
+        <span class="btn btn-outline-secondary disabled" aria-disabled="true" title="Solo disponible en Programada o En espera">Generar cartón</span>
+        {% endif %}
+        <a class="btn btn-primary" href="{% url 'bingos:partida_editar' partida.idpartidabingo %}">Editar</a>
+    </div>
+</section>
+
+{% if carton_generado and matriz_carton_generado %}
+<section class="content-panel mb-3">
+    <div class="section-heading">
+        <div>
+            <h2>Vista previa del cartón generado</h2>
+            <p>{{ carton_generado.codigocarton }} · {{ carton_generado.idjugador }} · ${{ carton_generado.preciopagado|floatformat:2 }}</p>
+        </div>
+        <span class="badge rounded-pill {{ carton_generado.estadocarton|estado_class }}">{{ carton_generado.estadocarton }}</span>
+    </div>
+    <div class="table-responsive bingo-card-preview">
+        <table class="table table-bordered text-center align-middle mb-0">
+            <thead class="table-dark">
+                <tr><th scope="col">B</th><th scope="col">I</th><th scope="col">N</th><th scope="col">G</th><th scope="col">O</th></tr>
+            </thead>
+            <tbody>
+                {% for fila in matriz_carton_generado %}
+                <tr>
+                    {% for casilla in fila %}
+                    <td class="bingo-card-cell{% if casilla == 'LIBRE' %} table-warning fw-bold{% endif %}">{{ casilla }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+
+<section class="content-panel">
+    <div class="row g-4">
+        <div class="col-lg-4">
+            <h2 class="section-subtitle">Datos de la partida</h2>
+            <dl class="detail-list">
+                <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></dd></div>
+                <div><dt>Ganador</dt><dd>{{ partida.idjugadorganador|default:"Sin ganador" }}</dd></div>
+                <div><dt>Premio efectivo</dt><dd>${{ partida.valorefectivo|floatformat:2 }}</dd></div>
+                <div><dt>Premio material</dt><dd>{{ partida.premiomaterial }}</dd></div>
+                <div><dt>Inicio</dt><dd>{{ partida.horainicio|date:"d/m/Y H:i" }}</dd></div>
+                <div><dt>Finalización</dt><dd>{{ partida.horafin|date:"d/m/Y H:i"|default_dash }}</dd></div>
+                <div><dt>Última bola</dt><dd>{{ partida.ultimabola }}</dd></div>
+                <div><dt>Desempate</dt><dd>{{ partida.haydesempate|valor_si_no }}</dd></div>
+            </dl>
+        </div>
+        <div class="col-lg-8">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2 class="section-subtitle mb-0">Cartones de la partida</h2>
+                {% if puede_asignar_cartones %}
+                <a class="btn btn-primary btn-sm" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">+ Generar cartón</a>
+                {% else %}
+                <span class="btn btn-outline-secondary btn-sm disabled" aria-disabled="true" title="Solo disponible en Programada o En espera">Generación bloqueada</span>
+                {% endif %}
+            </div>
+            <div class="table-responsive">
+                <table class="table modern-table align-middle">
+                    <thead><tr><th>Código</th><th>Jugador</th><th>Precio</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
+                    <tbody>
+                        {% for carton in cartones %}
+                        <tr>
+                            <td>{{ carton.codigocarton }}</td>
+                            <td>{{ carton.idjugador|default:"Sin jugador" }}</td>
+                            <td>${{ carton.preciopagado|floatformat:2 }}</td>
+                            <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
+                            <td class="text-end"><a class="btn btn-outline-secondary btn-sm" href="{% url 'bingos:partida_carton_editar' partida.idpartidabingo carton.idcarton %}">Editar</a></td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="5" class="text-muted">No hay cartones registrados para esta partida.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <h2 class="section-subtitle mt-4">Bolas extraídas</h2>
+            {% if bolas_cantadas %}
+            <div class="d-flex flex-wrap gap-2 mt-3">
+                {% for bola in bolas_cantadas %}
+                <span class="badge rounded-pill text-bg-primary">{{ bola }}</span>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state"><strong>No hay bolas registradas</strong><span>La extracción de bolas queda para la siguiente etapa.</span></div>
+            {% endif %}
+        </div>
+    </div>
+</section>
+{% endblock %}

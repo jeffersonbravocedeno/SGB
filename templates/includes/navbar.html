@@ -1,0 +1,19 @@
+<nav class="navbar navbar-expand-lg navbar-dark siab-navbar fixed-top">
+    <div class="container-fluid">
+        <button class="btn btn-outline-light d-lg-none me-2" type="button" data-bs-toggle="offcanvas" data-bs-target="#mobileSidebar" aria-controls="mobileSidebar" aria-label="Abrir menú">
+            ☰
+        </button>
+        <a class="navbar-brand fw-bold" href="{% url 'home' %}">SIAB</a>
+        <span class="navbar-system-name d-none d-md-inline">Sistema Integral de Administración de Bingos</span>
+        <div class="ms-auto d-flex align-items-center gap-3">
+            <span class="navbar-user d-none d-sm-inline">
+                {{ request.user.get_full_name|default:request.user.username }}
+            </span>
+            <a class="btn btn-outline-light btn-sm" href="{% url 'password_change' %}">Cambiar contraseña</a>
+            <form method="post" action="{% url 'logout' %}" class="m-0">
+                {% csrf_token %}
+                <button class="btn btn-light btn-sm" type="submit">Cerrar sesión</button>
+            </form>
+        </div>
+    </div>
+</nav>

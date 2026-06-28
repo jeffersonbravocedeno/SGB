@@ -1,0 +1,13 @@
+{% load siab_tags %}
+{% if form.errors %}
+<div class="alert alert-danger" role="alert">
+    {% if form|has_field_errors %}
+    <div>Corrige los campos marcados en rojo.</div>
+    {% endif %}
+    {% if form.non_field_errors %}
+    {% for error in form.non_field_errors %}
+    <div>{{ error }}</div>
+    {% endfor %}
+    {% endif %}
+</div>
+{% endif %}

@@ -1,0 +1,19 @@
+{% load siab_tags %}
+<div class="table-responsive">
+    <table class="table modern-table align-middle">
+        <thead><tr><th>Monto solicitado</th><th>Saldo pendiente</th><th>Solicitud</th><th>Vencimiento</th><th>Estado</th></tr></thead>
+        <tbody>
+            {% for prestamo in prestamos %}
+            <tr>
+                <td>${{ prestamo.montoprestamosolicitado|floatformat:2 }}</td>
+                <td>${{ prestamo.saldopendiente|floatformat:2 }}</td>
+                <td>{{ prestamo.fechasolicitud|date:"d/m/Y" }}</td>
+                <td>{{ prestamo.fechavencimiento|date:"d/m/Y" }}</td>
+                <td><span class="badge rounded-pill {{ prestamo.estadoprestamo|estado_class }}">{{ prestamo.estadoprestamo }}</span></td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="5" class="text-muted">No hay préstamos registrados.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>

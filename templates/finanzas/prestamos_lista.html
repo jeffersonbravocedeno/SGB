@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Préstamos{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div><p class="page-kicker">Finanzas</p><h1>Préstamos</h1><p>Listado de préstamos y saldos por socio.</p></div>
+    <a class="btn btn-primary" href="{% url 'finanzas:prestamo_nuevo' %}">+ Nuevo préstamo</a>
+</section>
+<section class="content-panel">
+    <div class="toolbar">
+        <div><h2>Préstamos registrados</h2><p>{{ total }} resultado{{ total|pluralize }}</p></div>
+        <form class="search-form" method="get"><div class="input-group"><input class="form-control" name="q" value="{{ busqueda }}" placeholder="Buscar por socio o estado"><button class="btn btn-outline-primary">Buscar</button>{% if busqueda %}<a class="btn btn-outline-secondary" href="{% url 'finanzas:prestamos_lista' %}">Limpiar</a>{% endif %}</div></form>
+    </div>
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead><tr><th>Socio</th><th>Monto solicitado</th><th>Total a pagar</th><th>Saldo pendiente</th><th>Vencimiento</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
+            <tbody>
+                {% for prestamo in page_obj %}
+                <tr>
+                    <td>{{ prestamo.idsocio }}</td>
+                    <td>${{ prestamo.montoprestamosolicitado|floatformat:2 }}</td>
+                    <td>${{ prestamo.montototalpagar|floatformat:2 }}</td>
+                    <td>${{ prestamo.saldopendiente|floatformat:2 }}</td>
+                    <td>{{ prestamo.fechavencimiento|date:"d/m/Y" }}</td>
+                    <td><span class="badge rounded-pill {{ prestamo.estadoprestamo|estado_class }}">{{ prestamo.estadoprestamo }}</span></td>
+                    <td class="text-end"><div class="btn-group btn-group-sm"><a class="btn btn-outline-primary" href="{% url 'finanzas:prestamo_detalle' prestamo.idprestamo %}">Ver detalle</a><a class="btn btn-outline-secondary" href="{% url 'finanzas:prestamo_editar' prestamo.idprestamo %}">Editar</a></div></td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="7" class="text-muted">No hay préstamos registrados.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% include "includes/pagination.html" %}
+</section>
+{% endblock %}

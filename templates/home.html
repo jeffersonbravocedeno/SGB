@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | Inicio{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Sistema SIAB</p>
+        <h1>Inicio</h1>
+        <p>Bienvenido al Sistema Integral de Administración de Bingos.</p>
+    </div>
+</section>
+
+<section class="dashboard-grid">
+    {% for card in summary_cards %}
+    <article class="metric-card">
+        <span>{{ card.label }}</span>
+        <strong>{% if card.value is None %}No disponible{% else %}{{ card.value }}{% endif %}</strong>
+    </article>
+    {% endfor %}
+</section>
+
+<section class="content-panel">
+    <div class="section-heading">
+        <div>
+            <h2>Accesos rápidos</h2>
+            <p>Módulos principales del sistema</p>
+        </div>
+    </div>
+
+    <div class="row g-3">
+        {% for link in quick_links %}
+        <div class="col-12 col-md-6 col-xl-4">
+            <a class="quick-card" href="{{ link.url }}">
+                <span class="quick-code">{{ link.code }}</span>
+                <span class="quick-content">
+                    <strong>{{ link.title }}</strong>
+                    <small>{{ link.description }}</small>
+                </span>
+            </a>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}

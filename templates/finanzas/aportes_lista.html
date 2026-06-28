@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Aportes semanales{% endblock %}
+
+{% block content %}
+<section class="page-header"><div><p class="page-kicker">Finanzas</p><h1>Aportes semanales</h1><p>Planificación y estado de aportes por socio.</p></div><a class="btn btn-primary" href="{% url 'finanzas:aporte_nuevo' %}">+ Nuevo aporte</a></section>
+<section class="content-panel">
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead><tr><th>Socio</th><th>Semana</th><th>Regalo</th><th>Planificada</th><th>Entrega real</th><th>Estado</th></tr></thead>
+            <tbody>
+                {% for aporte in page_obj %}
+                <tr><td>{{ aporte.idsocio }}</td><td>{{ aporte.numerosemana|default_dash }}</td><td>{{ aporte.idregalo }}</td><td>{{ aporte.fechaplanificadada|date:"d/m/Y H:i" }}</td><td>{{ aporte.fechaentregareal|date:"d/m/Y H:i"|default_dash }}</td><td><span class="badge rounded-pill {{ aporte.estadoaporte|estado_class }}">{{ aporte.estadoaporte|default_dash }}</span></td></tr>
+                {% empty %}
+                <tr><td colspan="6" class="text-muted">No hay aportes registrados.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% include "includes/pagination.html" %}
+</section>
+{% endblock %}

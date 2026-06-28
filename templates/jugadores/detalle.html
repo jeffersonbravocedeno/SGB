@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Detalle de jugador{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Módulo Jugadores</p>
+        <h1>{{ jugador.aliasjugador|default:"Jugador sin alias" }}</h1>
+        <p>{{ jugador.correojugador|default:"Sin correo registrado" }}</p>
+    </div>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="{% url 'jugadores:lista' %}">Volver</a>
+        <a class="btn btn-primary" href="{% url 'jugadores:editar' jugador.idjugador %}">Editar</a>
+    </div>
+</section>
+
+<section class="content-panel">
+    <div class="row g-4">
+        <div class="col-lg-4">
+            <h2 class="section-subtitle">Datos del jugador</h2>
+            <dl class="detail-list">
+                <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ jugador.estadocuentajugador|estado_class }}">{{ jugador.estadocuentajugador }}</span></dd></div>
+                <div><dt>Saldo de crédito</dt><dd>${{ jugador.saldocreditojugador|floatformat:2 }}</dd></div>
+                <div><dt>Socio relacionado</dt><dd>{{ jugador.idsocio|default:"No vinculado" }}</dd></div>
+                <div><dt>Fecha de registro</dt><dd>{{ jugador.fecharegistrojugador|date:"d/m/Y H:i" }}</dd></div>
+                <div><dt>Avatar</dt><dd>{{ jugador.avatarjugador|default_dash }}</dd></div>
+            </dl>
+        </div>
+        <div class="col-lg-8">
+            <h2 class="section-subtitle">Cartones</h2>
+            <div class="table-responsive mb-4">
+                <table class="table modern-table align-middle">
+                    <thead><tr><th>Código</th><th>Partida</th><th>Precio</th><th>Compra</th><th>Estado</th></tr></thead>
+                    <tbody>
+                        {% for carton in cartones %}
+                        <tr>
+                            <td>{{ carton.codigocarton }}</td>
+                            <td>{{ carton.idpartida|default_dash }}</td>
+                            <td>${{ carton.preciopagado|floatformat:2 }}</td>
+                            <td>{{ carton.fechacompra|date:"d/m/Y H:i"|default_dash }}</td>
+                            <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="5" class="text-muted">No hay cartones relacionados.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <h2 class="section-subtitle">Sesiones de juego</h2>
+            <div class="table-responsive">
+                <table class="table modern-table align-middle">
+                    <thead><tr><th>Plataforma</th><th>Partida</th><th>Inicio</th><th>Fin</th><th>Estado</th></tr></thead>
+                    <tbody>
+                        {% for sesion in sesiones %}
+                        <tr>
+                            <td>{{ sesion.idplataforma }}</td>
+                            <td>{{ sesion.idpartida }}</td>
+                            <td>{{ sesion.fechainiciosesion|date:"d/m/Y H:i" }}</td>
+                            <td>{{ sesion.fechafinsesion|date:"d/m/Y H:i"|default_dash }}</td>
+                            <td><span class="badge rounded-pill {{ sesion.estadosesion|estado_class }}">{{ sesion.estadosesion }}</span></td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="5" class="text-muted">No hay sesiones relacionadas.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

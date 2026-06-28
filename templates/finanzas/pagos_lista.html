@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Pagos{% endblock %}
+
+{% block content %}
+<section class="page-header"><div><p class="page-kicker">Finanzas</p><h1>Pagos</h1><p>Consulta de pagos registrados y estado de validación.</p></div></section>
+<section class="content-panel">
+    <div class="toolbar"><div><h2>Pagos registrados</h2><p>{{ total }} resultado{{ total|pluralize }}</p></div><form class="search-form" method="get"><div class="input-group"><input class="form-control" name="q" value="{{ busqueda }}" placeholder="Buscar por referencia o estado"><button class="btn btn-outline-primary">Buscar</button>{% if busqueda %}<a class="btn btn-outline-secondary" href="{% url 'finanzas:pagos_lista' %}">Limpiar</a>{% endif %}</div></form></div>
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead><tr><th>Socio</th><th>Método</th><th>Monto</th><th>Referencia</th><th>Fecha</th><th>Estado</th></tr></thead>
+            <tbody>
+                {% for pago in page_obj %}
+                <tr><td>{{ pago.idprestamo.idsocio }}</td><td>{{ pago.idmetodopago }}</td><td>${{ pago.montopagado|floatformat:2 }}</td><td>{{ pago.numeroreferencia|default_dash }}</td><td>{{ pago.fechapago|date:"d/m/Y H:i" }}</td><td><span class="badge rounded-pill {{ pago.estadopago|estado_class }}">{{ pago.estadopago|default_dash }}</span></td></tr>
+                {% empty %}
+                <tr><td colspan="6" class="text-muted">No hay pagos registrados.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% include "includes/pagination.html" %}
+</section>
+{% endblock %}

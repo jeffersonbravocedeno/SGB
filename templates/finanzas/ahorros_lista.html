@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Ahorros{% endblock %}
+
+{% block content %}
+<section class="page-header"><div><p class="page-kicker">Finanzas</p><h1>Ahorros</h1><p>Registros de ahorro por socio y bingo.</p></div><a class="btn btn-primary" href="{% url 'finanzas:ahorro_nuevo' %}">+ Nuevo ahorro</a></section>
+<section class="content-panel">
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead><tr><th>Socio</th><th>Bingo</th><th>Tipo</th><th>Monto</th><th>Fecha</th><th>Estado</th></tr></thead>
+            <tbody>
+                {% for ahorro in page_obj %}
+                <tr><td>{{ ahorro.idsocio }}</td><td>{{ ahorro.idbingo }}</td><td>{{ ahorro.tipoahorro }}</td><td>${{ ahorro.montoahorro|floatformat:2 }}</td><td>{{ ahorro.fechaahorro|date:"d/m/Y H:i" }}</td><td><span class="badge rounded-pill {{ ahorro.estado|estado_class }}">{{ ahorro.estado }}</span></td></tr>
+                {% empty %}
+                <tr><td colspan="6" class="text-muted">No hay ahorros registrados.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% include "includes/pagination.html" %}
+</section>
+{% endblock %}

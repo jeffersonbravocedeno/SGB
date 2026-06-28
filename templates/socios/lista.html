@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Socios{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Módulo Socios</p>
+        <h1>Socios</h1>
+        <p>Gestión de socios, datos personales y cuentas bancarias.</p>
+    </div>
+    <a class="btn btn-primary" href="{% url 'socios:nuevo' %}">+ Nuevo socio</a>
+</section>
+
+<section class="content-panel">
+    <div class="toolbar">
+        <div>
+            <h2>Socios registrados</h2>
+            <p>{{ total }} resultado{{ total|pluralize }}</p>
+        </div>
+        <form class="search-form" method="get">
+            <div class="input-group">
+                <input class="form-control" type="search" name="q" value="{{ busqueda }}" placeholder="Buscar por cédula, nombres o apellidos">
+                <button class="btn btn-outline-primary" type="submit">Buscar</button>
+                {% if busqueda %}
+                <a class="btn btn-outline-secondary" href="{% url 'socios:lista' %}">Limpiar</a>
+                {% endif %}
+            </div>
+        </form>
+    </div>
+
+    <div class="table-responsive">
+        <table class="table table-hover align-middle modern-table">
+            <thead>
+                <tr>
+                    <th>Cédula</th>
+                    <th>Nombre completo</th>
+                    <th>Tipo de socio</th>
+                    <th>Estado</th>
+                    <th class="text-end">Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for socio in page_obj %}
+                <tr>
+                    <td>{{ socio.cisocio }}</td>
+                    <td>
+                        <strong>{{ socio }}</strong>
+                        <div class="text-muted small">{{ socio.telefonopersonalsocio|default_dash }}</div>
+                    </td>
+                    <td>{{ socio.idtiposocio|default_dash }}</td>
+                    <td><span class="badge rounded-pill {{ socio.estadosocio|estado_class }}">{{ socio.estadosocio|default_dash }}</span></td>
+                    <td class="text-end">
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-outline-primary" href="{% url 'socios:detalle' socio.idsocio %}">Ver detalle</a>
+                            <a class="btn btn-outline-secondary" href="{% url 'socios:editar' socio.idsocio %}">Editar</a>
+                        </div>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="5">
+                        <div class="empty-state">
+                            <strong>No se encontraron socios</strong>
+                            <span>Prueba con otra búsqueda o registra un nuevo socio.</span>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% include "includes/pagination.html" %}
+</section>
+{% endblock %}

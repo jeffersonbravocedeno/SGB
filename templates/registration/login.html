@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | Iniciar sesión{% endblock %}
+
+{% block auth_content %}
+<section class="login-screen">
+    <div class="login-panel">
+        <div class="login-brand">
+            <span>SIAB</span>
+            <h1>Sistema Integral de Administración de Bingos</h1>
+            <p>Ingresa con tu usuario para acceder a la gestión operativa del sistema.</p>
+        </div>
+        <form method="post" class="login-form" novalidate>
+            {% csrf_token %}
+            {% include "includes/form_errors.html" with form=form %}
+            <div class="mb-3">
+                {% include "includes/field.html" with field=form.username %}
+            </div>
+            <div class="mb-4">
+                {% include "includes/field.html" with field=form.password %}
+            </div>
+            <button class="btn btn-primary w-100" type="submit">Iniciar sesión</button>
+            <input type="hidden" name="next" value="{{ next }}">
+        </form>
+    </div>
+</section>
+{% endblock %}

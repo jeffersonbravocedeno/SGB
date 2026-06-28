@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | {{ config.title }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Configuración</p>
+        <h1>{{ object }}</h1>
+        <p>{{ config.title }}</p>
+    </div>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="{% url list_url %}">Volver</a>
+        <a class="btn btn-primary" href="{% url edit_url pk %}">Editar</a>
+    </div>
+</section>
+
+<section class="content-panel">
+    <dl class="detail-grid">
+        {% for label, value in fields %}
+        <div class="{% if label == 'Descripción' %}grid-full{% endif %}">
+            <dt>{{ label }}</dt>
+            <dd>{{ value|default_dash }}</dd>
+        </div>
+        {% endfor %}
+    </dl>
+</section>
+{% endblock %}

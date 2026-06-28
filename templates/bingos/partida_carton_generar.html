@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | {{ titulo }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Cartones de partida</p>
+        <h1>{{ titulo }}</h1>
+        <p>Selecciona el jugador y registra el valor pagado. El cartón se construirá automáticamente.</p>
+    </div>
+    <a class="btn btn-outline-light" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Volver</a>
+</section>
+
+<form class="content-panel" method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Partida seleccionada</h2>
+            <p>Estos datos provienen de la partida indicada en la URL y no se pueden editar aquí.</p>
+        </div>
+        <dl class="detail-grid">
+            <div>
+                <dt>Partida</dt>
+                <dd>{{ partida.nombreronda }}</dd>
+            </div>
+            <div>
+                <dt>Estado de la partida</dt>
+                <dd><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></dd>
+            </div>
+            <div class="grid-full">
+                <dt>Bingo asociado</dt>
+                <dd>{{ partida.idbingo.titulobingo }}</dd>
+            </div>
+        </dl>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Asignación</h2>
+            <p>El código, la matriz, la fecha de compra, el estado y el índice de victoria se generan automáticamente.</p>
+        </div>
+        <div class="row g-3">
+            <div class="col-md-6">{% include "includes/field.html" with field=form.idjugador %}</div>
+            <div class="col-md-6">{% include "includes/field.html" with field=form.preciopagado %}</div>
+        </div>
+    </div>
+
+    <div class="form-actions">
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Cancelar</a>
+        <button class="btn btn-primary" type="submit">Generar y asignar cartón</button>
+    </div>
+</form>
+{% endblock %}

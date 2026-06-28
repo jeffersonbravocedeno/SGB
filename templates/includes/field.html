@@ -1,0 +1,9 @@
+{% load siab_tags %}
+<label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+{{ field|bootstrap_widget }}
+{% if field.help_text %}
+<div class="form-text">{{ field.help_text }}</div>
+{% endif %}
+{% for error in field.errors %}
+<div class="invalid-feedback d-block">{{ error }}</div>
+{% endfor %}

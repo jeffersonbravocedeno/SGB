@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Sesiones de juego{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Sesiones de juego</p>
+        <h1>Sesiones de juego</h1>
+        <p>Consulta de conexiones, plataforma, partida y estado de sesión.</p>
+    </div>
+</section>
+
+<section class="content-panel">
+    <div class="toolbar">
+        <div><h2>Sesiones registradas</h2><p>{{ total }} resultado{{ total|pluralize }}</p></div>
+        <form class="search-form" method="get">
+            <div class="input-group">
+                <input class="form-control" type="search" name="q" value="{{ busqueda }}" placeholder="Buscar por jugador, plataforma o estado">
+                <button class="btn btn-outline-primary" type="submit">Buscar</button>
+                {% if busqueda %}<a class="btn btn-outline-secondary" href="{% url 'bingos:sesiones_lista' %}">Limpiar</a>{% endif %}
+            </div>
+        </form>
+    </div>
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead><tr><th>Jugador</th><th>Plataforma</th><th>Partida</th><th>Inicio</th><th>Fin</th><th>Dispositivo</th><th>Estado</th></tr></thead>
+            <tbody>
+                {% for sesion in page_obj %}
+                <tr>
+                    <td>{{ sesion.idjugador }}</td>
+                    <td>{{ sesion.idplataforma }}</td>
+                    <td>{{ sesion.idpartida }}</td>
+                    <td>{{ sesion.fechainiciosesion|date:"d/m/Y H:i" }}</td>
+                    <td>{{ sesion.fechafinsesion|date:"d/m/Y H:i"|default_dash }}</td>
+                    <td>{{ sesion.dispositivoconexion|default_dash }}</td>
+                    <td><span class="badge rounded-pill {{ sesion.estadosesion|estado_class }}">{{ sesion.estadosesion }}</span></td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="7" class="text-muted">No hay sesiones de juego registradas.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% include "includes/pagination.html" %}
+</section>
+{% endblock %}
