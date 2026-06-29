@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Mi cartón{% endblock %}
+
+{% block content %}
+<section class="page-header public-page-header">
+    <div>
+        <p class="page-kicker">MI CARTÓN</p>
+        <h1>{{ carton.codigocarton }}</h1>
+        {% if carton.idjugador.aliasjugador %}<p>Jugador: {{ carton.idjugador.aliasjugador }}</p>{% endif %}
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <a class="btn btn-outline-light" href="{% url 'bingos:acceder_carton_publico' %}">Consultar otro cartón</a>
+        <a class="btn btn-light" href="{% url 'bingos:carton_publico' carton.codigocarton %}">Actualizar cartón</a>
+    </div>
+</section>
+
+{% if partida %}
+<div class="alert public-state-message" role="status">{{ mensaje_estado_carton }}</div>
+<section class="content-panel mb-3">
+    <dl class="public-board-summary">
+        <div><dt>Bingo</dt><dd>{{ partida.idbingo.titulobingo }}</dd></div>
+        <div><dt>Ronda</dt><dd>{{ partida.nombreronda }}</dd></div>
+        <div><dt>Estado</dt><dd>{{ partida.estadopartida|estado_partida_display }}</dd></div>
+        <div><dt>Progreso</dt><dd>{{ numeros_marcados }} de {{ total_numeros_carton }} números marcados</dd></div>
+    </dl>
+</section>
+{% endif %}
+
+<section class="content-panel public-card-panel">
+    {% if error_carton %}
+    <div class="alert alert-danger mb-0" role="alert">{{ error_carton }}</div>
+    {% elif matriz_carton %}
+    <div class="table-responsive">
+        <table class="table table-bordered text-center align-middle public-bingo-card">
+            <thead class="table-dark"><tr><th>B</th><th>I</th><th>N</th><th>G</th><th>O</th></tr></thead>
+            <tbody>
+                {% for fila in matriz_carton %}
+                <tr>
+                    {% for casilla in fila %}
+                    <td class="public-card-cell {% if casilla.libre %}public-card-cell--free{% elif casilla.marcada %}public-card-cell--marked{% else %}public-card-cell--pending{% endif %}">
+                        <span class="public-card-cell-value">{{ casilla.valor }}</span>
+                        <span class="public-card-cell-state">
+                            {% if casilla.libre %}★ Automática{% elif casilla.marcada %}✓ Marcado{% else %}○ Pendiente{% endif %}
+                        </span>
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="public-card-progress" role="status">
+        <p class="public-card-progress-count">{{ numeros_marcados }} de {{ total_numeros_carton }} números marcados.</p>
+        <p class="public-card-progress-note">La casilla LIBRE se marca automáticamente.</p>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}

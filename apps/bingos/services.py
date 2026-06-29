@@ -110,6 +110,10 @@ class MatrizCartonInvalidaError(ValidacionCartonError):
     pass
 
 
+class CartonPublicoError(ValueError):
+    pass
+
+
 class CartonNoCompletoError(ValidacionCartonError):
     def __init__(self, faltantes):
         self.faltantes = list(faltantes)
@@ -562,6 +566,65 @@ def preparar_datos_bolas_partida(partida):
     }
 
 
+def mensaje_estado_tablero_publico(estado):
+    mensajes = {
+        ESTADO_PARTIDA_PROGRAMADA: "La partida aún no ha comenzado.",
+        ESTADO_PARTIDA_EN_ESPERA: "La partida aún no ha comenzado.",
+        ESTADO_PARTIDA_EN_CURSO: "La partida está en juego.",
+        ESTADO_PARTIDA_PAUSADA: "La partida está pausada temporalmente.",
+        ESTADO_PARTIDA_DESEMPATE: "La partida está resolviendo un desempate.",
+        ESTADO_PARTIDA_FINALIZADA: "La partida ha finalizado.",
+        ESTADO_PARTIDA_CANCELADA: "La partida fue cancelada.",
+    }
+    estado = normalizar_estado_partida(estado)
+    return mensajes.get(estado, "Estado de partida no disponible.")
+
+
+def mensaje_estado_carton_publico(estado):
+    mensajes = {
+        ESTADO_PARTIDA_PROGRAMADA: "La partida aún no comienza.",
+        ESTADO_PARTIDA_EN_ESPERA: "La partida aún no comienza.",
+        ESTADO_PARTIDA_EN_CURSO: "La partida está en juego.",
+        ESTADO_PARTIDA_PAUSADA: "La partida está pausada.",
+        ESTADO_PARTIDA_DESEMPATE: "La partida se encuentra en desempate.",
+        ESTADO_PARTIDA_FINALIZADA: "La partida terminó.",
+        ESTADO_PARTIDA_CANCELADA: "La partida fue cancelada.",
+    }
+    estado = normalizar_estado_partida(estado)
+    return mensajes.get(estado, "Estado de partida no disponible.")
+
+
+def preparar_resumen_partida_publica(partida):
+    datos_bolas = preparar_datos_bolas_partida(partida)
+    return {
+        "partida": partida,
+        "total_bolas_extraidas": datos_bolas["total_bolas_extraidas"],
+        "ultima_bola_codigo": datos_bolas["ultima_bola_codigo"],
+    }
+
+
+def preparar_datos_tablero_publico(partida):
+    datos_bolas = preparar_datos_bolas_partida(partida)
+    estado = normalizar_estado_partida(partida.estadopartida)
+    ganador = None
+    if estado == ESTADO_PARTIDA_FINALIZADA and partida.idjugadorganador_id:
+        ganador = partida.idjugadorganador.aliasjugador or "Jugador ganador"
+    return {
+        "bolas_extraidas": datos_bolas["bolas_extraidas"],
+        "historial_bolas": datos_bolas["historial_bolas"],
+        "tablero_bingo": datos_bolas["tablero_bingo"],
+        "ultima_bola_codigo": datos_bolas["ultima_bola_codigo"],
+        "total_bolas_extraidas": datos_bolas["total_bolas_extraidas"],
+        "total_bolas_faltantes": datos_bolas["total_bolas_faltantes"],
+        "mensaje_estado_publico": mensaje_estado_tablero_publico(estado),
+        "ganador_publico": ganador,
+        "resuelta_por_desempate": (
+            estado == ESTADO_PARTIDA_FINALIZADA
+            and bool(partida.haydesempate)
+        ),
+    }
+
+
 def extraer_siguiente_bola(partida, generador_aleatorio=None):
     """Extrae y persiste una bola sin repetición bajo bloqueo de fila."""
     validar_estado_extraccion_bola(partida)
@@ -683,6 +746,39 @@ def construir_matriz_marcada_carton(matriz, bolas_extraidas):
         ]
         for fila in matriz_valida
     ]
+
+
+def contar_numeros_marcados_carton(matriz, bolas_extraidas):
+    faltantes = obtener_numeros_faltantes_carton(matriz, bolas_extraidas)
+    return 24 - len(faltantes)
+
+
+def preparar_datos_carton_jugador(carton):
+    partida = carton.idpartida
+    if partida is None:
+        raise CartonPublicoError(
+            "Este cartón no está asociado a una partida disponible."
+        )
+    matriz = construir_matriz_marcada_carton(
+        carton.matriznumeros,
+        partida.bolascantadas,
+    )
+    faltantes = obtener_numeros_faltantes_carton(
+        carton.matriznumeros,
+        partida.bolascantadas,
+    )
+    return {
+        "matriz_carton": matriz,
+        "numeros_marcados": contar_numeros_marcados_carton(
+            carton.matriznumeros,
+            partida.bolascantadas,
+        ),
+        "total_numeros_carton": 24,
+        "numeros_faltantes": faltantes,
+        "mensaje_estado_carton": mensaje_estado_carton_publico(
+            partida.estadopartida
+        ),
+    }
 
 
 def preparar_cartones_para_validacion(partida, cartones):

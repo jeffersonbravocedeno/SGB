@@ -9,12 +9,13 @@ from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.exceptions import PermissionDenied
 from django.db import DatabaseError
 from django.http import HttpResponse
-from django.test import RequestFactory, SimpleTestCase
+from django.template.loader import render_to_string
+from django.test import RequestFactory, SimpleTestCase, override_settings
 from django.utils import timezone
 
 from apps.jugadores.models import Jugador
 
-from .forms import GenerarAsignarCartonForm, PartidaBingoForm
+from .forms import AccesoCartonPublicoForm, GenerarAsignarCartonForm, PartidaBingoForm
 from .models import Bingo, Carton, Partidabingo
 from .services import (
     CASILLA_LIBRE,
@@ -29,6 +30,7 @@ from .services import (
     BolilleroAgotadoError,
     CartonNoCompletoError,
     CartonAsignacionError,
+    CartonPublicoError,
     DatosDesempateInvalidosError,
     DesempateError,
     DesempateIncompletoError,
@@ -38,6 +40,7 @@ from .services import (
     acciones_disponibles_consola,
     aplicar_accion_consola,
     carton_tiene_bingo_completo,
+    contar_numeros_marcados_carton,
     confirmar_y_finalizar_desempate,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
@@ -59,7 +62,10 @@ from .services import (
     parsear_bolas_cantadas,
     parsear_candidatos_desempate,
     preparar_cartones_para_validacion,
+    preparar_datos_carton_jugador,
     preparar_datos_desempate,
+    preparar_datos_tablero_publico,
+    preparar_resumen_partida_publica,
     puede_asignar_cartones,
     serializar_bolas_cantadas,
     serializar_candidatos_desempate,
@@ -69,12 +75,16 @@ from .services import (
 )
 from .views import (
     _procesar_accion_consola,
+    acceder_carton_publico,
+    carton_publico,
     confirmar_desempate,
     desempate_operador,
     partida_carton_nuevo,
     partidas_lista,
     sacar_bola,
+    sala_juego_publica,
     sortear_desempate,
+    tablero_publico,
     validar_carton,
 )
 
@@ -127,6 +137,47 @@ def candidatos_desempate_prueba(tiro_uno=None, tiro_dos=None):
             "tiro_desempate": tiro_dos,
         },
     ]
+
+
+def partida_publica_prueba(
+    estado=ESTADO_PARTIDA_EN_CURSO,
+    bolas=None,
+    ultima=None,
+    ganador=None,
+    pk=20,
+):
+    bolas = [] if bolas is None else list(bolas)
+    bingo = Bingo(
+        idbingo=7,
+        titulobingo="Bingo público",
+        premiomayor=Decimal("500.00"),
+    )
+    return Partidabingo(
+        idpartidabingo=pk,
+        idbingo=bingo,
+        idjugadorganador=ganador,
+        nombreronda="Ronda pública",
+        valorefectivo=Decimal("100.00"),
+        premiomaterial="Canasta",
+        estadopartida=estado,
+        bolascantadas=serializar_bolas_cantadas(bolas),
+        ultimabola=ultima if ultima is not None else (bolas[-1] if bolas else 0),
+        haydesempate=False,
+    )
+
+
+def carton_publico_prueba(partida=None, codigo="PUBLICO-001", jugador=None):
+    partida = partida or partida_publica_prueba()
+    jugador = jugador or Jugador(idjugador=41, aliasjugador="jugador_publico")
+    return Carton(
+        idcarton=31,
+        idjugador=jugador,
+        idpartida=partida,
+        codigocarton=codigo,
+        matriznumeros=serializar_matriz_carton_bingo(matriz_carton_prueba()),
+        estadocarton="Vendido",
+        preciopagado=Decimal("9876.54"),
+    )
 
 
 class PartidaBingoFormTests(SimpleTestCase):
@@ -1491,6 +1542,514 @@ class RutasDesempateTests(SimpleTestCase):
         self.assertEqual(response_confirmar.status_code, 405)
         sortear_mock.assert_not_called()
         confirmar_mock.assert_not_called()
+
+
+class ServiciosPublicosBingoTests(SimpleTestCase):
+    def test_tablero_prepara_ultima_bola_y_totales(self):
+        partida = partida_publica_prueba(bolas=[1, 27, 73], ultima=73)
+
+        datos = preparar_datos_tablero_publico(partida)
+
+        self.assertEqual(datos["ultima_bola_codigo"], "O-73")
+        self.assertEqual(datos["total_bolas_extraidas"], 3)
+        self.assertEqual(datos["total_bolas_faltantes"], 72)
+
+    def test_tablero_marca_las_bolas_extraidas(self):
+        partida = partida_publica_prueba(bolas=[1, 27, 73])
+
+        datos = preparar_datos_tablero_publico(partida)
+        bolas = {
+            bola["numero"]: bola["extraida"]
+            for columna in datos["tablero_bingo"]
+            for bola in columna["bolas"]
+        }
+
+        self.assertTrue(bolas[1])
+        self.assertTrue(bolas[27])
+        self.assertTrue(bolas[73])
+        self.assertFalse(bolas[2])
+
+    def test_partida_sin_bolas_se_prepara_de_forma_controlada(self):
+        partida = partida_publica_prueba(bolas=[], ultima=0)
+
+        datos = preparar_datos_tablero_publico(partida)
+
+        self.assertIsNone(datos["ultima_bola_codigo"])
+        self.assertEqual(datos["total_bolas_extraidas"], 0)
+        self.assertEqual(datos["historial_bolas"], [])
+
+    def test_partida_pausada_muestra_mensaje_publico(self):
+        partida = partida_publica_prueba(estado=ESTADO_PARTIDA_PAUSADA)
+
+        datos = preparar_datos_tablero_publico(partida)
+
+        self.assertEqual(
+            datos["mensaje_estado_publico"],
+            "La partida está pausada temporalmente.",
+        )
+        self.assertNotIn("puede_sacar_bola", datos)
+
+    def test_ganador_solo_se_expone_al_finalizar(self):
+        ganador = Jugador(idjugador=41, aliasjugador="campeon_publico")
+        en_curso = partida_publica_prueba(ganador=ganador)
+        finalizada = partida_publica_prueba(
+            estado=ESTADO_PARTIDA_FINALIZADA,
+            ganador=ganador,
+        )
+
+        self.assertIsNone(preparar_datos_tablero_publico(en_curso)["ganador_publico"])
+        self.assertEqual(
+            preparar_datos_tablero_publico(finalizada)["ganador_publico"],
+            "campeon_publico",
+        )
+
+    def test_resumen_publico_no_incluye_datos_de_desempate(self):
+        partida = partida_publica_prueba(bolas=[12])
+        partida.idbingadores = '[{"idjugador":99,"tiro_desempate":75}]'
+
+        resumen = preparar_resumen_partida_publica(partida)
+
+        self.assertEqual(resumen["total_bolas_extraidas"], 1)
+        self.assertNotIn("idbingadores", resumen)
+        self.assertNotIn("candidatos", resumen)
+
+    def test_carton_prepara_matriz_cinco_por_cinco_y_libre(self):
+        carton = carton_publico_prueba()
+
+        datos = preparar_datos_carton_jugador(carton)
+
+        self.assertEqual(len(datos["matriz_carton"]), 5)
+        self.assertTrue(all(len(fila) == 5 for fila in datos["matriz_carton"]))
+        self.assertTrue(datos["matriz_carton"][2][2]["libre"])
+        self.assertEqual(datos["matriz_carton"][2][2]["valor"], CASILLA_LIBRE)
+
+    def test_carton_diferencia_numeros_marcados_y_pendientes(self):
+        partida = partida_publica_prueba(bolas=[1, 16])
+        carton = carton_publico_prueba(partida=partida)
+
+        datos = preparar_datos_carton_jugador(carton)
+
+        self.assertTrue(datos["matriz_carton"][0][0]["marcada"])
+        self.assertTrue(datos["matriz_carton"][0][1]["marcada"])
+        self.assertFalse(datos["matriz_carton"][0][2]["marcada"])
+
+    def test_contador_ignora_libre(self):
+        matriz = matriz_carton_prueba()
+
+        self.assertEqual(contar_numeros_marcados_carton(matriz, []), 0)
+        self.assertEqual(contar_numeros_marcados_carton(matriz, [1, 16]), 2)
+        self.assertEqual(
+            contar_numeros_marcados_carton(matriz, obtener_numeros_carton(matriz)),
+            24,
+        )
+
+    def test_matriz_invalida_no_se_considera_dato_publico_valido(self):
+        carton = carton_publico_prueba()
+        carton.matriznumeros = "[[1,2],[3,4]]"
+
+        with self.assertRaises(MatrizCartonInvalidaError):
+            preparar_datos_carton_jugador(carton)
+
+    def test_carton_sin_partida_genera_error_controlado(self):
+        carton = carton_publico_prueba()
+        carton.idpartida = None
+
+        with self.assertRaises(CartonPublicoError):
+            preparar_datos_carton_jugador(carton)
+
+
+class VistasPublicasBingoTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _request(self, path, usuario=None, method="get", data=None):
+        request = getattr(self.factory, method)(path, data=data or {})
+        request.user = usuario or AnonymousUser()
+        return request
+
+    def test_sala_publica_abre_sin_iniciar_sesion(self):
+        request = self._request("/juego/")
+        partida = partida_publica_prueba()
+        consulta = Mock()
+        consulta.order_by.return_value = [partida]
+
+        with (
+            patch(
+                "apps.bingos.views.Partidabingo.objects.select_related",
+                return_value=consulta,
+            ),
+            patch(
+                "apps.bingos.views.render",
+                return_value=HttpResponse("Sala pública"),
+            ) as render_mock,
+        ):
+            response = sala_juego_publica(request)
+
+        self.assertEqual(response.status_code, 200)
+        contexto = render_mock.call_args.args[2]
+        self.assertEqual(contexto["partidas_publicas"][0]["partida"], partida)
+
+    def test_tablero_publico_abre_sin_iniciar_sesion(self):
+        request = self._request("/juego/partidas/20/tablero/")
+        partida = partida_publica_prueba()
+
+        with (
+            patch("apps.bingos.views.get_object_or_404", return_value=partida),
+            patch(
+                "apps.bingos.views.render",
+                return_value=HttpResponse("Tablero público"),
+            ),
+        ):
+            response = tablero_publico(request, 20)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_usuario_no_administrativo_puede_abrir_rutas_publicas(self):
+        usuario = User(username="publico", is_staff=False, is_superuser=False)
+        request = self._request(
+            "/juego/partidas/20/tablero/",
+            usuario=usuario,
+        )
+        partida = partida_publica_prueba()
+
+        with (
+            patch("apps.bingos.views.get_object_or_404", return_value=partida),
+            patch(
+                "apps.bingos.views.render",
+                return_value=HttpResponse("Tablero público"),
+            ),
+        ):
+            response = tablero_publico(request, 20)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_post_al_tablero_no_puede_modificar_partida(self):
+        request = self._request(
+            "/juego/partidas/20/tablero/",
+            method="post",
+        )
+
+        with patch("apps.bingos.views.get_object_or_404") as obtener_mock:
+            response = tablero_publico(request, 20)
+
+        self.assertEqual(response.status_code, 405)
+        obtener_mock.assert_not_called()
+
+    def test_get_publico_no_cambia_datos_de_partida(self):
+        request = self._request("/juego/partidas/20/tablero/")
+        partida = partida_publica_prueba(bolas=[1, 22], ultima=22)
+        partida.idbingadores = "evidencia-privada"
+        partida.save = Mock()
+        antes = (
+            partida.estadopartida,
+            partida.bolascantadas,
+            partida.ultimabola,
+            partida.idjugadorganador_id,
+            partida.idbingadores,
+        )
+
+        with (
+            patch("apps.bingos.views.get_object_or_404", return_value=partida),
+            patch(
+                "apps.bingos.views.render",
+                return_value=HttpResponse("Tablero público"),
+            ),
+        ):
+            tablero_publico(request, 20)
+
+        self.assertEqual(
+            (
+                partida.estadopartida,
+                partida.bolascantadas,
+                partida.ultimabola,
+                partida.idjugadorganador_id,
+                partida.idbingadores,
+            ),
+            antes,
+        )
+        partida.save.assert_not_called()
+
+    def test_codigo_valido_muestra_el_carton_correcto(self):
+        request = self._request("/juego/cartones/PUBLICO-001/")
+        carton = carton_publico_prueba()
+        consulta = Mock()
+        consulta.filter.return_value.first.return_value = carton
+
+        with (
+            patch(
+                "apps.bingos.views.Carton.objects.select_related",
+                return_value=consulta,
+            ),
+            patch(
+                "apps.bingos.views.render",
+                return_value=HttpResponse("Mi cartón"),
+            ) as render_mock,
+        ):
+            response = carton_publico(request, carton.codigocarton)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(render_mock.call_args.args[2]["carton"], carton)
+        consulta.filter.assert_called_once_with(codigocarton="PUBLICO-001")
+
+    def test_formulario_valido_redirige_al_carton_sin_modificarlo(self):
+        request = self._request(
+            "/juego/cartones/acceder/",
+            method="post",
+            data={"codigocarton": "PUBLICO-001"},
+        )
+
+        with patch("apps.bingos.views.Carton.objects.filter") as filtrar_mock:
+            filtrar_mock.return_value.exists.return_value = True
+            response = acceder_carton_publico(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/juego/cartones/PUBLICO-001/", response["Location"])
+        filtrar_mock.return_value.update.assert_not_called()
+
+    def test_codigo_invalido_muestra_mensaje_sin_detalles_internos(self):
+        request = self._request(
+            "/juego/cartones/acceder/",
+            method="post",
+            data={"codigocarton": "NO-EXISTE"},
+        )
+
+        with (
+            patch("apps.bingos.views.Carton.objects.filter") as filtrar_mock,
+            patch(
+                "apps.bingos.views.render",
+                return_value=HttpResponse("Código no encontrado"),
+            ) as render_mock,
+        ):
+            filtrar_mock.return_value.exists.return_value = False
+            response = acceder_carton_publico(request)
+
+        self.assertEqual(response.status_code, 200)
+        errores = str(render_mock.call_args.args[2]["form"].errors)
+        self.assertIn("No encontramos un cartón", errores)
+        self.assertNotIn("SELECT", errores)
+        self.assertNotIn("carton.idcarton", errores)
+
+    def test_url_de_codigo_invalido_devuelve_404_controlado(self):
+        request = self._request("/juego/cartones/NO-EXISTE/")
+        consulta = Mock()
+        consulta.filter.return_value.first.return_value = None
+
+        def render_controlado(_request, _template, _context, status=200):
+            return HttpResponse("No encontramos un cartón", status=status)
+
+        with (
+            patch(
+                "apps.bingos.views.Carton.objects.select_related",
+                return_value=consulta,
+            ),
+            patch("apps.bingos.views.render", side_effect=render_controlado),
+        ):
+            response = carton_publico(request, "NO-EXISTE")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertContains(response, "No encontramos un cartón", status_code=404)
+
+    def test_matriz_invalida_no_rompe_vista_y_deja_evidencia(self):
+        request = self._request("/juego/cartones/PUBLICO-001/")
+        carton = carton_publico_prueba()
+        carton.matriznumeros = "[[1,2],[3,4]]"
+        consulta = Mock()
+        consulta.filter.return_value.first.return_value = carton
+
+        with (
+            patch(
+                "apps.bingos.views.Carton.objects.select_related",
+                return_value=consulta,
+            ),
+            patch(
+                "apps.bingos.views.render",
+                return_value=HttpResponse("Error controlado"),
+            ) as render_mock,
+            self.assertLogs("apps.bingos.views", level="WARNING"),
+        ):
+            response = carton_publico(request, carton.codigocarton)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("no está disponible", render_mock.call_args.args[2]["error_carton"])
+
+    def test_rutas_administrativas_conservan_restriccion(self):
+        request = self._request(
+            "/partidas/",
+            usuario=User(username="publico", is_staff=False),
+        )
+
+        with self.assertRaises(PermissionDenied):
+            partidas_lista(request)
+
+
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class PlantillasPublicasBingoTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _request(self, path):
+        request = self.factory.get(path)
+        request.user = AnonymousUser()
+        return request
+
+    def test_sala_no_expone_cartones_jugadores_ni_candidatos(self):
+        partida = partida_publica_prueba()
+        partida.idbingadores = (
+            '[{"jugador":"jugador_privado","codigocarton":'
+            '"CARTON-PRIVADO","tiro_desempate":75}]'
+        )
+
+        html = render_to_string(
+            "bingos/sala_juego_publica.html",
+            {
+                "partidas_publicas": [
+                    preparar_resumen_partida_publica(partida)
+                ]
+            },
+            request=self._request("/juego/"),
+        )
+
+        self.assertNotIn("jugador_privado", html)
+        self.assertNotIn("CARTON-PRIVADO", html)
+        self.assertNotIn("tiro_desempate", html)
+
+    def test_tablero_renderiza_ultima_bola_conteo_y_resaltados(self):
+        partida = partida_publica_prueba(bolas=[1, 27, 73], ultima=73)
+        contexto = {
+            "partida": partida,
+            **preparar_datos_tablero_publico(partida),
+        }
+
+        html = render_to_string(
+            "bingos/tablero_publico.html",
+            contexto,
+            request=self._request("/juego/partidas/20/tablero/"),
+        )
+
+        self.assertIn("O-73", html)
+        self.assertIn("3", html)
+        self.assertIn("<dt>Extraídas</dt>", html)
+        self.assertIn("<dt>Restantes</dt>", html)
+        self.assertEqual(html.count('class="public-bingo-column col"'), 5)
+        self.assertIn("public-bingo-ball is-drawn", html)
+        self.assertIn("public-ball-check", html)
+        self.assertIn("Extraída", html)
+        self.assertEqual(html.count("public-history-ball"), 3)
+        self.assertIn("B-1", html)
+        self.assertIn("I-27", html)
+        self.assertIn("O-73", html)
+        self.assertNotIn("Sacar siguiente bola", html)
+        self.assertNotIn("Validar cartón", html)
+
+    def test_tablero_sin_bolas_muestra_mensaje_controlado(self):
+        partida = partida_publica_prueba(bolas=[], ultima=0)
+
+        html = render_to_string(
+            "bingos/tablero_publico.html",
+            {"partida": partida, **preparar_datos_tablero_publico(partida)},
+            request=self._request("/juego/partidas/20/tablero/"),
+        )
+
+        self.assertIn("Aún no se han extraído bolas.", html)
+
+    def test_tablero_pausado_no_muestra_acciones_administrativas(self):
+        partida = partida_publica_prueba(estado=ESTADO_PARTIDA_PAUSADA)
+
+        html = render_to_string(
+            "bingos/tablero_publico.html",
+            {"partida": partida, **preparar_datos_tablero_publico(partida)},
+            request=self._request("/juego/partidas/20/tablero/"),
+        )
+
+        self.assertIn("La partida está pausada temporalmente.", html)
+        self.assertNotIn("Reanudar partida", html)
+        self.assertNotIn("Pausar partida", html)
+
+    def test_finalizada_muestra_ganador_solo_si_existe(self):
+        ganador = Jugador(idjugador=41, aliasjugador="campeon_publico")
+        con_ganador = partida_publica_prueba(
+            estado=ESTADO_PARTIDA_FINALIZADA,
+            ganador=ganador,
+        )
+        sin_ganador = partida_publica_prueba(
+            estado=ESTADO_PARTIDA_FINALIZADA,
+            ganador=None,
+        )
+
+        html_con = render_to_string(
+            "bingos/tablero_publico.html",
+            {"partida": con_ganador, **preparar_datos_tablero_publico(con_ganador)},
+            request=self._request("/juego/partidas/20/tablero/"),
+        )
+        html_sin = render_to_string(
+            "bingos/tablero_publico.html",
+            {"partida": sin_ganador, **preparar_datos_tablero_publico(sin_ganador)},
+            request=self._request("/juego/partidas/20/tablero/"),
+        )
+
+        self.assertIn("Ganador: campeon_publico", html_con)
+        self.assertNotIn("campeon_publico", html_sin)
+
+    def test_carton_renderiza_matriz_libre_marcados_pendientes_y_contador(self):
+        partida = partida_publica_prueba(bolas=[1, 16])
+        carton = carton_publico_prueba(partida=partida)
+        datos = preparar_datos_carton_jugador(carton)
+
+        html = render_to_string(
+            "bingos/carton_publico.html",
+            {
+                "carton": carton,
+                "partida": partida,
+                "error_carton": None,
+                **datos,
+            },
+            request=self._request("/juego/cartones/PUBLICO-001/"),
+        )
+
+        self.assertEqual(html.count("<tr>"), 6)
+        self.assertIn("<dt>Bingo</dt>", html)
+        self.assertIn("<dt>Ronda</dt>", html)
+        self.assertIn("<dt>Estado</dt>", html)
+        self.assertIn("<dt>Progreso</dt>", html)
+        self.assertIn("LIBRE", html)
+        self.assertIn("public-card-cell--marked", html)
+        self.assertIn("public-card-cell--pending", html)
+        self.assertIn("public-card-cell--free", html)
+        self.assertIn("✓ Marcado", html)
+        self.assertIn("○ Pendiente", html)
+        self.assertIn("★ Automática", html)
+        self.assertIn("2 de 24 números marcados.", html)
+        self.assertIn("La casilla LIBRE se marca automáticamente.", html)
+
+    def test_carton_no_expone_precio_otros_cartones_ni_otros_jugadores(self):
+        partida = partida_publica_prueba(bolas=[1])
+        carton = carton_publico_prueba(partida=partida)
+
+        html = render_to_string(
+            "bingos/carton_publico.html",
+            {
+                "carton": carton,
+                "partida": partida,
+                "error_carton": None,
+                **preparar_datos_carton_jugador(carton),
+            },
+            request=self._request("/juego/cartones/PUBLICO-001/"),
+        )
+
+        self.assertNotIn("9876.54", html)
+        self.assertNotIn("OTRO-CARTON-PRIVADO", html)
+        self.assertNotIn("otro_jugador_privado", html)
+        self.assertNotIn("Editar", html)
+        self.assertNotIn("Validar cartón", html)
 
 
 class EstadoPartidaTests(SimpleTestCase):

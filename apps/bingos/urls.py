@@ -6,6 +6,22 @@ from . import views
 app_name = "bingos"
 
 urlpatterns = [
+    path("juego/", views.sala_juego_publica, name="sala_juego_publica"),
+    path(
+        "juego/partidas/<int:idpartidabingo>/tablero/",
+        views.tablero_publico,
+        name="tablero_publico",
+    ),
+    path(
+        "juego/cartones/acceder/",
+        views.acceder_carton_publico,
+        name="acceder_carton_publico",
+    ),
+    path(
+        "juego/cartones/<str:codigocarton>/",
+        views.carton_publico,
+        name="carton_publico",
+    ),
     path("bingos/", views.bingos_lista, name="lista"),
     path("bingos/nuevo/", views.bingo_nuevo, name="nuevo"),
     path("bingos/<int:idbingo>/", views.bingo_detalle, name="detalle"),

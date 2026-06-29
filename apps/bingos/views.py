@@ -7,13 +7,14 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
 from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate
 
 from .forms import (
+    AccesoCartonPublicoForm,
     BingoForm,
     CartonForm,
     CartonPartidaForm,
@@ -24,11 +25,13 @@ from .models import Bingo, Carton, Partidabingo, Sesionjuego
 from .services import (
     ACCIONES_CONSOLA,
     BolaBingoError,
+    CartonPublicoError,
     CartonAsignacionError,
     DesempateError,
     ESTADO_PARTIDA_PROGRAMADA,
     ESTADOS_PARTIDA_VALORES,
     EstadoPartidaError,
+    MatrizCartonInvalidaError,
     ValidacionCartonError,
     acciones_disponibles_consola,
     confirmar_y_finalizar_desempate,
@@ -36,12 +39,16 @@ from .services import (
     deserializar_matriz_carton_bingo,
     extraer_siguiente_bola,
     formatear_bola_bingo,
+    mensaje_estado_carton_publico,
     normalizar_estado_partida,
     parse_bolas_cantadas,
     parsear_candidatos_desempate,
     preparar_cartones_para_validacion,
+    preparar_datos_carton_jugador,
     preparar_datos_desempate,
     preparar_datos_bolas_partida,
+    preparar_datos_tablero_publico,
+    preparar_resumen_partida_publica,
     puede_asignar_cartones,
     estado_permite_validar_carton,
     preparar_accion_consola,
@@ -52,6 +59,135 @@ from .services import (
 
 
 logger = logging.getLogger(__name__)
+
+
+@require_GET
+def sala_juego_publica(request):
+    partidas = list(
+        Partidabingo.objects.select_related("idbingo")
+        .order_by("-horainicio", "idpartidabingo")
+    )
+    return render(
+        request,
+        "bingos/sala_juego_publica.html",
+        {
+            "partidas_publicas": [
+                preparar_resumen_partida_publica(partida)
+                for partida in partidas
+            ]
+        },
+    )
+
+
+@require_GET
+def tablero_publico(request, idpartidabingo):
+    partida = get_object_or_404(
+        Partidabingo.objects.select_related("idbingo", "idjugadorganador"),
+        idpartidabingo=idpartidabingo,
+    )
+    return render(
+        request,
+        "bingos/tablero_publico.html",
+        {
+            "partida": partida,
+            **preparar_datos_tablero_publico(partida),
+        },
+    )
+
+
+@require_http_methods(["GET", "POST"])
+def acceder_carton_publico(request):
+    form = AccesoCartonPublicoForm(
+        request.POST if request.method == "POST" else None
+    )
+    if request.method == "POST" and form.is_valid():
+        codigo = form.cleaned_data["codigocarton"]
+        if Carton.objects.filter(codigocarton=codigo).exists():
+            return redirect(
+                "bingos:carton_publico",
+                codigocarton=codigo,
+            )
+        form.add_error(
+            "codigocarton",
+            "No encontramos un cartón con ese código. Verifique e intente nuevamente.",
+        )
+    return render(
+        request,
+        "bingos/carton_acceso_publico.html",
+        {"form": form},
+    )
+
+
+@require_GET
+def carton_publico(request, codigocarton):
+    carton = (
+        Carton.objects.select_related(
+            "idjugador",
+            "idpartida",
+            "idpartida__idbingo",
+        )
+        .filter(codigocarton=codigocarton)
+        .first()
+    )
+    if carton is None:
+        form = AccesoCartonPublicoForm(
+            {"codigocarton": codigocarton}
+        )
+        form.is_valid()
+        form.add_error(
+            "codigocarton",
+            "No encontramos un cartón con ese código. Verifique e intente nuevamente.",
+        )
+        return render(
+            request,
+            "bingos/carton_acceso_publico.html",
+            {"form": form},
+            status=404,
+        )
+
+    error_carton = None
+    partida_carton = carton.idpartida
+    datos_carton = {
+        "matriz_carton": None,
+        "numeros_marcados": 0,
+        "total_numeros_carton": 24,
+        "numeros_faltantes": [],
+        "mensaje_estado_carton": (
+            mensaje_estado_carton_publico(partida_carton.estadopartida)
+            if partida_carton is not None
+            else None
+        ),
+    }
+    try:
+        datos_carton = preparar_datos_carton_jugador(carton)
+    except MatrizCartonInvalidaError as exc:
+        logger.warning(
+            "Matriz inválida en consulta pública de cartón %s: %s",
+            carton.pk,
+            exc,
+        )
+        error_carton = (
+            "La matriz de este cartón no está disponible. "
+            "Solicite ayuda al operador."
+        )
+    except CartonPublicoError as exc:
+        logger.warning(
+            "Cartón %s no disponible para consulta pública: %s",
+            carton.pk,
+            exc,
+        )
+        error_carton = str(exc)
+
+    return render(
+        request,
+        "bingos/carton_publico.html",
+        {
+            "carton": carton,
+            "partida": partida_carton,
+            "error_carton": error_carton,
+            **datos_carton,
+        },
+    )
 
 
 @admin_required

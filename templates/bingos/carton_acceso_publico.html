@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | Consultar cartón{% endblock %}
+
+{% block content %}
+<section class="page-header public-page-header">
+    <div>
+        <p class="page-kicker">Acceso por código</p>
+        <h1>Consultar mi cartón</h1>
+        <p>Ingresa el código entregado al comprar o asignar tu cartón.</p>
+    </div>
+    <a class="btn btn-outline-light" href="{% url 'bingos:sala_juego_publica' %}">Volver a la sala</a>
+</section>
+
+<section class="content-panel public-access-panel">
+    <form method="post" novalidate>
+        {% csrf_token %}
+        {% include "includes/field.html" with field=form.codigocarton %}
+        <button class="btn btn-primary btn-lg w-100 mt-3" type="submit">Ver mi cartón</button>
+    </form>
+    <p class="small text-muted mt-3 mb-0">El código permite consultar únicamente ese cartón. Esta pantalla no permite editarlo ni reclamar Bingo.</p>
+</section>
+{% endblock %}

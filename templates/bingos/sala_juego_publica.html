@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Sala de juego{% endblock %}
+
+{% block content %}
+<section class="page-header public-page-header">
+    <div>
+        <p class="page-kicker">Sala pública</p>
+        <h1>Sala de juego</h1>
+        <p>Consulta el estado y el tablero de las partidas de CoopBingo. Actualiza la página para ver los cambios más recientes.</p>
+    </div>
+    <a class="btn btn-light" href="{% url 'bingos:acceder_carton_publico' %}">Consultar mi cartón</a>
+</section>
+
+{% if partidas_publicas %}
+<div class="public-game-grid">
+    {% for item in partidas_publicas %}
+    <article class="public-game-card">
+        <div class="d-flex justify-content-between align-items-start gap-3">
+            <div>
+                <span class="public-eyebrow">{{ item.partida.idbingo.titulobingo }}</span>
+                <h2>{{ item.partida.nombreronda }}</h2>
+            </div>
+            <span class="badge rounded-pill {{ item.partida.estadopartida|estado_class }}">{{ item.partida.estadopartida|estado_partida_display }}</span>
+        </div>
+        <dl class="public-game-details">
+            <div><dt>Premio efectivo</dt><dd>${{ item.partida.valorefectivo|floatformat:2 }}</dd></div>
+            {% if item.partida.premiomaterial %}<div><dt>Premio material</dt><dd>{{ item.partida.premiomaterial }}</dd></div>{% endif %}
+            <div><dt>Bolas extraídas</dt><dd>{{ item.total_bolas_extraidas }} de 75</dd></div>
+            <div><dt>Última bola</dt><dd>{{ item.ultima_bola_codigo|default:"Aún no disponible" }}</dd></div>
+        </dl>
+        <a class="btn btn-primary w-100" href="{% url 'bingos:tablero_publico' item.partida.idpartidabingo %}">Ver tablero</a>
+    </article>
+    {% endfor %}
+</div>
+{% else %}
+<section class="content-panel empty-state">
+    <strong>No hay partidas disponibles</strong>
+    <span>Vuelve a consultar más tarde.</span>
+</section>
+{% endif %}
+{% endblock %}

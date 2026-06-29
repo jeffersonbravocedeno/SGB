@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Tablero de Bingo{% endblock %}
+
+{% block content %}
+<section class="page-header public-page-header">
+    <div>
+        <p class="page-kicker">TABLERO DE BINGO</p>
+        <h1>{{ partida.nombreronda }}</h1>
+        <p>{{ partida.idbingo.titulobingo }} · Estado: {{ partida.estadopartida|estado_partida_display }}</p>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <a class="btn btn-outline-light" href="{% url 'bingos:sala_juego_publica' %}">Volver a la sala</a>
+        <a class="btn btn-light" href="{% url 'bingos:tablero_publico' partida.idpartidabingo %}">Actualizar tablero</a>
+    </div>
+</section>
+
+<div class="alert public-state-message" role="status">{{ mensaje_estado_publico }}</div>
+
+{% if partida.estadopartida == "Finalizada" %}
+<section class="content-panel public-result-card mb-3">
+    <p class="page-kicker text-primary mb-1">Partida finalizada</p>
+    {% if ganador_publico %}<h2>Ganador: {{ ganador_publico }}</h2>{% else %}<h2>Ganador no confirmado</h2>{% endif %}
+    {% if resuelta_por_desempate %}<p class="mb-0">La partida se resolvió mediante desempate.</p>{% endif %}
+</section>
+{% endif %}
+
+<section class="content-panel mb-3">
+    <dl class="public-board-summary">
+        <div><dt>Bingo</dt><dd>{{ partida.idbingo.titulobingo }}</dd></div>
+        <div><dt>Ronda</dt><dd>{{ partida.nombreronda }}</dd></div>
+        <div><dt>Estado</dt><dd>{{ partida.estadopartida|estado_partida_display }}</dd></div>
+        <div><dt>Premio</dt><dd>${{ partida.valorefectivo|floatformat:2 }}{% if partida.premiomaterial %} · {{ partida.premiomaterial }}{% endif %}</dd></div>
+        <div><dt>Extraídas</dt><dd>{{ total_bolas_extraidas }} de 75 bolas</dd></div>
+        <div><dt>Restantes</dt><dd>{{ total_bolas_faltantes }} de 75 bolas</dd></div>
+    </dl>
+</section>
+
+<section class="content-panel mb-3">
+    <div class="public-last-ball">
+        <span>Última bola</span>
+        {% if ultima_bola_codigo %}
+        <strong>{{ ultima_bola_codigo }}</strong>
+        {% else %}
+        <strong>—</strong>
+        <p>Aún no se han extraído bolas.</p>
+        {% endif %}
+    </div>
+</section>
+
+<section class="content-panel mb-3">
+    <div class="section-heading">
+        <div><h2>Historial de bolas</h2><p>Orden registrado de extracción.</p></div>
+    </div>
+    {% if historial_bolas %}
+    <div class="public-ball-history d-flex flex-wrap gap-2" role="list" aria-label="Bolas extraídas">
+        {% for bola in historial_bolas %}
+        <span class="public-history-ball badge rounded-pill" role="listitem">{{ bola.codigo }}</span>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state"><strong>Sin bolas extraídas</strong><span>Aún no se han extraído bolas.</span></div>
+    {% endif %}
+</section>
+
+<section class="content-panel">
+    <div class="section-heading">
+        <div><h2>Tablero 1–75</h2><p>Las balotas resaltadas ya fueron extraídas.</p></div>
+    </div>
+    <div class="public-bingo-board-wrap">
+        <div class="public-bingo-board row row-cols-5 flex-nowrap g-2" role="grid" aria-label="Tablero de 75 bolas">
+            {% for columna in tablero_bingo %}
+            <section class="public-bingo-column col" role="rowgroup" aria-label="Columna {{ columna.letra }}">
+                <h3 class="public-bingo-column-title">{{ columna.letra }}</h3>
+                {% for bola in columna.bolas %}
+                <div class="public-bingo-ball{% if bola.extraida %} is-drawn{% endif %}" role="gridcell" title="{{ bola.codigo }}{% if bola.extraida %} extraída{% endif %}">
+                    <span>{{ bola.numero }}</span>
+                    {% if bola.extraida %}<span class="visually-hidden">Extraída</span><span class="public-ball-check" aria-hidden="true">✓</span>{% endif %}
+                </div>
+                {% endfor %}
+            </section>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+{% endblock %}

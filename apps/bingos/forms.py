@@ -246,3 +246,22 @@ class CartonPartidaForm(CartonForm):
         super().__init__(*args, **kwargs)
         self.fields["idjugador"].required = True
         self.fields["idjugador"].empty_label = "Seleccione un jugador"
+
+
+class AccesoCartonPublicoForm(forms.Form):
+    codigocarton = forms.CharField(
+        label="Código del cartón",
+        max_length=30,
+        widget=forms.TextInput(
+            attrs={
+                "autocomplete": "off",
+                "placeholder": "Ej. P20-C-ABC123",
+            }
+        ),
+    )
+
+    def clean_codigocarton(self):
+        codigo = self.cleaned_data["codigocarton"].strip()
+        if not codigo:
+            raise ValidationError("Ingrese el código de su cartón.")
+        return codigo
