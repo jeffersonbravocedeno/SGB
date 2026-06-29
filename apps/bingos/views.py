@@ -7,7 +7,7 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 
 from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
@@ -25,11 +25,13 @@ from .services import (
     ACCIONES_CONSOLA,
     BolaBingoError,
     CartonAsignacionError,
+    DesempateError,
     ESTADO_PARTIDA_PROGRAMADA,
     ESTADOS_PARTIDA_VALORES,
     EstadoPartidaError,
     ValidacionCartonError,
     acciones_disponibles_consola,
+    confirmar_y_finalizar_desempate,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
     extraer_siguiente_bola,
@@ -38,10 +40,12 @@ from .services import (
     parse_bolas_cantadas,
     parsear_candidatos_desempate,
     preparar_cartones_para_validacion,
+    preparar_datos_desempate,
     preparar_datos_bolas_partida,
     puede_asignar_cartones,
     estado_permite_validar_carton,
     preparar_accion_consola,
+    sortear_balota_desempate,
     validar_carton_ganador,
     validar_asignacion_cartones,
 )
@@ -396,6 +400,109 @@ def consola_operador(request, idpartidabingo):
             ),
             **datos_bolas,
         },
+    )
+
+
+@admin_required
+@require_GET
+def desempate_operador(request, idpartidabingo):
+    partida = get_object_or_404(
+        Partidabingo.objects.select_related("idbingo", "idjugadorganador"),
+        idpartidabingo=idpartidabingo,
+    )
+    error_desempate = None
+    try:
+        datos_desempate = preparar_datos_desempate(partida)
+    except DesempateError as exc:
+        logger.warning(
+            "No fue posible preparar el desempate de la partida %s: %s",
+            partida.idpartidabingo,
+            exc,
+        )
+        error_desempate = str(exc)
+        datos_desempate = {
+            "candidatos_desempate": [],
+            "total_candidatos": 0,
+            "total_pendientes": 0,
+            "desempate_completo": False,
+            "resultado_desempate": None,
+            "puede_operar_desempate": False,
+            "puede_confirmar_desempate": False,
+        }
+    return render(
+        request,
+        "bingos/desempate_operador.html",
+        {
+            "partida": partida,
+            "error_desempate": error_desempate,
+            **datos_desempate,
+        },
+    )
+
+
+@admin_required
+@require_POST
+def sortear_desempate(request, idpartidabingo, idjugador):
+    partida = get_object_or_404(
+        Partidabingo,
+        idpartidabingo=idpartidabingo,
+    )
+    try:
+        resultado = sortear_balota_desempate(partida, idjugador)
+    except DesempateError as exc:
+        messages.error(request, str(exc))
+    except DatabaseError:
+        logger.exception(
+            "No fue posible sortear la balota para jugador %s en partida %s",
+            idjugador,
+            partida.idpartidabingo,
+        )
+        messages.error(
+            request,
+            "No fue posible registrar el tiro. No se guardaron cambios parciales.",
+        )
+    else:
+        nombre = resultado["candidato"]["jugador"] or f"Jugador #{idjugador}"
+        messages.success(
+            request,
+            f"{nombre} obtuvo la balota {resultado['codigo']}.",
+        )
+    return redirect(
+        "bingos:desempate_operador",
+        idpartidabingo=partida.idpartidabingo,
+    )
+
+
+@admin_required
+@require_POST
+def confirmar_desempate(request, idpartidabingo):
+    partida = get_object_or_404(
+        Partidabingo,
+        idpartidabingo=idpartidabingo,
+    )
+    try:
+        confirmacion = confirmar_y_finalizar_desempate(partida)
+    except DesempateError as exc:
+        messages.error(request, str(exc))
+    except DatabaseError:
+        logger.exception(
+            "No fue posible confirmar el desempate de la partida %s",
+            partida.idpartidabingo,
+        )
+        messages.error(
+            request,
+            "No fue posible finalizar el desempate. No se guardaron cambios parciales.",
+        )
+    else:
+        resultado = confirmacion["resultado"]
+        nombre = resultado["jugador"] or f"Jugador #{resultado['idjugador']}"
+        messages.success(
+            request,
+            f"Ganador confirmado: {nombre} con {resultado['codigo']}.",
+        )
+    return redirect(
+        "bingos:desempate_operador",
+        idpartidabingo=partida.idpartidabingo,
     )
 
 

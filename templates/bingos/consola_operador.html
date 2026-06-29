@@ -12,6 +12,9 @@
     </div>
     <div class="d-flex flex-wrap gap-2">
         <a class="btn btn-outline-light" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Detalle</a>
+        {% if partida.estadopartida == "Desempate" %}
+        <a class="btn btn-warning" href="{% url 'bingos:desempate_operador' partida.idpartidabingo %}">Ir al desempate</a>
+        {% endif %}
         {% if puede_asignar_cartones %}
         <a class="btn btn-primary" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">Generar cartón</a>
         {% else %}
@@ -19,6 +22,13 @@
         {% endif %}
     </div>
 </section>
+
+{% if partida.estadopartida == "Desempate" %}
+<div class="alert alert-warning d-flex flex-wrap justify-content-between align-items-center gap-3" role="alert">
+    <span>El modo Desempate está activo. La extracción normal, la validación de cartones, la generación y la finalización genérica están bloqueadas.</span>
+    <a class="btn btn-warning" href="{% url 'bingos:desempate_operador' partida.idpartidabingo %}">Ir al desempate</a>
+</div>
+{% endif %}
 
 <section class="content-panel mb-3">
     <div class="row g-4">
@@ -41,8 +51,16 @@
                 <ul class="winner-candidates">
                     {% for candidato in candidatos_desempate %}
                     <li>
-                        {% if candidato.codigocarton %}{{ candidato.codigocarton }}{% else %}Cartón sin identificar{% endif %}
-                        · {% if candidato.jugador %}{{ candidato.jugador }}{% else %}Jugador #{{ candidato.idjugador|default:"-" }}{% endif %}
+                        {% if candidato.jugador %}{{ candidato.jugador }}{% else %}Jugador #{{ candidato.idjugador|default:"-" }}{% endif %}
+                        ·
+                        {% if candidato.cartones %}
+                            {% for carton in candidato.cartones %}{{ carton.codigocarton|default:"Cartón sin identificar" }}{% if not forloop.last %}, {% endif %}{% endfor %}
+                        {% elif candidato.codigocarton %}
+                            {{ candidato.codigocarton }}
+                        {% else %}
+                            Cartón sin identificar
+                        {% endif %}
+                        {% if candidato.tiro_desempate %} · tiro {{ candidato.tiro_desempate }}{% endif %}
                     </li>
                     {% endfor %}
                 </ul>

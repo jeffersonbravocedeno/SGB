@@ -29,12 +29,16 @@ from .services import (
     BolilleroAgotadoError,
     CartonNoCompletoError,
     CartonAsignacionError,
+    DatosDesempateInvalidosError,
+    DesempateError,
+    DesempateIncompletoError,
     EstadoPartidaError,
     MatrizCartonInvalidaError,
     ValidacionCartonError,
     acciones_disponibles_consola,
     aplicar_accion_consola,
     carton_tiene_bingo_completo,
+    confirmar_y_finalizar_desempate,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
     estado_partida_mostrar,
@@ -45,22 +49,32 @@ from .services import (
     generar_matriz_carton_bingo,
     letra_bingo,
     normalizar_estado_partida,
+    normalizar_candidatos_desempate,
+    obtener_balotas_disponibles_desempate,
     obtener_numeros_carton,
     obtener_numeros_faltantes_carton,
+    obtener_resultado_desempate,
+    obtener_tiros_desempate,
     obtener_bolas_disponibles,
     parsear_bolas_cantadas,
     parsear_candidatos_desempate,
     preparar_cartones_para_validacion,
+    preparar_datos_desempate,
     puede_asignar_cartones,
     serializar_bolas_cantadas,
+    serializar_candidatos_desempate,
     serializar_matriz_carton_bingo,
+    sortear_balota_desempate,
     validar_carton_ganador,
 )
 from .views import (
     _procesar_accion_consola,
+    confirmar_desempate,
+    desempate_operador,
     partida_carton_nuevo,
     partidas_lista,
     sacar_bola,
+    sortear_desempate,
     validar_carton,
 )
 
@@ -91,6 +105,27 @@ def matriz_carton_prueba():
         [3, 18, CASILLA_LIBRE, 48, 63],
         [4, 19, 33, 49, 64],
         [5, 20, 34, 50, 65],
+    ]
+
+
+def candidatos_desempate_prueba(tiro_uno=None, tiro_dos=None):
+    return [
+        {
+            "idjugador": 41,
+            "jugador": "juan123",
+            "cartones": [
+                {"idcarton": 31, "codigocarton": "P20-C-31"},
+            ],
+            "tiro_desempate": tiro_uno,
+        },
+        {
+            "idjugador": 42,
+            "jugador": "maria456",
+            "cartones": [
+                {"idcarton": 32, "codigocarton": "P20-C-32"},
+            ],
+            "tiro_desempate": tiro_dos,
+        },
     ]
 
 
@@ -1020,6 +1055,444 @@ class RutaValidacionCartonTests(SimpleTestCase):
         )
 
 
+class FormatoCandidatosDesempateTests(SimpleTestCase):
+    def test_interpreta_json_plano_generado_por_etapa_tres(self):
+        valor = (
+            '[{"idcarton":31,"codigocarton":"P20-C-31",'
+            '"idjugador":41,"jugador":"juan123"},'
+            '{"idcarton":32,"codigocarton":"P20-C-32",'
+            '"idjugador":42,"jugador":"maria456"}]'
+        )
+
+        candidatos = normalizar_candidatos_desempate(
+            parsear_candidatos_desempate(valor)
+        )
+
+        self.assertEqual([item["idjugador"] for item in candidatos], [41, 42])
+        self.assertEqual(candidatos[0]["cartones"][0]["idcarton"], 31)
+        self.assertIsNone(candidatos[0]["tiro_desempate"])
+
+    def test_interpreta_ids_antiguos_separados_por_comas(self):
+        candidatos = normalizar_candidatos_desempate(
+            parsear_candidatos_desempate("41,42")
+        )
+
+        self.assertEqual([item["idjugador"] for item in candidatos], [41, 42])
+        self.assertEqual(candidatos[0]["cartones"], [])
+
+    def test_unifica_jugador_repetido_y_conserva_todos_sus_cartones(self):
+        candidatos = normalizar_candidatos_desempate(
+            [
+                {
+                    "idjugador": 41,
+                    "jugador": "juan123",
+                    "idcarton": 31,
+                    "codigocarton": "P20-C-31",
+                },
+                {
+                    "idjugador": 41,
+                    "jugador": "juan123",
+                    "idcarton": 33,
+                    "codigocarton": "P20-C-33",
+                },
+            ]
+        )
+
+        self.assertEqual(len(candidatos), 1)
+        self.assertEqual(
+            [carton["idcarton"] for carton in candidatos[0]["cartones"]],
+            [31, 33],
+        )
+
+    def test_tiro_se_conserva_al_serializar_y_volver_a_leer(self):
+        candidatos = candidatos_desempate_prueba(tiro_uno=67)
+
+        persistidos = serializar_candidatos_desempate(candidatos)
+        recargados = normalizar_candidatos_desempate(
+            parsear_candidatos_desempate(persistidos)
+        )
+
+        self.assertEqual(recargados[0]["tiro_desempate"], 67)
+        self.assertEqual(recargados[0]["cartones"], candidatos[0]["cartones"])
+
+    def test_formato_persistido_es_json_compacto_y_canonico(self):
+        persistidos = serializar_candidatos_desempate(
+            [candidatos_desempate_prueba(tiro_uno=67)[0]]
+        )
+
+        self.assertEqual(
+            persistidos,
+            '[{"idjugador":41,"jugador":"juan123","cartones":'
+            '[{"idcarton":31,"codigocarton":"P20-C-31"}],'
+            '"tiro_desempate":67}]',
+        )
+
+    def test_recargar_datos_no_modifica_tiros_persistidos(self):
+        valor = serializar_candidatos_desempate(
+            candidatos_desempate_prueba(tiro_uno=67)
+        )
+        partida = Partidabingo(
+            idpartidabingo=20,
+            estadopartida=ESTADO_PARTIDA_DESEMPATE,
+            idbingadores=valor,
+        )
+
+        primera_carga = preparar_datos_desempate(partida)
+        segunda_carga = preparar_datos_desempate(partida)
+
+        self.assertEqual(
+            primera_carga["candidatos_desempate"],
+            segunda_carga["candidatos_desempate"],
+        )
+        self.assertEqual(partida.idbingadores, valor)
+
+    def test_letra_bingo_del_tiro_se_calcula_correctamente(self):
+        self.assertEqual(
+            [formatear_bola_bingo(numero) for numero in (1, 16, 31, 46, 61, 75)],
+            ["B-1", "I-16", "N-31", "G-46", "O-61", "O-75"],
+        )
+
+    def test_rechaza_tiros_repetidos_en_datos_persistidos(self):
+        with self.assertRaises(DatosDesempateInvalidosError):
+            normalizar_candidatos_desempate(
+                candidatos_desempate_prueba(tiro_uno=50, tiro_dos=50)
+            )
+
+
+class ServicioDesempateTests(SimpleTestCase):
+    def _partida(
+        self,
+        estado=ESTADO_PARTIDA_DESEMPATE,
+        candidatos=None,
+        pk=20,
+    ):
+        candidatos = candidatos or candidatos_desempate_prueba()
+        return Partidabingo(
+            idpartidabingo=pk,
+            estadopartida=estado,
+            idbingadores=serializar_candidatos_desempate(candidatos),
+            idjugadorganador=None,
+            bolamayordesempate=None,
+            haydesempate=True,
+            bolascantadas="[1,22,73]",
+            ultimabola=73,
+            horafin=None,
+        )
+
+    def _partida_bloqueada(self, partida, save_error=None):
+        bloqueada = Partidabingo(
+            idpartidabingo=partida.pk,
+            estadopartida=partida.estadopartida,
+            idbingadores=partida.idbingadores,
+            idjugadorganador_id=partida.idjugadorganador_id,
+            bolamayordesempate=partida.bolamayordesempate,
+            haydesempate=partida.haydesempate,
+            bolascantadas=partida.bolascantadas,
+            ultimabola=partida.ultimabola,
+            horafin=partida.horafin,
+        )
+        bloqueada.save = Mock(side_effect=save_error)
+        return bloqueada
+
+    def _sortear(self, partida, idjugador, balota=67, save_error=None):
+        self.bloqueada = self._partida_bloqueada(partida, save_error=save_error)
+        generador = Mock()
+        generador.choice.return_value = balota
+        with (
+            patch(
+                "apps.bingos.services.transaction.atomic",
+                return_value=nullcontext(),
+            ) as atomic_mock,
+            patch(
+                "apps.bingos.services.Partidabingo.objects.select_for_update"
+            ) as lock_mock,
+        ):
+            lock_mock.return_value.get.return_value = self.bloqueada
+            self.atomic_mock = atomic_mock
+            self.lock_mock = lock_mock
+            self.generador = generador
+            return sortear_balota_desempate(
+                partida,
+                idjugador,
+                generador_aleatorio=generador,
+            )
+
+    def _confirmar(self, partida, now=None, save_error=None):
+        self.bloqueada = self._partida_bloqueada(partida, save_error=save_error)
+        with (
+            patch(
+                "apps.bingos.services.transaction.atomic",
+                return_value=nullcontext(),
+            ) as atomic_mock,
+            patch(
+                "apps.bingos.services.Partidabingo.objects.select_for_update"
+            ) as lock_mock,
+        ):
+            lock_mock.return_value.get.return_value = self.bloqueada
+            self.atomic_mock = atomic_mock
+            self.lock_mock = lock_mock
+            return confirmar_y_finalizar_desempate(partida, now=now)
+
+    def test_cada_jugador_recibe_solo_un_tiro(self):
+        partida = self._partida(
+            candidatos=candidatos_desempate_prueba(tiro_uno=67)
+        )
+
+        with self.assertRaises(DesempateError):
+            self._sortear(partida, 41, balota=68)
+
+        self.bloqueada.save.assert_not_called()
+        self.generador.choice.assert_not_called()
+
+    def test_tiro_generado_esta_entre_uno_y_setenta_y_cinco(self):
+        partida = self._partida()
+
+        resultado = self._sortear(partida, 41, balota=75)
+
+        self.assertGreaterEqual(resultado["balota"], 1)
+        self.assertLessEqual(resultado["balota"], 75)
+
+    def test_dos_candidatos_no_reciben_la_misma_balota(self):
+        partida = self._partida(
+            candidatos=candidatos_desempate_prueba(tiro_uno=67)
+        )
+
+        resultado = self._sortear(partida, 42, balota=68)
+
+        disponibles = self.generador.choice.call_args.args[0]
+        self.assertNotIn(67, disponibles)
+        self.assertEqual(resultado["balota"], 68)
+        self.assertEqual(obtener_tiros_desempate(resultado["candidatos"]), [67, 68])
+
+    def test_jugador_no_candidato_no_puede_sortear(self):
+        partida = self._partida()
+
+        with self.assertRaises(DesempateError):
+            self._sortear(partida, 99)
+
+        self.bloqueada.save.assert_not_called()
+
+    def test_no_se_puede_sortear_fuera_de_desempate(self):
+        for estado in (
+            ESTADO_PARTIDA_PROGRAMADA,
+            ESTADO_PARTIDA_EN_ESPERA,
+            ESTADO_PARTIDA_PAUSADA,
+            ESTADO_PARTIDA_CANCELADA,
+        ):
+            with self.subTest(estado=estado):
+                partida = self._partida(estado=estado)
+                with self.assertRaises(DesempateError):
+                    sortear_balota_desempate(partida, 41)
+
+    def test_no_se_puede_sortear_en_curso(self):
+        partida = self._partida(estado=ESTADO_PARTIDA_EN_CURSO)
+
+        with self.assertRaises(DesempateError):
+            sortear_balota_desempate(partida, 41)
+
+    def test_no_se_puede_sortear_en_finalizada(self):
+        partida = self._partida(estado=ESTADO_PARTIDA_FINALIZADA)
+
+        with self.assertRaises(DesempateError):
+            sortear_balota_desempate(partida, 41)
+
+    def test_primer_tiro_convierte_formato_etapa_tres_sin_perder_cartones(self):
+        partida = self._partida()
+        partida.idbingadores = (
+            '[{"idcarton":31,"codigocarton":"P20-C-31",'
+            '"idjugador":41,"jugador":"juan123"},'
+            '{"idcarton":33,"codigocarton":"P20-C-33",'
+            '"idjugador":41,"jugador":"juan123"},'
+            '{"idcarton":32,"codigocarton":"P20-C-32",'
+            '"idjugador":42,"jugador":"maria456"}]'
+        )
+
+        resultado = self._sortear(partida, 41, balota=67)
+        persistidos = normalizar_candidatos_desempate(
+            parsear_candidatos_desempate(partida.idbingadores)
+        )
+
+        self.assertEqual(resultado["balota"], 67)
+        self.assertEqual(persistidos[0]["tiro_desempate"], 67)
+        self.assertEqual(
+            [carton["idcarton"] for carton in persistidos[0]["cartones"]],
+            [31, 33],
+        )
+
+    def test_balotas_disponibles_excluyen_tiros_realizados(self):
+        disponibles = obtener_balotas_disponibles_desempate(
+            candidatos_desempate_prueba(tiro_uno=1, tiro_dos=75)
+        )
+
+        self.assertNotIn(1, disponibles)
+        self.assertNotIn(75, disponibles)
+        self.assertEqual(len(disponibles), 73)
+
+    def test_no_confirma_antes_de_completar_todos_los_tiros(self):
+        partida = self._partida(
+            candidatos=candidatos_desempate_prueba(tiro_uno=67)
+        )
+
+        with self.assertRaises(DesempateIncompletoError):
+            self._confirmar(partida)
+
+        self.bloqueada.save.assert_not_called()
+
+    def test_no_se_puede_confirmar_fuera_de_desempate(self):
+        partida = self._partida(
+            estado=ESTADO_PARTIDA_FINALIZADA,
+            candidatos=candidatos_desempate_prueba(tiro_uno=67, tiro_dos=58),
+        )
+
+        with self.assertRaises(DesempateError):
+            confirmar_y_finalizar_desempate(partida)
+
+    def test_identifica_correctamente_el_numero_maximo(self):
+        resultado = obtener_resultado_desempate(
+            candidatos_desempate_prueba(tiro_uno=67, tiro_dos=58)
+        )
+
+        self.assertEqual(resultado["idjugador"], 41)
+        self.assertEqual(resultado["balota"], 67)
+        self.assertEqual(resultado["codigo"], "O-67")
+
+    def test_confirmar_registra_al_jugador_ganador(self):
+        partida = self._partida(
+            candidatos=candidatos_desempate_prueba(tiro_uno=67, tiro_dos=58)
+        )
+
+        self._confirmar(partida)
+
+        self.assertEqual(partida.idjugadorganador_id, 41)
+
+    def test_confirmar_guarda_la_balota_mayor(self):
+        partida = self._partida(
+            candidatos=candidatos_desempate_prueba(tiro_uno=67, tiro_dos=58)
+        )
+
+        self._confirmar(partida)
+
+        self.assertEqual(partida.bolamayordesempate, 67)
+
+    def test_confirmar_cambia_la_partida_a_finalizada(self):
+        partida = self._partida(
+            candidatos=candidatos_desempate_prueba(tiro_uno=67, tiro_dos=58)
+        )
+
+        self._confirmar(partida)
+
+        self.assertEqual(partida.estadopartida, ESTADO_PARTIDA_FINALIZADA)
+
+    def test_confirmar_guarda_hora_fin(self):
+        partida = self._partida(
+            candidatos=candidatos_desempate_prueba(tiro_uno=67, tiro_dos=58)
+        )
+        now = timezone.now()
+
+        self._confirmar(partida, now=now)
+
+        self.assertEqual(partida.horafin, now)
+
+    def test_confirmar_conserva_hay_desempate_verdadero(self):
+        partida = self._partida(
+            candidatos=candidatos_desempate_prueba(tiro_uno=67, tiro_dos=58)
+        )
+
+        self._confirmar(partida)
+
+        self.assertTrue(partida.haydesempate)
+
+    def test_confirmar_no_altera_bolas_normales_ni_ultima_bola(self):
+        partida = self._partida(
+            candidatos=candidatos_desempate_prueba(tiro_uno=67, tiro_dos=58)
+        )
+        bolas_antes = partida.bolascantadas
+        ultima_antes = partida.ultimabola
+
+        self._confirmar(partida)
+
+        self.assertEqual(partida.bolascantadas, bolas_antes)
+        self.assertEqual(partida.ultimabola, ultima_antes)
+        self.assertNotIn("bolascantadas", self.bloqueada.save.call_args.kwargs["update_fields"])
+        self.assertNotIn("ultimabola", self.bloqueada.save.call_args.kwargs["update_fields"])
+
+    def test_operaciones_usan_transaccion_y_bloquean_partida(self):
+        partida = self._partida()
+
+        self._sortear(partida, 41, balota=67)
+
+        self.atomic_mock.assert_called_once_with()
+        self.lock_mock.assert_called_once_with()
+        self.lock_mock.return_value.get.assert_called_once_with(pk=partida.pk)
+
+    def test_error_al_guardar_no_sincroniza_cambios_parciales(self):
+        partida = self._partida(
+            candidatos=candidatos_desempate_prueba(tiro_uno=67, tiro_dos=58)
+        )
+        valores_antes = (
+            partida.idjugadorganador_id,
+            partida.bolamayordesempate,
+            partida.estadopartida,
+            partida.horafin,
+            partida.idbingadores,
+        )
+
+        with self.assertRaises(DatabaseError):
+            self._confirmar(
+                partida,
+                save_error=DatabaseError("fallo simulado"),
+            )
+
+        self.assertEqual(
+            (
+                partida.idjugadorganador_id,
+                partida.bolamayordesempate,
+                partida.estadopartida,
+                partida.horafin,
+                partida.idbingadores,
+            ),
+            valores_antes,
+        )
+
+
+class RutasDesempateTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def test_usuario_no_administrativo_recibe_acceso_denegado(self):
+        usuario = User(username="jugador", is_staff=False, is_superuser=False)
+        solicitudes = (
+            (sortear_desempate, self.factory.post("/desempate/41/sortear/"), (20, 41)),
+            (confirmar_desempate, self.factory.post("/desempate/confirmar/"), (20,)),
+            (desempate_operador, self.factory.get("/desempate/"), (20,)),
+        )
+
+        for vista, request, argumentos in solicitudes:
+            with self.subTest(vista=vista.__name__):
+                request.user = usuario
+                with self.assertRaises(PermissionDenied):
+                    vista(request, *argumentos)
+
+    def test_get_no_registra_tiros_ni_finaliza(self):
+        usuario = User(username="admin", is_staff=True)
+        request_sortear = self.factory.get("/desempate/41/sortear/")
+        request_sortear.user = usuario
+        request_confirmar = self.factory.get("/desempate/confirmar/")
+        request_confirmar.user = usuario
+
+        with (
+            patch("apps.bingos.views.sortear_balota_desempate") as sortear_mock,
+            patch("apps.bingos.views.confirmar_y_finalizar_desempate") as confirmar_mock,
+        ):
+            response_sortear = sortear_desempate(request_sortear, 20, 41)
+            response_confirmar = confirmar_desempate(request_confirmar, 20)
+
+        self.assertEqual(response_sortear.status_code, 405)
+        self.assertEqual(response_confirmar.status_code, 405)
+        sortear_mock.assert_not_called()
+        confirmar_mock.assert_not_called()
+
+
 class EstadoPartidaTests(SimpleTestCase):
     def test_en_juego_se_normaliza_a_en_curso(self):
         self.assertEqual(normalizar_estado_partida("En Juego"), ESTADO_PARTIDA_EN_CURSO)
@@ -1091,6 +1564,10 @@ class EstadoPartidaTests(SimpleTestCase):
         self.assertEqual(
             acciones_disponibles_consola(Partidabingo(estadopartida=ESTADO_PARTIDA_PAUSADA)),
             {"reanudar", "finalizar"},
+        )
+        self.assertEqual(
+            acciones_disponibles_consola(Partidabingo(estadopartida=ESTADO_PARTIDA_DESEMPATE)),
+            set(),
         )
         self.assertEqual(
             acciones_disponibles_consola(Partidabingo(estadopartida=ESTADO_PARTIDA_FINALIZADA)),

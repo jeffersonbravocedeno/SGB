@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Desempate{% endblock %}
+
+{% block content %}
+<section class="page-header tie-break-header">
+    <div>
+        <p class="page-kicker">MODO DE DESEMPATE</p>
+        <h1>{{ partida.nombreronda }}</h1>
+        <p>{{ partida.idbingo.titulobingo }} · Una balota única por jugador; gana la mayor.</p>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <a class="btn btn-outline-light" href="{% url 'bingos:consola_operador' partida.idpartidabingo %}">Consola</a>
+        <a class="btn btn-outline-light" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Detalle</a>
+    </div>
+</section>
+
+{% if error_desempate %}
+<div class="alert alert-danger" role="alert">{{ error_desempate }}</div>
+{% endif %}
+
+<section class="content-panel mb-3">
+    <div class="tie-break-summary">
+        <div><span>Estado</span><strong>{{ partida.estadopartida|estado_partida_display }}</strong></div>
+        <div><span>Bingo</span><strong>{{ partida.idbingo.titulobingo }}</strong></div>
+        <div><span>Premio</span><strong>${{ partida.valorefectivo|floatformat:2 }}{% if partida.premiomaterial %} · {{ partida.premiomaterial }}{% endif %}</strong></div>
+        <div><span>Jugadores</span><strong>{{ total_candidatos }}</strong></div>
+    </div>
+</section>
+
+{% if partida.estadopartida == "Finalizada" %}
+<section class="content-panel tie-break-final mb-3">
+    <p class="page-kicker mb-1">Desempate finalizado</p>
+    <h2>{{ partida.idjugadorganador|default:"Ganador no disponible" }}</h2>
+    <p class="mb-1">Balota mayor: <strong>{% if resultado_desempate %}{{ resultado_desempate.codigo }}{% else %}{{ partida.bolamayordesempate|default_dash }}{% endif %}</strong></p>
+    <p class="mb-0">Finalización: {{ partida.horafin|date:"d/m/Y H:i:s"|default_dash }}</p>
+</section>
+{% elif not puede_operar_desempate and not error_desempate %}
+<div class="alert alert-warning" role="alert">
+    Los tiros y la confirmación solo están disponibles cuando la partida está en Desempate.
+</div>
+{% endif %}
+
+<section class="content-panel mb-3">
+    <div class="section-heading">
+        <div>
+            <h2>Candidatos</h2>
+            <p>Cada jugador puede sortear una sola vez. Los tiros quedan guardados al instante.</p>
+        </div>
+        {% if total_pendientes %}
+        <span class="badge rounded-pill text-bg-warning">Faltan {{ total_pendientes }}</span>
+        {% elif candidatos_desempate %}
+        <span class="badge rounded-pill text-bg-success">Tiros completos</span>
+        {% endif %}
+    </div>
+
+    {% if candidatos_desempate %}
+    <div class="tie-break-grid">
+        {% for candidato in candidatos_desempate %}
+        <article class="tie-break-player{% if candidato.tiro_desempate %} has-draw{% endif %}">
+            <div>
+                <span class="text-muted small">Jugador #{{ candidato.idjugador }}</span>
+                <h3>{{ candidato.nombre_mostrar }}</h3>
+            </div>
+            <div>
+                <span class="tie-break-label">Cartones ganadores</span>
+                <div class="tie-break-cartons">
+                    {% for carton in candidato.cartones %}
+                    <span>{{ carton.codigocarton|default:"Cartón" }}{% if not carton.codigocarton and carton.idcarton %} #{{ carton.idcarton }}{% endif %}</span>
+                    {% empty %}
+                    <span>Sin códigos en el formato legado</span>
+                    {% endfor %}
+                </div>
+            </div>
+
+            {% if candidato.tiro_desempate %}
+            <div class="tie-break-ball">
+                <span>Balota obtenida</span>
+                <strong>{{ candidato.tiro_codigo }}</strong>
+            </div>
+            {% else %}
+            <div class="tie-break-pending">Pendiente de sorteo</div>
+            {% endif %}
+
+            <form method="post" action="{% url 'bingos:sortear_desempate' partida.idpartidabingo candidato.idjugador %}">
+                {% csrf_token %}
+                <button class="btn btn-primary w-100" type="submit" {% if candidato.tiro_desempate or not puede_operar_desempate %}disabled{% endif %}>Sortear balota</button>
+            </form>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state"><strong>No hay candidatos válidos</strong><span>Revise la evidencia almacenada para esta partida.</span></div>
+    {% endif %}
+</section>
+
+{% if total_pendientes %}
+<div class="alert alert-info" role="status">
+    Faltan {{ total_pendientes }} jugador{{ total_pendientes|pluralize:"es" }} por sortear.
+</div>
+{% endif %}
+
+{% if desempate_completo and resultado_desempate %}
+<section class="content-panel tie-break-result mb-3">
+    <p class="page-kicker mb-1">{% if partida.estadopartida == "Finalizada" %}Resultado confirmado{% else %}Resultado provisional{% endif %}</p>
+    <h2>{% if resultado_desempate.jugador %}{{ resultado_desempate.jugador }}{% else %}Jugador #{{ resultado_desempate.idjugador }}{% endif %} obtuvo {{ resultado_desempate.codigo }} y tiene la balota más alta.</h2>
+    {% if partida.estadopartida == "Desempate" %}
+    <p>Revise los tiros antes de confirmar. Esta acción finalizará la partida.</p>
+    <form method="post" action="{% url 'bingos:confirmar_desempate' partida.idpartidabingo %}">
+        {% csrf_token %}
+        <button class="btn btn-success btn-lg" type="submit" {% if not puede_confirmar_desempate %}disabled{% endif %}>Confirmar ganador y finalizar partida</button>
+    </form>
+    {% endif %}
+</section>
+{% endif %}
+{% endblock %}

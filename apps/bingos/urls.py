@@ -13,6 +13,21 @@ urlpatterns = [
     path("bingos/<int:idbingo>/partidas/nueva/", views.partida_nueva, name="partida_nueva"),
     path("partidas/", views.partidas_lista, name="partidas_lista"),
     path("partidas/<int:idpartidabingo>/consola/", views.consola_operador, name="consola_operador"),
+    path(
+        "partidas/<int:idpartidabingo>/desempate/",
+        views.desempate_operador,
+        name="desempate_operador",
+    ),
+    path(
+        "partidas/<int:idpartidabingo>/desempate/<int:idjugador>/sortear/",
+        views.sortear_desempate,
+        name="sortear_desempate",
+    ),
+    path(
+        "partidas/<int:idpartidabingo>/desempate/confirmar/",
+        views.confirmar_desempate,
+        name="confirmar_desempate",
+    ),
     path("partidas/<int:idpartidabingo>/sacar-bola/", views.sacar_bola, name="sacar_bola"),
     path("partidas/<int:idpartidabingo>/cartones/nuevo/", views.partida_carton_nuevo, name="partida_carton_nuevo"),
     path(

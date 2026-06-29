@@ -81,7 +81,7 @@ ACCIONES_CONSOLA = {
     "finalizar": {
         "label": "Finalizar partida",
         "target": ESTADO_PARTIDA_FINALIZADA,
-        "allowed_from": {ESTADO_PARTIDA_EN_CURSO, ESTADO_PARTIDA_PAUSADA, ESTADO_PARTIDA_DESEMPATE},
+        "allowed_from": {ESTADO_PARTIDA_EN_CURSO, ESTADO_PARTIDA_PAUSADA},
     },
 }
 
@@ -119,6 +119,18 @@ class CartonNoCompletoError(ValidacionCartonError):
         super().__init__(
             f"Este cartón aún no completa Bingo. Faltan: {codigos}."
         )
+
+
+class DesempateError(ValueError):
+    pass
+
+
+class DatosDesempateInvalidosError(DesempateError):
+    pass
+
+
+class DesempateIncompletoError(DesempateError):
+    pass
 
 
 def generar_matriz_carton_bingo(generador_aleatorio=None):
@@ -730,7 +742,8 @@ def _candidato_desempate_desde_carton(carton):
     }
 
 
-def serializar_candidatos_desempate(cartones):
+def _serializar_cartones_ganadores_desempate(cartones):
+    """Conserva el formato plano producido históricamente por la Etapa 3."""
     candidatos = [
         _candidato_desempate_desde_carton(carton)
         for carton in sorted(cartones, key=lambda item: item.pk)
@@ -739,6 +752,7 @@ def serializar_candidatos_desempate(cartones):
 
 
 def parsear_candidatos_desempate(valor):
+    """Lee JSON actual, JSON plano de Etapa 3 e IDs separados por texto."""
     if valor in (None, ""):
         return []
     if isinstance(valor, str):
@@ -758,14 +772,7 @@ def parsear_candidatos_desempate(valor):
     normalizados = []
     for candidato in candidatos:
         if isinstance(candidato, dict):
-            normalizados.append(
-                {
-                    "idcarton": candidato.get("idcarton"),
-                    "codigocarton": candidato.get("codigocarton"),
-                    "idjugador": candidato.get("idjugador"),
-                    "jugador": candidato.get("jugador"),
-                }
-            )
+            normalizados.append(dict(candidato))
             continue
         numero = _numero_entero_positivo(candidato)
         if numero is not None:
@@ -789,6 +796,336 @@ def _numero_entero_positivo(valor):
         numero = int(valor.strip())
         return numero if numero > 0 else None
     return None
+
+
+def _normalizar_tiro_desempate(valor):
+    if valor is None or valor == "":
+        return None
+    numero = _numero_entero_positivo(valor)
+    if numero is None or numero > 75:
+        raise DatosDesempateInvalidosError(
+            "Los tiros de desempate deben ser números enteros entre 1 y 75."
+        )
+    return numero
+
+
+def _normalizar_carton_candidato(valor):
+    if not isinstance(valor, dict):
+        return None
+    idcarton = _numero_entero_positivo(valor.get("idcarton"))
+    codigo = valor.get("codigocarton")
+    codigo = str(codigo).strip() if codigo not in (None, "") else None
+    if idcarton is None and codigo is None:
+        return None
+    return {"idcarton": idcarton, "codigocarton": codigo}
+
+
+def _agregar_carton_candidato(cartones, carton):
+    if carton is None:
+        return
+    for existente in cartones:
+        mismo_id = (
+            carton["idcarton"] is not None
+            and existente["idcarton"] == carton["idcarton"]
+        )
+        mismo_codigo = (
+            carton["idcarton"] is None
+            and existente["idcarton"] is None
+            and carton["codigocarton"] is not None
+            and existente["codigocarton"] == carton["codigocarton"]
+        )
+        if mismo_id or mismo_codigo:
+            if not existente["codigocarton"] and carton["codigocarton"]:
+                existente["codigocarton"] = carton["codigocarton"]
+            return
+    cartones.append(carton)
+
+
+def normalizar_candidatos_desempate(candidatos):
+    """Agrupa por jugador, conserva cartones y valida los tiros persistidos."""
+    if isinstance(candidatos, str) or candidatos is None:
+        candidatos = parsear_candidatos_desempate(candidatos)
+    elif isinstance(candidatos, dict):
+        candidatos = [candidatos]
+    else:
+        candidatos = list(candidatos)
+
+    agrupados = {}
+    orden = []
+    for candidato in candidatos:
+        if not isinstance(candidato, dict):
+            numero = _numero_entero_positivo(candidato)
+            candidato = {"idjugador": numero} if numero is not None else {}
+
+        idjugador = _numero_entero_positivo(candidato.get("idjugador"))
+        if idjugador is None:
+            raise DatosDesempateInvalidosError(
+                "Se encontró un candidato de desempate sin jugador válido."
+            )
+
+        nombre = candidato.get("jugador")
+        nombre = str(nombre).strip() if nombre not in (None, "") else None
+        tiro = _normalizar_tiro_desempate(candidato.get("tiro_desempate"))
+
+        if idjugador not in agrupados:
+            agrupados[idjugador] = {
+                "idjugador": idjugador,
+                "jugador": nombre,
+                "cartones": [],
+                "tiro_desempate": tiro,
+            }
+            orden.append(idjugador)
+        else:
+            agrupado = agrupados[idjugador]
+            if not agrupado["jugador"] and nombre:
+                agrupado["jugador"] = nombre
+            if (
+                agrupado["tiro_desempate"] is not None
+                and tiro is not None
+                and agrupado["tiro_desempate"] != tiro
+            ):
+                raise DatosDesempateInvalidosError(
+                    f"El jugador #{idjugador} tiene tiros de desempate contradictorios."
+                )
+            if agrupado["tiro_desempate"] is None and tiro is not None:
+                agrupado["tiro_desempate"] = tiro
+
+        destino = agrupados[idjugador]["cartones"]
+        cartones = candidato.get("cartones", [])
+        if isinstance(cartones, dict):
+            cartones = [cartones]
+        if isinstance(cartones, Iterable) and not isinstance(cartones, str):
+            for carton in cartones:
+                _agregar_carton_candidato(
+                    destino,
+                    _normalizar_carton_candidato(carton),
+                )
+        _agregar_carton_candidato(
+            destino,
+            _normalizar_carton_candidato(
+                {
+                    "idcarton": candidato.get("idcarton"),
+                    "codigocarton": candidato.get("codigocarton"),
+                }
+            ),
+        )
+
+    resultado = [agrupados[idjugador] for idjugador in orden]
+    tiros = [
+        candidato["tiro_desempate"]
+        for candidato in resultado
+        if candidato["tiro_desempate"] is not None
+    ]
+    if len(tiros) != len(set(tiros)):
+        raise DatosDesempateInvalidosError(
+            "Existen balotas de desempate repetidas entre candidatos."
+        )
+    return resultado
+
+
+def serializar_candidatos_desempate(candidatos):
+    """Guarda la estructura canónica de candidatos agrupados y sus tiros."""
+    normalizados = normalizar_candidatos_desempate(candidatos)
+    return json.dumps(normalizados, ensure_ascii=False, separators=(",", ":"))
+
+
+def obtener_tiros_desempate(candidatos):
+    return [
+        candidato["tiro_desempate"]
+        for candidato in normalizar_candidatos_desempate(candidatos)
+        if candidato["tiro_desempate"] is not None
+    ]
+
+
+def obtener_balotas_disponibles_desempate(candidatos):
+    tiros = set(obtener_tiros_desempate(candidatos))
+    return [numero for numero in range(1, 76) if numero not in tiros]
+
+
+def desempate_esta_completo(candidatos):
+    normalizados = normalizar_candidatos_desempate(candidatos)
+    return bool(normalizados) and all(
+        candidato["tiro_desempate"] is not None
+        for candidato in normalizados
+    )
+
+
+def obtener_resultado_desempate(candidatos):
+    normalizados = normalizar_candidatos_desempate(candidatos)
+    if not desempate_esta_completo(normalizados):
+        raise DesempateIncompletoError(
+            "No se puede confirmar el desempate hasta que todos los candidatos sorteen."
+        )
+    ganador = max(normalizados, key=lambda candidato: candidato["tiro_desempate"])
+    balota = ganador["tiro_desempate"]
+    return {
+        "candidato": ganador,
+        "idjugador": ganador["idjugador"],
+        "jugador": ganador["jugador"],
+        "balota": balota,
+        "codigo": formatear_bola_bingo(balota),
+    }
+
+
+def estado_permite_operar_desempate(partida):
+    return str(partida.estadopartida or "").strip() == ESTADO_PARTIDA_DESEMPATE
+
+
+def validar_estado_desempate(partida):
+    if estado_permite_operar_desempate(partida):
+        return
+    estado = str(partida.estadopartida or "Sin estado").strip()
+    raise DesempateError(
+        f"No se puede operar el desempate porque la partida está en estado {estado}. "
+        "Solo se permite cuando está en Desempate."
+    )
+
+
+def _obtener_candidatos_partida_desempate(partida):
+    candidatos = normalizar_candidatos_desempate(
+        parsear_candidatos_desempate(partida.idbingadores)
+    )
+    if not candidatos:
+        raise DatosDesempateInvalidosError(
+            "La partida no tiene candidatos válidos para el desempate."
+        )
+    return candidatos
+
+
+def preparar_datos_desempate(partida):
+    candidatos = _obtener_candidatos_partida_desempate(partida)
+    candidatos_interfaz = []
+    for candidato in candidatos:
+        item = {
+            **candidato,
+            "nombre_mostrar": candidato["jugador"] or (
+                f"Jugador #{candidato['idjugador']}"
+            ),
+            "tiro_codigo": (
+                formatear_bola_bingo(candidato["tiro_desempate"])
+                if candidato["tiro_desempate"] is not None
+                else None
+            ),
+        }
+        candidatos_interfaz.append(item)
+
+    pendientes = sum(
+        candidato["tiro_desempate"] is None
+        for candidato in candidatos
+    )
+    completo = desempate_esta_completo(candidatos)
+    return {
+        "candidatos_desempate": candidatos_interfaz,
+        "total_candidatos": len(candidatos),
+        "total_pendientes": pendientes,
+        "desempate_completo": completo,
+        "resultado_desempate": (
+            obtener_resultado_desempate(candidatos) if completo else None
+        ),
+        "puede_operar_desempate": estado_permite_operar_desempate(partida),
+        "puede_confirmar_desempate": (
+            estado_permite_operar_desempate(partida) and completo
+        ),
+    }
+
+
+def sortear_balota_desempate(partida, idjugador, generador_aleatorio=None):
+    validar_estado_desempate(partida)
+    idjugador = _numero_entero_positivo(idjugador)
+    if idjugador is None:
+        raise DesempateError("El jugador indicado no es válido.")
+    generador_aleatorio = generador_aleatorio or random.SystemRandom()
+
+    with transaction.atomic():
+        partida_bloqueada = Partidabingo.objects.select_for_update().get(
+            pk=partida.pk
+        )
+        validar_estado_desempate(partida_bloqueada)
+        candidatos = _obtener_candidatos_partida_desempate(partida_bloqueada)
+        candidato = next(
+            (
+                item
+                for item in candidatos
+                if item["idjugador"] == idjugador
+            ),
+            None,
+        )
+        if candidato is None:
+            raise DesempateError(
+                "El jugador indicado no es candidato de este desempate."
+            )
+        if candidato["tiro_desempate"] is not None:
+            raise DesempateError(
+                "Este jugador ya realizó su único tiro de desempate."
+            )
+
+        disponibles = obtener_balotas_disponibles_desempate(candidatos)
+        if not disponibles:
+            raise DesempateError(
+                "No quedan balotas disponibles para completar el desempate."
+            )
+        balota = generador_aleatorio.choice(disponibles)
+        if balota not in disponibles:
+            raise DatosDesempateInvalidosError(
+                "El generador produjo una balota de desempate no disponible."
+            )
+
+        candidato["tiro_desempate"] = balota
+        partida_bloqueada.idbingadores = serializar_candidatos_desempate(
+            candidatos
+        )
+        partida_bloqueada.save(update_fields=["idbingadores"])
+
+    partida.idbingadores = partida_bloqueada.idbingadores
+    return {
+        "partida": partida_bloqueada,
+        "candidato": candidato,
+        "candidatos": candidatos,
+        "balota": balota,
+        "codigo": formatear_bola_bingo(balota),
+    }
+
+
+def confirmar_y_finalizar_desempate(partida, now=None):
+    validar_estado_desempate(partida)
+
+    with transaction.atomic():
+        partida_bloqueada = Partidabingo.objects.select_for_update().get(
+            pk=partida.pk
+        )
+        validar_estado_desempate(partida_bloqueada)
+        candidatos = _obtener_candidatos_partida_desempate(partida_bloqueada)
+        resultado = obtener_resultado_desempate(candidatos)
+
+        partida_bloqueada.idjugadorganador_id = resultado["idjugador"]
+        partida_bloqueada.bolamayordesempate = resultado["balota"]
+        partida_bloqueada.estadopartida = ESTADO_PARTIDA_FINALIZADA
+        partida_bloqueada.horafin = now or timezone.now()
+        partida_bloqueada.haydesempate = True
+        partida_bloqueada.idbingadores = serializar_candidatos_desempate(
+            candidatos
+        )
+        update_fields = [
+            "idjugadorganador",
+            "bolamayordesempate",
+            "estadopartida",
+            "horafin",
+            "haydesempate",
+            "idbingadores",
+        ]
+        partida_bloqueada.save(update_fields=update_fields)
+
+    partida.idjugadorganador_id = partida_bloqueada.idjugadorganador_id
+    partida.bolamayordesempate = partida_bloqueada.bolamayordesempate
+    partida.estadopartida = partida_bloqueada.estadopartida
+    partida.horafin = partida_bloqueada.horafin
+    partida.haydesempate = partida_bloqueada.haydesempate
+    partida.idbingadores = partida_bloqueada.idbingadores
+    return {
+        "partida": partida_bloqueada,
+        "candidatos": candidatos,
+        "resultado": resultado,
+    }
 
 
 def validar_carton_ganador(partida, carton):
@@ -855,7 +1192,7 @@ def validar_carton_ganador(partida, carton):
             partida_bloqueada.idjugadorganador = None
             partida_bloqueada.estadopartida = ESTADO_PARTIDA_DESEMPATE
             partida_bloqueada.haydesempate = True
-            partida_bloqueada.idbingadores = serializar_candidatos_desempate(
+            partida_bloqueada.idbingadores = _serializar_cartones_ganadores_desempate(
                 cartones_ganadores
             )
             update_fields = [
@@ -869,7 +1206,7 @@ def validar_carton_ganador(partida, carton):
             ganador = cartones_ganadores[0]
             partida_bloqueada.idjugadorganador = ganador.idjugador
             partida_bloqueada.haydesempate = False
-            partida_bloqueada.idbingadores = serializar_candidatos_desempate(
+            partida_bloqueada.idbingadores = _serializar_cartones_ganadores_desempate(
                 [ganador]
             )
             update_fields = [

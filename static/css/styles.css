@@ -450,6 +450,122 @@ a {
     font-size: 0.9rem;
 }
 
+.tie-break-header {
+    background: linear-gradient(135deg, #35205f, #7b3fb4);
+}
+
+.tie-break-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    gap: 1rem;
+}
+
+.tie-break-summary > div {
+    display: grid;
+    gap: 0.25rem;
+    padding: 1rem;
+    border: 1px solid var(--siab-line);
+    border-radius: 0.65rem;
+    background: #f8fafc;
+}
+
+.tie-break-summary span,
+.tie-break-label {
+    color: var(--siab-muted);
+    font-size: 0.76rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.tie-break-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+    gap: 1rem;
+}
+
+.tie-break-player {
+    display: grid;
+    align-content: start;
+    gap: 1rem;
+    padding: 1rem;
+    border: 1px solid var(--siab-line);
+    border-radius: 0.75rem;
+    background: #ffffff;
+}
+
+.tie-break-player.has-draw {
+    border-color: #6e46a4;
+    background: #faf7ff;
+}
+
+.tie-break-player h3 {
+    margin: 0.1rem 0 0;
+    font-size: 1.1rem;
+    font-weight: 800;
+}
+
+.tie-break-cartons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.4rem;
+}
+
+.tie-break-cartons span {
+    padding: 0.25rem 0.5rem;
+    border-radius: 999px;
+    color: #4b3b65;
+    background: #ede6f7;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.tie-break-ball {
+    display: grid;
+    min-height: 8rem;
+    place-items: center;
+    align-content: center;
+    gap: 0.25rem;
+    border-radius: 0.75rem;
+    color: #ffffff;
+    background: linear-gradient(135deg, #5f3195, #8c50c5);
+}
+
+.tie-break-ball span {
+    font-size: 0.76rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.tie-break-ball strong {
+    font-size: 2.2rem;
+}
+
+.tie-break-pending {
+    display: grid;
+    min-height: 8rem;
+    place-items: center;
+    border: 1px dashed #ad9cbe;
+    border-radius: 0.75rem;
+    color: #695b78;
+    background: #f8f5fb;
+    font-weight: 800;
+}
+
+.tie-break-result,
+.tie-break-final {
+    border-color: #6e46a4;
+    background: #f8f3ff;
+}
+
+.tie-break-result h2,
+.tie-break-final h2 {
+    font-size: clamp(1.25rem, 3vw, 1.8rem);
+    font-weight: 800;
+}
+
 .winner-validation-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 23rem), 1fr));
