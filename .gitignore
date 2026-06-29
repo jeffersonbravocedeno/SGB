@@ -41,3 +41,4 @@ htmlcov/
 Thumbs.db
 BACKUPS/
 *.backup
+models_inspectdb.py
