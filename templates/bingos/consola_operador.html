@@ -21,6 +21,40 @@
 </section>
 
 <section class="content-panel mb-3">
+    <div class="row g-4">
+        <div class="col-md-4">
+            <div class="winner-status-card">
+                <span>Ganador confirmado</span>
+                <strong>{{ partida.idjugadorganador|default:"Sin ganador confirmado" }}</strong>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="winner-status-card{% if partida.haydesempate %} is-tie{% endif %}">
+                <span>Estado de empate</span>
+                <strong>{% if partida.haydesempate %}Desempate activo{% else %}Sin empate{% endif %}</strong>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="winner-status-card">
+                <span>{% if partida.haydesempate %}Candidatos a desempate{% else %}Cartón ganador registrado{% endif %}</span>
+                {% if candidatos_desempate %}
+                <ul class="winner-candidates">
+                    {% for candidato in candidatos_desempate %}
+                    <li>
+                        {% if candidato.codigocarton %}{{ candidato.codigocarton }}{% else %}Cartón sin identificar{% endif %}
+                        · {% if candidato.jugador %}{{ candidato.jugador }}{% else %}Jugador #{{ candidato.idjugador|default:"-" }}{% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <strong>{% if partida.haydesempate %}Sin candidatos{% else %}Sin cartón ganador{% endif %}</strong>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="content-panel mb-3">
     {% if actualizacion_estados_pendiente %}
     <div class="alert alert-warning" role="alert">
         La base de datos aún no permite guardar todos los estados reales de partida. Revise y ejecute manualmente <code>DATABASE/actualizar_estados_partidabingo.sql</code>.
@@ -129,6 +163,71 @@
             {% endfor %}
         </div>
     </div>
+</section>
+
+<section class="content-panel mb-3">
+    <div class="section-heading">
+        <div>
+            <h2>Validación de cartones</h2>
+            <p>Regla vigente: los 24 números del cartón deben haber sido extraídos; la casilla LIBRE cuenta automáticamente.</p>
+        </div>
+        {% if not puede_validar_cartones %}
+        <span class="badge rounded-pill text-bg-secondary">Disponible solo en En curso</span>
+        {% endif %}
+    </div>
+
+    {% if cartones_validacion %}
+    <div class="winner-validation-grid">
+        {% for item in cartones_validacion %}
+        <article class="winner-validation-card{% if item.completo %} is-complete{% endif %}">
+            <div class="winner-validation-header">
+                <div>
+                    <span class="text-muted small">{{ item.carton.codigocarton }}</span>
+                    <h3>{{ item.carton.idjugador|default:"Sin jugador" }}</h3>
+                </div>
+                <span class="badge rounded-pill {{ item.carton.estadocarton|estado_class }}">{{ item.carton.estadocarton }}</span>
+            </div>
+
+            {% if item.matriz %}
+            <div class="table-responsive">
+                <table class="table table-bordered text-center align-middle bingo-validation-table">
+                    <thead class="table-dark">
+                        <tr><th>B</th><th>I</th><th>N</th><th>G</th><th>O</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for fila in item.matriz %}
+                        <tr>
+                            {% for casilla in fila %}
+                            <td class="{% if casilla.libre %}is-free{% elif casilla.marcada %}is-marked{% else %}is-pending{% endif %}">{{ casilla.valor }}</td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+
+            {% if item.error %}
+            <div class="alert alert-danger py-2 mb-0" role="alert">{{ item.error }}</div>
+            {% elif item.completo %}
+            <div class="validation-count is-complete">24 de 24 números marcados</div>
+            {% else %}
+            <div class="validation-count">Faltan {{ item.faltantes|length }} número{{ item.faltantes|length|pluralize }}</div>
+            <div class="pending-ball-list">
+                {% for codigo in item.faltantes_codigos %}<span>{{ codigo }}</span>{% endfor %}
+            </div>
+            {% endif %}
+
+            <form method="post" action="{% url 'bingos:validar_carton' partida.idpartidabingo item.carton.idcarton %}">
+                {% csrf_token %}
+                <button class="btn btn-primary w-100" type="submit" {% if not item.puede_validar %}disabled{% endif %}>Validar cartón</button>
+            </form>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state"><strong>No hay cartones para validar</strong><span>Los cartones vendidos y asignados aparecerán aquí.</span></div>
+    {% endif %}
 </section>
 
 <section class="content-panel">

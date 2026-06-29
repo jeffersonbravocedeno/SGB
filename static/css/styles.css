@@ -420,6 +420,122 @@ a {
     box-shadow: 0 0.35rem 0.75rem rgba(33, 86, 165, 0.2);
 }
 
+.winner-status-card {
+    display: grid;
+    min-height: 7rem;
+    align-content: center;
+    gap: 0.4rem;
+    padding: 1rem;
+    border: 1px solid var(--siab-line);
+    border-radius: 0.65rem;
+    background: #f8fafc;
+}
+
+.winner-status-card.is-tie {
+    border-color: #d89a2b;
+    background: #fff8e8;
+}
+
+.winner-status-card > span {
+    color: var(--siab-muted);
+    font-size: 0.76rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.winner-candidates {
+    margin: 0;
+    padding-left: 1.1rem;
+    font-size: 0.9rem;
+}
+
+.winner-validation-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 23rem), 1fr));
+    gap: 1rem;
+}
+
+.winner-validation-card {
+    display: grid;
+    align-content: start;
+    gap: 1rem;
+    padding: 1rem;
+    border: 1px solid var(--siab-line);
+    border-radius: 0.75rem;
+    background: #ffffff;
+}
+
+.winner-validation-card.is-complete {
+    border-color: #2f8f62;
+    box-shadow: 0 0.5rem 1.2rem rgba(47, 143, 98, 0.12);
+}
+
+.winner-validation-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.winner-validation-header h3 {
+    margin: 0.1rem 0 0;
+    font-size: 1rem;
+    font-weight: 800;
+}
+
+.bingo-validation-table {
+    margin-bottom: 0;
+}
+
+.bingo-validation-table td {
+    width: 20%;
+    height: 3.25rem;
+    font-weight: 800;
+}
+
+.bingo-validation-table td.is-marked {
+    color: #ffffff;
+    background: #2f8f62;
+}
+
+.bingo-validation-table td.is-pending {
+    color: #445069;
+    background: #edf1f6;
+}
+
+.bingo-validation-table td.is-free {
+    color: #6f4b0a;
+    background: #ffe8a6;
+    font-size: 0.78rem;
+}
+
+.validation-count {
+    color: var(--siab-warning);
+    font-weight: 800;
+}
+
+.validation-count.is-complete {
+    color: #24734e;
+}
+
+.pending-ball-list {
+    display: flex;
+    max-height: 6.5rem;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    overflow-y: auto;
+}
+
+.pending-ball-list span {
+    padding: 0.25rem 0.5rem;
+    border-radius: 999px;
+    color: #445069;
+    background: #e6ebf2;
+    font-size: 0.78rem;
+    font-weight: 800;
+}
+
 .empty-state {
     display: grid;
     gap: 0.25rem;

@@ -28,6 +28,7 @@ from .services import (
     ESTADO_PARTIDA_PROGRAMADA,
     ESTADOS_PARTIDA_VALORES,
     EstadoPartidaError,
+    ValidacionCartonError,
     acciones_disponibles_consola,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
@@ -35,9 +36,13 @@ from .services import (
     formatear_bola_bingo,
     normalizar_estado_partida,
     parse_bolas_cantadas,
+    parsear_candidatos_desempate,
+    preparar_cartones_para_validacion,
     preparar_datos_bolas_partida,
     puede_asignar_cartones,
+    estado_permite_validar_carton,
     preparar_accion_consola,
+    validar_carton_ganador,
     validar_asignacion_cartones,
 )
 
@@ -365,7 +370,11 @@ def consola_operador(request, idpartidabingo):
                 requiere_actualizacion,
             )
         )
-    cartones = Carton.objects.filter(idpartida=partida).select_related("idjugador").order_by("codigocarton")
+    cartones = list(
+        Carton.objects.filter(idpartida=partida)
+        .select_related("idjugador")
+        .order_by("codigocarton")
+    )
     datos_bolas = preparar_datos_bolas_partida(partida)
     return render(
         request,
@@ -377,6 +386,14 @@ def consola_operador(request, idpartidabingo):
             "bolas_cantadas": parse_bolas_cantadas(partida.bolascantadas),
             "cartones": cartones,
             "puede_asignar_cartones": puede_asignar_cartones(partida),
+            "puede_validar_cartones": estado_permite_validar_carton(partida),
+            "cartones_validacion": preparar_cartones_para_validacion(
+                partida,
+                cartones,
+            ),
+            "candidatos_desempate": parsear_candidatos_desempate(
+                partida.idbingadores
+            ),
             **datos_bolas,
         },
     )
@@ -407,6 +424,53 @@ def sacar_bola(request, idpartidabingo):
             request,
             f"Bola {formatear_bola_bingo(nueva_bola)} extraída correctamente.",
         )
+
+    return redirect(
+        "bingos:consola_operador",
+        idpartidabingo=partida.idpartidabingo,
+    )
+
+
+@admin_required
+@require_POST
+def validar_carton(request, idpartidabingo, idcarton):
+    partida = get_object_or_404(
+        Partidabingo,
+        idpartidabingo=idpartidabingo,
+    )
+    carton = get_object_or_404(
+        Carton,
+        idcarton=idcarton,
+        idpartida=partida,
+    )
+    try:
+        resultado = validar_carton_ganador(partida, carton)
+    except ValidacionCartonError as exc:
+        messages.error(request, str(exc))
+    except DatabaseError:
+        logger.exception(
+            "No fue posible validar el cartón %s de la partida %s",
+            carton.idcarton,
+            partida.idpartidabingo,
+        )
+        messages.error(
+            request,
+            "No fue posible validar el cartón. No se guardaron cambios parciales.",
+        )
+    else:
+        if resultado["resultado"] == "desempate":
+            messages.warning(
+                request,
+                "Se detectaron varios cartones ganadores. La partida pasó a Desempate.",
+            )
+        else:
+            messages.success(
+                request,
+                (
+                    f"Bingo confirmado para {resultado['carton'].idjugador} "
+                    f"con el cartón {resultado['carton'].codigocarton}."
+                ),
+            )
 
     return redirect(
         "bingos:consola_operador",

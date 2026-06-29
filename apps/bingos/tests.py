@@ -1,12 +1,13 @@
 from contextlib import nullcontext
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from django.contrib.auth.models import AnonymousUser, User
 from django.contrib.messages import get_messages
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.exceptions import PermissionDenied
+from django.db import DatabaseError
 from django.http import HttpResponse
 from django.test import RequestFactory, SimpleTestCase
 from django.utils import timezone
@@ -26,30 +27,41 @@ from .services import (
     ESTADO_PARTIDA_PROGRAMADA,
     BolaBingoError,
     BolilleroAgotadoError,
+    CartonNoCompletoError,
     CartonAsignacionError,
     EstadoPartidaError,
+    MatrizCartonInvalidaError,
+    ValidacionCartonError,
     acciones_disponibles_consola,
     aplicar_accion_consola,
+    carton_tiene_bingo_completo,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
     estado_partida_mostrar,
+    evaluar_carton_en_partida,
     extraer_siguiente_bola,
     formatear_bola_bingo,
     generar_codigo_carton,
     generar_matriz_carton_bingo,
     letra_bingo,
     normalizar_estado_partida,
+    obtener_numeros_carton,
+    obtener_numeros_faltantes_carton,
     obtener_bolas_disponibles,
     parsear_bolas_cantadas,
+    parsear_candidatos_desempate,
+    preparar_cartones_para_validacion,
     puede_asignar_cartones,
     serializar_bolas_cantadas,
     serializar_matriz_carton_bingo,
+    validar_carton_ganador,
 )
 from .views import (
     _procesar_accion_consola,
     partida_carton_nuevo,
     partidas_lista,
     sacar_bola,
+    validar_carton,
 )
 
 
@@ -70,6 +82,16 @@ def datos_partida_form(**overrides):
     }
     data.update(overrides)
     return data
+
+
+def matriz_carton_prueba():
+    return [
+        [1, 16, 31, 46, 61],
+        [2, 17, 32, 47, 62],
+        [3, 18, CASILLA_LIBRE, 48, 63],
+        [4, 19, 33, 49, 64],
+        [5, 20, 34, 50, 65],
+    ]
 
 
 class PartidaBingoFormTests(SimpleTestCase):
@@ -632,6 +654,369 @@ class RutaExtraccionBolaTests(SimpleTestCase):
         self.assertIn(
             "Bola B-12 extraída correctamente.",
             [message.message for message in get_messages(request)],
+        )
+
+
+class ReglaGanadorCartonTests(SimpleTestCase):
+    def setUp(self):
+        self.matriz = matriz_carton_prueba()
+        self.numeros = obtener_numeros_carton(self.matriz)
+
+    def test_matriz_valida_5x5_con_libre_se_interpreta_correctamente(self):
+        serializada = serializar_matriz_carton_bingo(self.matriz)
+
+        self.assertEqual(deserializar_matriz_carton_bingo(serializada), self.matriz)
+        self.assertEqual(obtener_numeros_carton(serializada), self.numeros)
+        self.assertEqual(len(self.numeros), 24)
+
+    def test_carton_con_todos_los_numeros_llamados_es_ganador(self):
+        self.assertTrue(
+            carton_tiene_bingo_completo(self.matriz, self.numeros)
+        )
+
+    def test_carton_con_un_numero_pendiente_no_es_ganador(self):
+        bolas = self.numeros[:-1]
+
+        self.assertFalse(carton_tiene_bingo_completo(self.matriz, bolas))
+        self.assertEqual(
+            obtener_numeros_faltantes_carton(self.matriz, bolas),
+            [self.numeros[-1]],
+        )
+
+    def test_casilla_libre_no_cuenta_como_numero_pendiente(self):
+        faltantes = obtener_numeros_faltantes_carton(
+            self.matriz,
+            self.numeros,
+        )
+
+        self.assertEqual(faltantes, [])
+        self.assertNotIn(CASILLA_LIBRE, obtener_numeros_carton(self.matriz))
+
+    def test_matriz_danada_no_puede_ganar(self):
+        matriz_danada = "[[1,2,3],[4,5,6]]"
+
+        self.assertFalse(carton_tiene_bingo_completo(matriz_danada, range(1, 76)))
+        with self.assertRaises(MatrizCartonInvalidaError):
+            obtener_numeros_carton(matriz_danada)
+
+
+class ValidacionGanadorTests(SimpleTestCase):
+    def _partida(self, estado=ESTADO_PARTIDA_EN_CURSO, bolas=None, pk=20):
+        return Partidabingo(
+            idpartidabingo=pk,
+            estadopartida=estado,
+            bolascantadas=serializar_bolas_cantadas(bolas or []),
+            ultimabola=(bolas or [0])[-1],
+            idjugadorganador=None,
+            haydesempate=False,
+            idbingadores=None,
+        )
+
+    def _carton(self, partida, pk=30, jugador_pk=40, matriz=None):
+        jugador = Jugador(
+            idjugador=jugador_pk,
+            aliasjugador=f"Jugador {jugador_pk}",
+        )
+        carton = Carton(
+            idcarton=pk,
+            idpartida=partida,
+            idjugador=jugador,
+            codigocarton=f"P{partida.pk}-C-{pk}",
+            matriznumeros=serializar_matriz_carton_bingo(
+                matriz or matriz_carton_prueba()
+            ),
+            estadocarton="Vendido",
+        )
+        carton.save = Mock()
+        return carton
+
+    def _validar_sin_base(self, partida, carton, cartones, save_error=None):
+        partida_bloqueada = Partidabingo(
+            idpartidabingo=partida.pk,
+            estadopartida=partida.estadopartida,
+            bolascantadas=partida.bolascantadas,
+            ultimabola=partida.ultimabola,
+            idjugadorganador=partida.idjugadorganador,
+            haydesempate=partida.haydesempate,
+            idbingadores=partida.idbingadores,
+        )
+        partida_bloqueada.save = Mock(side_effect=save_error)
+
+        with (
+            patch(
+                "apps.bingos.services.transaction.atomic",
+                return_value=nullcontext(),
+            ) as atomic_mock,
+            patch(
+                "apps.bingos.services.Partidabingo.objects.select_for_update"
+            ) as lock_partida,
+            patch(
+                "apps.bingos.services.Carton.objects.select_for_update"
+            ) as lock_cartones,
+        ):
+            lock_partida.return_value.get.return_value = partida_bloqueada
+            consulta = lock_cartones.return_value.filter.return_value
+            consulta.select_related.return_value.order_by.return_value = cartones
+            resultado = validar_carton_ganador(partida, carton)
+
+        return (
+            resultado,
+            partida_bloqueada,
+            atomic_mock,
+            lock_partida,
+            lock_cartones,
+        )
+
+    def test_carton_no_puede_validarse_si_pertenece_a_otra_partida(self):
+        partida = self._partida(pk=1)
+        otra_partida = self._partida(pk=2)
+        carton = self._carton(otra_partida)
+
+        with patch("apps.bingos.services.transaction.atomic") as atomic_mock:
+            with self.assertRaises(ValidacionCartonError):
+                validar_carton_ganador(partida, carton)
+
+        atomic_mock.assert_not_called()
+
+    def test_no_se_puede_validar_en_programada(self):
+        partida = self._partida(estado=ESTADO_PARTIDA_PROGRAMADA)
+        carton = self._carton(partida)
+
+        with self.assertRaises(ValidacionCartonError):
+            validar_carton_ganador(partida, carton)
+
+    def test_no_se_puede_validar_en_pausada(self):
+        partida = self._partida(estado=ESTADO_PARTIDA_PAUSADA)
+        carton = self._carton(partida)
+
+        with self.assertRaises(ValidacionCartonError):
+            validar_carton_ganador(partida, carton)
+
+    def test_no_se_puede_validar_en_finalizada(self):
+        partida = self._partida(estado=ESTADO_PARTIDA_FINALIZADA)
+        carton = self._carton(partida)
+
+        with self.assertRaises(ValidacionCartonError):
+            validar_carton_ganador(partida, carton)
+
+    def test_en_espera_desempate_y_cancelada_tambien_bloquean_validacion(self):
+        for estado in (
+            ESTADO_PARTIDA_EN_ESPERA,
+            ESTADO_PARTIDA_DESEMPATE,
+            ESTADO_PARTIDA_CANCELADA,
+        ):
+            with self.subTest(estado=estado):
+                partida = self._partida(estado=estado)
+                carton = self._carton(partida)
+                with self.assertRaises(ValidacionCartonError):
+                    validar_carton_ganador(partida, carton)
+
+    def test_si_se_puede_validar_en_curso(self):
+        numeros = obtener_numeros_carton(matriz_carton_prueba())
+        partida = self._partida(bolas=numeros)
+        carton = self._carton(partida)
+
+        resultado, _bloqueada, _atomic, _lock_partida, _lock_cartones = (
+            self._validar_sin_base(partida, carton, [carton])
+        )
+
+        self.assertEqual(resultado["resultado"], "ganador")
+
+    def test_un_carton_ganador_registra_al_jugador(self):
+        numeros = obtener_numeros_carton(matriz_carton_prueba())
+        partida = self._partida(bolas=numeros)
+        carton = self._carton(partida, jugador_pk=77)
+
+        resultado, bloqueada, _atomic, _lock_partida, _lock_cartones = (
+            self._validar_sin_base(partida, carton, [carton])
+        )
+
+        self.assertEqual(resultado["resultado"], "ganador")
+        self.assertEqual(partida.idjugadorganador_id, 77)
+        self.assertFalse(partida.haydesempate)
+        registros = parsear_candidatos_desempate(partida.idbingadores)
+        self.assertEqual(len(registros), 1)
+        self.assertEqual(registros[0]["idcarton"], carton.pk)
+        self.assertEqual(registros[0]["idjugador"], 77)
+        self.assertEqual(partida.estadopartida, ESTADO_PARTIDA_EN_CURSO)
+        bloqueada.save.assert_called_once_with(
+            update_fields=[
+                "idjugadorganador",
+                "haydesempate",
+                "idbingadores",
+            ]
+        )
+
+    def test_varios_cartones_ganadores_cambian_a_desempate(self):
+        numeros = obtener_numeros_carton(matriz_carton_prueba())
+        partida = self._partida(bolas=numeros)
+        carton_uno = self._carton(partida, pk=31, jugador_pk=41)
+        carton_dos = self._carton(partida, pk=32, jugador_pk=42)
+
+        resultado, _bloqueada, _atomic, _lock_partida, _lock_cartones = (
+            self._validar_sin_base(
+                partida,
+                carton_uno,
+                [carton_uno, carton_dos],
+            )
+        )
+
+        self.assertEqual(resultado["resultado"], "desempate")
+        self.assertEqual(partida.estadopartida, ESTADO_PARTIDA_DESEMPATE)
+        self.assertTrue(partida.haydesempate)
+        candidatos = parsear_candidatos_desempate(partida.idbingadores)
+        self.assertEqual(
+            [candidato["idcarton"] for candidato in candidatos],
+            [31, 32],
+        )
+
+    def test_varios_ganadores_no_eligen_un_ganador_arbitrario(self):
+        numeros = obtener_numeros_carton(matriz_carton_prueba())
+        partida = self._partida(bolas=numeros)
+        carton_uno = self._carton(partida, pk=31, jugador_pk=41)
+        carton_dos = self._carton(partida, pk=32, jugador_pk=42)
+
+        self._validar_sin_base(
+            partida,
+            carton_uno,
+            [carton_uno, carton_dos],
+        )
+
+        self.assertIsNone(partida.idjugadorganador)
+
+    def test_carton_incompleto_no_modifica_partida(self):
+        numeros = obtener_numeros_carton(matriz_carton_prueba())
+        partida = self._partida(bolas=numeros[:-1])
+        carton = self._carton(partida)
+
+        with self.assertRaises(CartonNoCompletoError) as error:
+            self._validar_sin_base(partida, carton, [carton])
+
+        self.assertIn(formatear_bola_bingo(numeros[-1]), str(error.exception))
+        self.assertIsNone(partida.idjugadorganador)
+        self.assertEqual(partida.estadopartida, ESTADO_PARTIDA_EN_CURSO)
+
+    def test_validacion_conserva_bolas_y_no_modifica_cartones(self):
+        numeros = obtener_numeros_carton(matriz_carton_prueba())
+        partida = self._partida(bolas=numeros)
+        carton = self._carton(partida)
+        bolas_antes = partida.bolascantadas
+        matriz_antes = carton.matriznumeros
+
+        self._validar_sin_base(partida, carton, [carton])
+
+        self.assertEqual(partida.bolascantadas, bolas_antes)
+        self.assertEqual(carton.matriznumeros, matriz_antes)
+        carton.save.assert_not_called()
+
+    def test_validacion_usa_transaccion_y_bloquea_partida_y_cartones(self):
+        numeros = obtener_numeros_carton(matriz_carton_prueba())
+        partida = self._partida(bolas=numeros)
+        carton = self._carton(partida)
+
+        _resultado, _bloqueada, atomic, lock_partida, lock_cartones = (
+            self._validar_sin_base(partida, carton, [carton])
+        )
+
+        atomic.assert_called_once_with()
+        lock_partida.assert_called_once_with()
+        lock_partida.return_value.get.assert_called_once_with(pk=partida.pk)
+        lock_cartones.assert_called_once_with(of=("self",))
+
+    def test_error_al_guardar_no_sincroniza_cambios_parciales(self):
+        numeros = obtener_numeros_carton(matriz_carton_prueba())
+        partida = self._partida(bolas=numeros)
+        carton = self._carton(partida)
+
+        with self.assertRaises(DatabaseError):
+            self._validar_sin_base(
+                partida,
+                carton,
+                [carton],
+                save_error=DatabaseError("fallo simulado"),
+            )
+
+        self.assertIsNone(partida.idjugadorganador)
+        self.assertFalse(partida.haydesempate)
+        self.assertEqual(partida.estadopartida, ESTADO_PARTIDA_EN_CURSO)
+
+    def test_evaluar_carton_danado_genera_error_controlado_y_evidencia(self):
+        partida = self._partida(bolas=range(1, 76))
+        carton = self._carton(partida)
+        carton.matriznumeros = "[[1,2,3],[4,5,6]]"
+
+        with self.assertRaises(MatrizCartonInvalidaError):
+            evaluar_carton_en_partida(carton, partida)
+        with self.assertLogs("apps.bingos.services", level="WARNING"):
+            preparar_cartones_para_validacion(partida, [carton])
+
+    def test_consola_solo_prepara_cartones_vendidos_y_asignados(self):
+        partida = self._partida()
+        vendido = self._carton(partida, pk=31)
+        disponible = self._carton(partida, pk=32)
+        disponible.estadocarton = "Disponible"
+        sin_jugador = self._carton(partida, pk=33)
+        sin_jugador.idjugador = None
+
+        resultado = preparar_cartones_para_validacion(
+            partida,
+            [vendido, disponible, sin_jugador],
+        )
+
+        self.assertEqual(
+            [item["carton"].pk for item in resultado],
+            [vendido.pk],
+        )
+
+
+class RutaValidacionCartonTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def test_usuario_no_administrativo_recibe_acceso_denegado(self):
+        request = self.factory.post("/partidas/1/cartones/2/validar/")
+        request.user = User(username="jugador", is_staff=False, is_superuser=False)
+
+        with patch("apps.bingos.views.validar_carton_ganador") as validar_mock:
+            with self.assertRaises(PermissionDenied):
+                validar_carton(request, 1, 2)
+
+        validar_mock.assert_not_called()
+
+    def test_get_no_modifica_ganador_ni_estado(self):
+        request = self.factory.get("/partidas/1/cartones/2/validar/")
+        request.user = User(username="admin", is_staff=True)
+
+        with patch("apps.bingos.views.validar_carton_ganador") as validar_mock:
+            response = validar_carton(request, 1, 2)
+
+        self.assertEqual(response.status_code, 405)
+        validar_mock.assert_not_called()
+
+    def test_post_busca_el_carton_dentro_de_la_partida_de_la_url(self):
+        request = self.factory.post("/partidas/1/cartones/2/validar/")
+        request.user = User(username="admin", is_staff=True)
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        partida = Partidabingo(idpartidabingo=1)
+        carton = Carton(idcarton=2, idpartida=partida)
+
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                side_effect=[partida, carton],
+            ) as obtener_mock,
+            patch(
+                "apps.bingos.views.validar_carton_ganador",
+                side_effect=ValidacionCartonError("validación simulada"),
+            ),
+        ):
+            response = validar_carton(request, 1, 2)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            obtener_mock.call_args_list[1],
+            call(Carton, idcarton=2, idpartida=partida),
         )
 
 

@@ -1,4 +1,5 @@
 import json
+import logging
 import random
 import re
 import uuid
@@ -11,6 +12,9 @@ from django.utils import timezone
 from apps.common.ids import assign_next_integer_pk
 
 from .models import Carton, Partidabingo
+
+
+logger = logging.getLogger(__name__)
 
 
 ESTADO_PARTIDA_PROGRAMADA = "Programada"
@@ -98,6 +102,25 @@ class BolilleroAgotadoError(BolaBingoError):
     pass
 
 
+class ValidacionCartonError(ValueError):
+    pass
+
+
+class MatrizCartonInvalidaError(ValidacionCartonError):
+    pass
+
+
+class CartonNoCompletoError(ValidacionCartonError):
+    def __init__(self, faltantes):
+        self.faltantes = list(faltantes)
+        codigos = ", ".join(
+            formatear_bola_bingo(numero) for numero in self.faltantes
+        )
+        super().__init__(
+            f"Este cartón aún no completa Bingo. Faltan: {codigos}."
+        )
+
+
 def generar_matriz_carton_bingo(generador_aleatorio=None):
     """Genera una matriz de bingo 75 de cinco filas por cinco columnas."""
     generador_aleatorio = generador_aleatorio or random.SystemRandom()
@@ -132,6 +155,82 @@ def deserializar_matriz_carton_bingo(valor):
     if any(not isinstance(fila, list) or len(fila) != 5 for fila in matriz):
         return None
     return matriz
+
+
+def _normalizar_matriz_carton_bingo(matriz):
+    matriz = deserializar_matriz_carton_bingo(matriz)
+    if matriz is None:
+        raise MatrizCartonInvalidaError(
+            "La matriz debe ser un JSON con cinco filas y cinco columnas."
+        )
+
+    rangos_columnas = (
+        range(1, 16),
+        range(16, 31),
+        range(31, 46),
+        range(46, 61),
+        range(61, 76),
+    )
+    normalizada = []
+    numeros = []
+    for indice_fila, fila in enumerate(matriz):
+        fila_normalizada = []
+        for indice_columna, valor in enumerate(fila):
+            es_centro = indice_fila == 2 and indice_columna == 2
+            if es_centro:
+                if not (
+                    isinstance(valor, str)
+                    and valor.strip().upper() == CASILLA_LIBRE
+                ):
+                    raise MatrizCartonInvalidaError(
+                        'La casilla central debe contener "LIBRE".'
+                    )
+                fila_normalizada.append(CASILLA_LIBRE)
+                continue
+
+            if isinstance(valor, bool) or not isinstance(valor, int):
+                raise MatrizCartonInvalidaError(
+                    "Todas las casillas, excepto el centro, deben ser números enteros."
+                )
+            if valor not in rangos_columnas[indice_columna]:
+                raise MatrizCartonInvalidaError(
+                    "La matriz contiene un número fuera del rango de su columna."
+                )
+            fila_normalizada.append(valor)
+            numeros.append(valor)
+        normalizada.append(fila_normalizada)
+
+    if len(numeros) != 24 or len(set(numeros)) != 24:
+        raise MatrizCartonInvalidaError(
+            "La matriz debe contener 24 números únicos y una casilla LIBRE."
+        )
+    return normalizada
+
+
+def obtener_numeros_carton(matriz):
+    matriz_valida = _normalizar_matriz_carton_bingo(matriz)
+    return [
+        valor
+        for fila in matriz_valida
+        for valor in fila
+        if valor != CASILLA_LIBRE
+    ]
+
+
+def obtener_numeros_faltantes_carton(matriz, bolas_extraidas):
+    numeros_extraidos = set(parsear_bolas_cantadas(bolas_extraidas))
+    return [
+        numero
+        for numero in obtener_numeros_carton(matriz)
+        if numero not in numeros_extraidos
+    ]
+
+
+def carton_tiene_bingo_completo(matriz, bolas_extraidas):
+    try:
+        return not obtener_numeros_faltantes_carton(matriz, bolas_extraidas)
+    except MatrizCartonInvalidaError:
+        return False
 
 
 def puede_asignar_cartones(partida):
@@ -481,3 +580,312 @@ def extraer_siguiente_bola(partida, generador_aleatorio=None):
     partida.bolascantadas = partida_bloqueada.bolascantadas
     partida.ultimabola = nueva_bola
     return nueva_bola
+
+
+def estado_permite_validar_carton(partida):
+    return str(partida.estadopartida or "").strip() == ESTADO_PARTIDA_EN_CURSO
+
+
+def validar_estado_validacion_carton(partida):
+    if estado_permite_validar_carton(partida):
+        return
+    estado = str(partida.estadopartida or "Sin estado").strip()
+    raise ValidacionCartonError(
+        f"No se puede validar un cartón porque la partida está en estado {estado}. "
+        "Solo se permite cuando está En curso."
+    )
+
+
+def _carton_pertenece_a_partida(carton, partida):
+    return carton.idpartida_id == partida.pk
+
+
+def _carton_vendido_y_asignado(carton):
+    return (
+        carton.idjugador_id is not None
+        and str(carton.estadocarton or "").strip().lower() == "vendido"
+    )
+
+
+def evaluar_carton_en_partida(carton, partida):
+    if not _carton_pertenece_a_partida(carton, partida):
+        raise ValidacionCartonError(
+            "El cartón no pertenece a la partida indicada."
+        )
+    if not _carton_vendido_y_asignado(carton):
+        raise ValidacionCartonError(
+            "Solo se pueden validar cartones vendidos y asignados a un jugador."
+        )
+
+    matriz = _normalizar_matriz_carton_bingo(carton.matriznumeros)
+    faltantes = obtener_numeros_faltantes_carton(
+        matriz,
+        partida.bolascantadas,
+    )
+    return {
+        "carton": carton,
+        "matriz": matriz,
+        "faltantes": faltantes,
+        "completo": not faltantes,
+    }
+
+
+def buscar_cartones_ganadores(partida, cartones=None):
+    if cartones is None:
+        cartones = (
+            Carton.objects.filter(idpartida=partida)
+            .select_related("idjugador")
+            .order_by("idcarton")
+        )
+
+    ganadores = []
+    for carton in cartones:
+        if not _carton_vendido_y_asignado(carton):
+            continue
+        try:
+            evaluacion = evaluar_carton_en_partida(carton, partida)
+        except MatrizCartonInvalidaError as exc:
+            logger.warning(
+                "Cartón %s omitido al buscar ganadores de la partida %s: %s",
+                carton.pk,
+                partida.pk,
+                exc,
+            )
+            continue
+        if evaluacion["completo"]:
+            ganadores.append(carton)
+    return ganadores
+
+
+def construir_matriz_marcada_carton(matriz, bolas_extraidas):
+    matriz_valida = _normalizar_matriz_carton_bingo(matriz)
+    extraidas = set(parsear_bolas_cantadas(bolas_extraidas))
+    return [
+        [
+            {
+                "valor": valor,
+                "libre": valor == CASILLA_LIBRE,
+                "marcada": valor == CASILLA_LIBRE or valor in extraidas,
+            }
+            for valor in fila
+        ]
+        for fila in matriz_valida
+    ]
+
+
+def preparar_cartones_para_validacion(partida, cartones):
+    resultado = []
+    for carton in cartones:
+        # La consola de validación solo expone cartones que pueden competir.
+        # La misma condición vuelve a comprobarse dentro de la transacción.
+        if not _carton_vendido_y_asignado(carton):
+            continue
+
+        error = None
+        matriz_marcada = None
+        faltantes = []
+        try:
+            matriz_marcada = construir_matriz_marcada_carton(
+                carton.matriznumeros,
+                partida.bolascantadas,
+            )
+            faltantes = obtener_numeros_faltantes_carton(
+                carton.matriznumeros,
+                partida.bolascantadas,
+            )
+        except MatrizCartonInvalidaError as exc:
+            error = "La matriz de este cartón es inválida y no puede ganar."
+            logger.warning(
+                "Matriz inválida en cartón %s de partida %s: %s",
+                carton.pk,
+                partida.pk,
+                exc,
+            )
+
+        resultado.append(
+            {
+                "carton": carton,
+                "matriz": matriz_marcada,
+                "faltantes": faltantes,
+                "faltantes_codigos": [
+                    formatear_bola_bingo(numero) for numero in faltantes
+                ],
+                "cantidad_marcados": 24 - len(faltantes) if matriz_marcada else 0,
+                "completo": matriz_marcada is not None and not faltantes,
+                "error": error,
+                "puede_validar": (
+                    error is None and estado_permite_validar_carton(partida)
+                ),
+            }
+        )
+    return resultado
+
+
+def _candidato_desempate_desde_carton(carton):
+    return {
+        "idcarton": carton.pk,
+        "codigocarton": carton.codigocarton,
+        "idjugador": carton.idjugador_id,
+        "jugador": str(carton.idjugador),
+    }
+
+
+def serializar_candidatos_desempate(cartones):
+    candidatos = [
+        _candidato_desempate_desde_carton(carton)
+        for carton in sorted(cartones, key=lambda item: item.pk)
+    ]
+    return json.dumps(candidatos, ensure_ascii=False, separators=(",", ":"))
+
+
+def parsear_candidatos_desempate(valor):
+    if valor in (None, ""):
+        return []
+    if isinstance(valor, str):
+        texto = valor.strip()
+        if not texto:
+            return []
+        try:
+            candidatos = json.loads(texto)
+        except json.JSONDecodeError:
+            candidatos = re.split(r"[,;|\s]+", texto)
+    else:
+        candidatos = valor
+
+    if not isinstance(candidatos, list):
+        candidatos = [candidatos]
+
+    normalizados = []
+    for candidato in candidatos:
+        if isinstance(candidato, dict):
+            normalizados.append(
+                {
+                    "idcarton": candidato.get("idcarton"),
+                    "codigocarton": candidato.get("codigocarton"),
+                    "idjugador": candidato.get("idjugador"),
+                    "jugador": candidato.get("jugador"),
+                }
+            )
+            continue
+        numero = _numero_entero_positivo(candidato)
+        if numero is not None:
+            normalizados.append(
+                {
+                    "idcarton": None,
+                    "codigocarton": None,
+                    "idjugador": numero,
+                    "jugador": None,
+                }
+            )
+    return normalizados
+
+
+def _numero_entero_positivo(valor):
+    if isinstance(valor, bool):
+        return None
+    if isinstance(valor, int):
+        return valor if valor > 0 else None
+    if isinstance(valor, str) and valor.strip().isdigit():
+        numero = int(valor.strip())
+        return numero if numero > 0 else None
+    return None
+
+
+def validar_carton_ganador(partida, carton):
+    validar_estado_validacion_carton(partida)
+    if not _carton_pertenece_a_partida(carton, partida):
+        raise ValidacionCartonError(
+            "El cartón no pertenece a la partida indicada."
+        )
+
+    with transaction.atomic():
+        partida_bloqueada = Partidabingo.objects.select_for_update().get(
+            pk=partida.pk
+        )
+        validar_estado_validacion_carton(partida_bloqueada)
+        cartones_bloqueados = list(
+            # idjugador es nullable: limitar FOR UPDATE a carton evita que
+            # PostgreSQL intente bloquear el lado nullable del OUTER JOIN.
+            Carton.objects.select_for_update(of=("self",))
+            .filter(idpartida=partida_bloqueada)
+            .select_related("idjugador")
+            .order_by("idcarton")
+        )
+        carton_bloqueado = next(
+            (
+                candidato
+                for candidato in cartones_bloqueados
+                if candidato.pk == carton.pk
+            ),
+            None,
+        )
+        if carton_bloqueado is None:
+            raise ValidacionCartonError(
+                "El cartón no pertenece a la partida indicada."
+            )
+
+        try:
+            evaluacion = evaluar_carton_en_partida(
+                carton_bloqueado,
+                partida_bloqueada,
+            )
+        except MatrizCartonInvalidaError as exc:
+            logger.warning(
+                "Validación rechazada por matriz inválida: partida=%s cartón=%s error=%s",
+                partida_bloqueada.pk,
+                carton_bloqueado.pk,
+                exc,
+            )
+            raise MatrizCartonInvalidaError(
+                "La matriz del cartón es inválida y no puede ganar."
+            ) from exc
+
+        if not evaluacion["completo"]:
+            raise CartonNoCompletoError(evaluacion["faltantes"])
+
+        cartones_ganadores = buscar_cartones_ganadores(
+            partida_bloqueada,
+            cartones=cartones_bloqueados,
+        )
+        if not cartones_ganadores:
+            raise ValidacionCartonError(
+                "No se encontró un cartón ganador válido con las bolas actuales."
+            )
+        if len(cartones_ganadores) > 1:
+            partida_bloqueada.idjugadorganador = None
+            partida_bloqueada.estadopartida = ESTADO_PARTIDA_DESEMPATE
+            partida_bloqueada.haydesempate = True
+            partida_bloqueada.idbingadores = serializar_candidatos_desempate(
+                cartones_ganadores
+            )
+            update_fields = [
+                "idjugadorganador",
+                "estadopartida",
+                "haydesempate",
+                "idbingadores",
+            ]
+            resultado = "desempate"
+        else:
+            ganador = cartones_ganadores[0]
+            partida_bloqueada.idjugadorganador = ganador.idjugador
+            partida_bloqueada.haydesempate = False
+            partida_bloqueada.idbingadores = serializar_candidatos_desempate(
+                [ganador]
+            )
+            update_fields = [
+                "idjugadorganador",
+                "haydesempate",
+                "idbingadores",
+            ]
+            resultado = "ganador"
+
+        partida_bloqueada.save(update_fields=update_fields)
+
+    for field_name in update_fields:
+        setattr(partida, field_name, getattr(partida_bloqueada, field_name))
+    return {
+        "resultado": resultado,
+        "carton": carton_bloqueado,
+        "cartones_ganadores": cartones_ganadores,
+        "partida": partida_bloqueada,
+    }

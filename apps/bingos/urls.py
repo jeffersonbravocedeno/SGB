@@ -16,6 +16,11 @@ urlpatterns = [
     path("partidas/<int:idpartidabingo>/sacar-bola/", views.sacar_bola, name="sacar_bola"),
     path("partidas/<int:idpartidabingo>/cartones/nuevo/", views.partida_carton_nuevo, name="partida_carton_nuevo"),
     path(
+        "partidas/<int:idpartidabingo>/cartones/<int:idcarton>/validar/",
+        views.validar_carton,
+        name="validar_carton",
+    ),
+    path(
         "partidas/<int:idpartidabingo>/cartones/<int:idcarton>/editar/",
         views.partida_carton_editar,
         name="partida_carton_editar",
