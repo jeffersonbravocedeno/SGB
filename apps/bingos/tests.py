@@ -22,7 +22,7 @@ from django.utils import timezone
 from apps.jugadores.models import Jugador
 
 from .forms import AccesoCartonPublicoForm, GenerarAsignarCartonForm, PartidaBingoForm
-from .models import Bingo, Carton, Partidabingo
+from .models import Bingo, Carton, CartonPartidaBingo, Partidabingo
 from .consumers import PartidaPublicaConsumer
 from .realtime import (
     construir_payload_publico_partida,
@@ -62,6 +62,7 @@ from .services import (
     carton_tiene_bingo_completo,
     contar_numeros_marcados_carton,
     confirmar_y_finalizar_desempate,
+    crear_carton_maestro_para_bingo,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
     estado_partida_mostrar,
@@ -69,6 +70,7 @@ from .services import (
     extraer_siguiente_bola,
     formatear_bola_bingo,
     generar_codigo_carton,
+    generar_codigo_carton_bingo,
     generar_matriz_carton_bingo,
     letra_bingo,
     normalizar_estado_partida,
@@ -92,6 +94,7 @@ from .services import (
     serializar_matriz_carton_bingo,
     sortear_balota_desempate,
     validar_carton_ganador,
+    validar_venta_carton_para_bingo,
 )
 from .views import (
     _procesar_accion_consola,
@@ -428,6 +431,196 @@ class AsignacionCartonTests(SimpleTestCase):
 
         atomic_mock.assert_not_called()
         save_mock.assert_not_called()
+
+
+class CartonMaestroBingoTests(SimpleTestCase):
+    def setUp(self):
+        self.bingo = Bingo(idbingo=7, titulobingo="Bingo híbrido")
+        self.jugador = Jugador(idjugador=4)
+        self.fecha_compra = timezone.now()
+        self.partidas = [
+            Partidabingo(
+                idpartidabingo=21,
+                idbingo=self.bingo,
+                nombreronda="Ronda 1",
+                estadopartida=ESTADO_PARTIDA_PROGRAMADA,
+            ),
+            Partidabingo(
+                idpartidabingo=22,
+                idbingo=self.bingo,
+                nombreronda="Ronda 2",
+                estadopartida=ESTADO_PARTIDA_EN_ESPERA,
+            ),
+        ]
+
+    def _crear_sin_base(self, partidas=None, error_participacion=None):
+        partidas = self.partidas if partidas is None else partidas
+
+        def asignar_pk(carton):
+            carton.idcarton = 40
+            return carton
+
+        with (
+            patch(
+                "apps.bingos.services.transaction.atomic",
+                return_value=nullcontext(),
+            ) as atomic_mock,
+            patch(
+                "apps.bingos.services.Bingo.objects.select_for_update"
+            ) as lock_bingo,
+            patch(
+                "apps.bingos.services.Partidabingo.objects.select_for_update"
+            ) as lock_partidas,
+            patch(
+                "apps.bingos.services.assign_next_integer_pk",
+                side_effect=asignar_pk,
+            ) as assign_pk_mock,
+            patch(
+                "apps.bingos.services.generar_codigo_carton_bingo",
+                return_value="B7-C-ABC1234567",
+            ) as codigo_mock,
+            patch(
+                "apps.bingos.services.generar_matriz_carton_bingo",
+                return_value=matriz_carton_prueba(),
+            ) as matriz_mock,
+            patch.object(Carton, "full_clean") as full_clean_mock,
+            patch.object(Carton, "save") as save_mock,
+            patch(
+                "apps.bingos.services.CartonPartidaBingo.objects.create",
+                side_effect=error_participacion,
+            ) as crear_participacion_mock,
+        ):
+            lock_bingo.return_value.get.return_value = self.bingo
+            consulta = lock_partidas.return_value.filter.return_value
+            consulta.order_by.return_value = partidas
+            carton = crear_carton_maestro_para_bingo(
+                bingo=self.bingo,
+                jugador=self.jugador,
+                precio_pagado=Decimal("5.00"),
+                fecha_compra=self.fecha_compra,
+            )
+
+        return {
+            "carton": carton,
+            "atomic": atomic_mock,
+            "lock_bingo": lock_bingo,
+            "lock_partidas": lock_partidas,
+            "assign_pk": assign_pk_mock,
+            "codigo": codigo_mock,
+            "matriz": matriz_mock,
+            "full_clean": full_clean_mock,
+            "save": save_mock,
+            "crear_participacion": crear_participacion_mock,
+        }
+
+    def test_crea_un_maestro_y_una_participacion_por_partida(self):
+        resultado = self._crear_sin_base()
+        carton = resultado["carton"]
+
+        self.assertEqual(carton.idbingo, self.bingo)
+        self.assertIsNone(carton.idpartida)
+        self.assertIsNone(carton.indicevictoria)
+        self.assertEqual(carton.idjugador, self.jugador)
+        self.assertEqual(carton.codigocarton, "B7-C-ABC1234567")
+        self.assertEqual(carton.preciopagado, Decimal("5.00"))
+        self.assertEqual(carton.fechacompra, self.fecha_compra)
+        self.assertEqual(carton.estadocarton, "Vendido")
+        self.assertEqual(
+            deserializar_matriz_carton_bingo(carton.matriznumeros),
+            matriz_carton_prueba(),
+        )
+        resultado["atomic"].assert_called_once_with()
+        resultado["lock_bingo"].return_value.get.assert_called_once_with(pk=7)
+        resultado["lock_partidas"].return_value.filter.assert_called_once_with(
+            idbingo=self.bingo
+        )
+        resultado["lock_partidas"].return_value.filter.return_value.order_by.assert_called_once_with(
+            "idpartidabingo"
+        )
+        resultado["assign_pk"].assert_called_once_with(carton)
+        resultado["codigo"].assert_called_once_with(7)
+        resultado["matriz"].assert_called_once_with()
+        resultado["full_clean"].assert_called_once_with(
+            validate_unique=False,
+            validate_constraints=False,
+        )
+        resultado["save"].assert_called_once_with(force_insert=True)
+        self.assertEqual(resultado["crear_participacion"].call_count, 2)
+
+        partidas_creadas = []
+        for llamada in resultado["crear_participacion"].call_args_list:
+            valores = llamada.kwargs
+            partidas_creadas.append(valores["idpartida"])
+            self.assertEqual(valores["idcarton"], carton)
+            self.assertEqual(valores["idbingo"], self.bingo)
+            self.assertEqual(
+                valores["estado_participacion"],
+                CartonPartidaBingo.ESTADO_PENDIENTE,
+            )
+            self.assertIsNone(valores["indicevictoria"])
+            self.assertFalse(valores["es_asignacion_original"])
+            self.assertEqual(
+                valores["origen_asignacion"],
+                CartonPartidaBingo.ORIGEN_APLICACION,
+            )
+            self.assertEqual(valores["fechacreacion"], self.fecha_compra)
+            self.assertIsNone(valores["fechavalidacion"])
+            self.assertNotIn("idcartonpartidabingo", valores)
+
+        self.assertEqual(partidas_creadas, self.partidas)
+
+    def test_codigo_nuevo_usa_prefijo_de_bingo(self):
+        codigo = generar_codigo_carton_bingo(
+            17,
+            existe_codigo=lambda _codigo: False,
+            generador_token=lambda: "abc-def-1234567890",
+        )
+
+        self.assertTrue(codigo.startswith("B17-C-"))
+        self.assertLessEqual(len(codigo), 30)
+
+    def test_rechaza_bingo_sin_partidas(self):
+        with self.assertRaisesMessage(
+            CartonAsignacionError,
+            "el Bingo no tiene partidas",
+        ):
+            validar_venta_carton_para_bingo(self.bingo, [])
+
+    def test_rechaza_si_una_partida_no_admite_venta(self):
+        estados_bloqueados = (
+            ESTADO_PARTIDA_EN_CURSO,
+            ESTADO_PARTIDA_PAUSADA,
+            ESTADO_PARTIDA_DESEMPATE,
+            ESTADO_PARTIDA_FINALIZADA,
+            ESTADO_PARTIDA_CANCELADA,
+        )
+        for estado in estados_bloqueados:
+            with self.subTest(estado=estado):
+                partida = Partidabingo(
+                    idpartidabingo=30,
+                    nombreronda="Bloqueada",
+                    estadopartida=estado,
+                )
+                with self.assertRaisesMessage(
+                    CartonAsignacionError,
+                    "todas las partidas del Bingo deben estar Programada o En espera",
+                ):
+                    validar_venta_carton_para_bingo(
+                        self.bingo,
+                        [self.partidas[0], partida],
+                    )
+
+    def test_acepta_programada_y_en_espera(self):
+        self.assertEqual(
+            validar_venta_carton_para_bingo(self.bingo, self.partidas),
+            self.partidas,
+        )
+
+    def test_error_de_participacion_se_propaga_para_rollback_atomico(self):
+        with self.assertRaisesMessage(RuntimeError, "fallo de participacion"):
+            self._crear_sin_base(
+                error_participacion=RuntimeError("fallo de participacion")
+            )
 
 
 class GenerarAsignarCartonFormTests(SimpleTestCase):

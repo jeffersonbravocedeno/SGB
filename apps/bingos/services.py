@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from apps.common.ids import assign_next_integer_pk
 
-from .models import Carton, Partidabingo
+from .models import Bingo, Carton, CartonPartidaBingo, Partidabingo
 
 
 logger = logging.getLogger(__name__)
@@ -294,8 +294,136 @@ def generar_codigo_carton(
     )
 
 
+def generar_codigo_carton_bingo(
+    idbingo,
+    existe_codigo=None,
+    generador_token=None,
+    max_intentos=20,
+):
+    """Genera un código global para un cartón maestro perteneciente a un Bingo."""
+    existe_codigo = existe_codigo or (
+        lambda codigo: Carton.objects.filter(codigocarton=codigo).exists()
+    )
+    generador_token = generador_token or uuid.uuid4
+    prefijo = f"B{idbingo}-C-"
+    longitud_token = min(10, 30 - len(prefijo))
+    if longitud_token < 1:
+        raise CartonAsignacionError("No fue posible construir el código del cartón.")
+
+    for _intento in range(max_intentos):
+        token_generado = generador_token()
+        token = str(getattr(token_generado, "hex", token_generado))
+        token = token.replace("-", "").upper()[:longitud_token]
+        if token:
+            codigo = f"{prefijo}{token}"
+            if not existe_codigo(codigo):
+                return codigo
+
+    raise CartonAsignacionError(
+        "No fue posible generar un código único para el cartón. Inténtalo nuevamente."
+    )
+
+
+def validar_venta_carton_para_bingo(bingo, partidas):
+    """Exige al menos una ronda y que todas sigan abiertas para venta."""
+    partidas = list(partidas)
+    if not partidas:
+        raise CartonAsignacionError(
+            "No se puede vender un cartón porque el Bingo no tiene partidas."
+        )
+
+    partidas_no_aptas = [
+        partida
+        for partida in partidas
+        if not puede_asignar_cartones(partida)
+    ]
+    if partidas_no_aptas:
+        estados = ", ".join(
+            f"{partida.nombreronda or partida.pk}: "
+            f"{str(partida.estadopartida or 'Sin estado').strip()}"
+            for partida in partidas_no_aptas
+        )
+        raise CartonAsignacionError(
+            "No se puede vender un cartón porque todas las partidas del Bingo "
+            "deben estar Programada o En espera. Partidas no aptas: "
+            f"{estados}."
+        )
+
+    return partidas
+
+
+def crear_carton_maestro_para_bingo(
+    bingo,
+    jugador,
+    precio_pagado,
+    fecha_compra=None,
+):
+    """Crea un maestro y una participación por cada ronda vendible del Bingo."""
+    with transaction.atomic():
+        if bingo is None or getattr(bingo, "pk", None) is None:
+            raise CartonAsignacionError("El Bingo es obligatorio.")
+        if jugador is None or getattr(jugador, "pk", None) is None:
+            raise CartonAsignacionError("El jugador es obligatorio.")
+
+        try:
+            precio_pagado = Decimal(str(precio_pagado))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise CartonAsignacionError(
+                "Ingrese un precio pagado válido."
+            ) from exc
+        if not precio_pagado.is_finite() or precio_pagado <= 0:
+            raise CartonAsignacionError(
+                "El precio pagado debe ser mayor que cero."
+            )
+
+        bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+        partidas = list(
+            Partidabingo.objects.select_for_update()
+            .filter(idbingo=bingo_bloqueado)
+            .order_by("idpartidabingo")
+        )
+        validar_venta_carton_para_bingo(bingo_bloqueado, partidas)
+
+        fecha_compra = fecha_compra or timezone.now()
+        matriz = generar_matriz_carton_bingo()
+        carton = Carton(
+            idbingo=bingo_bloqueado,
+            idjugador=jugador,
+            idpartida=None,
+            codigocarton="",
+            matriznumeros=serializar_matriz_carton_bingo(matriz),
+            indicevictoria=None,
+            preciopagado=precio_pagado,
+            fechacompra=fecha_compra,
+            estadocarton="Vendido",
+        )
+
+        # La PK manual pertenece solo al maestro heredado. Las participaciones
+        # usan AutoField/IDENTITY y nunca pasan por este helper.
+        assign_next_integer_pk(carton)
+        carton.codigocarton = generar_codigo_carton_bingo(bingo_bloqueado.pk)
+        carton.full_clean(validate_unique=False, validate_constraints=False)
+        carton.save(force_insert=True)
+
+        for partida in partidas:
+            CartonPartidaBingo.objects.create(
+                idcarton=carton,
+                idpartida=partida,
+                idbingo=bingo_bloqueado,
+                estado_participacion=CartonPartidaBingo.ESTADO_PENDIENTE,
+                indicevictoria=None,
+                es_asignacion_original=False,
+                origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
+                motivoestado=None,
+                fechacreacion=fecha_compra,
+                fechavalidacion=None,
+            )
+
+    return carton
+
+
 def crear_y_asignar_carton(partida, jugador, precio_pagado, fecha_compra=None):
-    """Valida, genera y guarda un cartón completo dentro de una transacción."""
+    """Flujo heredado: crea un cartón ligado a una sola partida."""
     validar_asignacion_cartones(partida)
     if jugador is None or getattr(jugador, "pk", None) is None:
         raise CartonAsignacionError("El jugador es obligatorio.")
