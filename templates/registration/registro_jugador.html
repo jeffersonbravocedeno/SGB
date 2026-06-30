@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | Registro de jugador{% endblock %}
+
+{% block content %}
+<section class="page-header public-page-header">
+    <div>
+        <p class="page-kicker">Registro de jugador</p>
+        <h1>Crear cuenta de jugador</h1>
+        <p>Usa tu alias como nombre de usuario. La contraseña se guarda cifrada con Django Auth.</p>
+    </div>
+    <a class="btn btn-outline-light" href="{% url 'login' %}">Ya tengo cuenta</a>
+</section>
+
+<form class="content-panel public-access-panel" method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+    <div class="mb-3">{% include "includes/field.html" with field=form.aliasjugador %}</div>
+    <div class="mb-3">{% include "includes/field.html" with field=form.correojugador %}</div>
+    <div class="mb-3">{% include "includes/field.html" with field=form.password1 %}</div>
+    <div class="mb-4">{% include "includes/field.html" with field=form.password2 %}</div>
+    <button class="btn btn-primary btn-lg w-100" type="submit">Registrarme</button>
+    <p class="small text-muted mt-3 mb-0">Registrarte no crea cartones. Los cartones se asignan por el operador a tu registro de jugador.</p>
+</form>
+{% endblock %}

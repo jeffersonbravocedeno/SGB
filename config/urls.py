@@ -2,21 +2,16 @@ from django.contrib import admin
 from django.contrib.auth import views as auth_views
 from django.urls import include, path
 
-from apps.seguridad.forms import SIABAuthenticationForm, SIABPasswordChangeForm
+from apps.seguridad.forms import SIABPasswordChangeForm
+from apps.seguridad.views import SIABLoginView, registro_jugador
 
 from .views import health, home
 
 
 urlpatterns = [
     path("", home, name="home"),
-    path(
-        "login/",
-        auth_views.LoginView.as_view(
-            template_name="registration/login.html",
-            authentication_form=SIABAuthenticationForm,
-        ),
-        name="login",
-    ),
+    path("login/", SIABLoginView.as_view(), name="login"),
+    path("registro/", registro_jugador, name="registro_jugador"),
     path("logout/", auth_views.LogoutView.as_view(), name="logout"),
     path(
         "password-change/",

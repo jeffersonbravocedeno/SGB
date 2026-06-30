@@ -1,16 +1,22 @@
+{% load siab_tags %}
 <nav class="navbar navbar-expand-lg navbar-dark siab-navbar fixed-top">
     <div class="container-fluid">
         <button class="btn btn-outline-light d-lg-none me-2" type="button" data-bs-toggle="offcanvas" data-bs-target="#mobileSidebar" aria-controls="mobileSidebar" aria-label="Abrir menú">
             ☰
         </button>
-        {% if request.user.is_authenticated %}
+        {% if request.user.is_staff or request.user.is_superuser %}
         <a class="navbar-brand fw-bold" href="{% url 'home' %}">SIAB</a>
+        {% elif request.user|has_group:"Jugador" %}
+        <a class="navbar-brand fw-bold" href="{% url 'bingos:mis_cartones' %}">SIAB</a>
         {% else %}
         <a class="navbar-brand fw-bold" href="{% url 'bingos:sala_juego_publica' %}">SIAB</a>
         {% endif %}
         <span class="navbar-system-name d-none d-md-inline">Sistema Integral de Administración de Bingos</span>
         <div class="ms-auto d-flex align-items-center gap-3">
             <div class="d-none d-xl-flex align-items-center gap-2">
+                {% if request.user|has_group:"Jugador" and not request.user.is_staff and not request.user.is_superuser %}
+                <a class="btn btn-outline-light btn-sm" href="{% url 'bingos:mis_cartones' %}">Mis cartones</a>
+                {% endif %}
                 <a class="btn btn-outline-light btn-sm" href="{% url 'bingos:sala_juego_publica' %}">Sala de juego</a>
                 <a class="btn btn-outline-light btn-sm" href="{% url 'bingos:acceder_carton_publico' %}">Consultar cartón</a>
             </div>
@@ -24,7 +30,8 @@
                 <button class="btn btn-light btn-sm" type="submit">Cerrar sesión</button>
             </form>
             {% else %}
-            <a class="btn btn-light btn-sm" href="{% url 'login' %}">Acceso administrativo</a>
+            <a class="btn btn-outline-light btn-sm" href="{% url 'registro_jugador' %}">Registrarse</a>
+            <a class="btn btn-light btn-sm" href="{% url 'login' %}">Iniciar sesión</a>
             {% endif %}
         </div>
     </div>

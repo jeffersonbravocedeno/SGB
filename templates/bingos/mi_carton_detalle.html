@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% load static siab_tags %}
+
+{% block title %}SIAB | Mi cartón privado{% endblock %}
+
+{% block content %}
+<div{% if partida %} data-realtime-bingo data-realtime-mode="carton" data-partida-id="{{ partida.idpartidabingo }}" data-total-numeros-carton="{{ total_numeros_carton }}"{% endif %}>
+<section class="page-header public-page-header">
+    <div>
+        <p class="page-kicker">Mi cartón</p>
+        <h1>{{ carton.codigocarton }}</h1>
+        <p>{{ jugador.aliasjugador }}</p>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        {% if partida %}<span class="realtime-status realtime-status--manual" data-realtime-status role="status">Actualización manual</span>{% endif %}
+        <a class="btn btn-outline-light" href="{% url 'bingos:mis_cartones' %}">Mis cartones</a>
+        <a class="btn btn-light" href="{% url 'bingos:mi_carton_detalle' carton.codigocarton %}">Actualizar cartón</a>
+    </div>
+</section>
+
+{% if partida %}
+<div class="alert public-state-message" data-realtime-mensaje role="status">{{ mensaje_estado_carton }}</div>
+<section class="content-panel mb-3">
+    <dl class="public-board-summary">
+        <div><dt>Bingo</dt><dd>{{ partida.idbingo.titulobingo }}</dd></div>
+        <div><dt>Ronda</dt><dd>{{ partida.nombreronda }}</dd></div>
+        <div><dt>Estado</dt><dd data-realtime-estado>{{ partida.estadopartida|estado_partida_display }}</dd></div>
+        <div><dt>Última bola</dt><dd data-realtime-ultima-bola>{{ ultima_bola_codigo|default:"-" }}</dd></div>
+        <div><dt>Progreso</dt><dd data-realtime-progreso>{{ numeros_marcados }} de {{ total_numeros_carton }} números marcados</dd></div>
+    </dl>
+</section>
+{% endif %}
+
+<section class="content-panel public-card-panel">
+    {% if error_carton %}
+    <div class="alert alert-danger mb-0" role="alert">{{ error_carton }}</div>
+    {% elif matriz_carton %}
+    <div class="table-responsive">
+        <table class="table table-bordered text-center align-middle public-bingo-card">
+            <thead class="table-dark"><tr><th>B</th><th>I</th><th>N</th><th>G</th><th>O</th></tr></thead>
+            <tbody>
+                {% for fila in matriz_carton %}
+                <tr>
+                    {% for casilla in fila %}
+                    <td class="public-card-cell {% if casilla.libre %}public-card-cell--free{% elif casilla.marcada %}public-card-cell--marked{% else %}public-card-cell--pending{% endif %}"{% if not casilla.libre %} data-carton-cell data-bola-numero="{{ casilla.valor }}"{% endif %}>
+                        <span class="public-card-cell-value">{{ casilla.valor }}</span>
+                        <span class="public-card-cell-state"{% if not casilla.libre %} data-carton-cell-state{% endif %}>
+                            {% if casilla.libre %}Automática{% elif casilla.marcada %}Marcado{% else %}Pendiente{% endif %}
+                        </span>
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="public-card-progress" role="status">
+        <p class="public-card-progress-count" data-realtime-progreso>{{ numeros_marcados }} de {{ total_numeros_carton }} números marcados.</p>
+        <p class="public-card-progress-note">La casilla LIBRE se marca automáticamente.</p>
+    </div>
+    {% endif %}
+</section>
+</div>
+{% if partida %}<script src="{% static 'js/realtime_bingo.js' %}" defer></script>{% endif %}
+{% endblock %}

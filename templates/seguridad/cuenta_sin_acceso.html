@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | Cuenta sin acceso asignado{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Seguridad</p>
+        <h1>Cuenta sin acceso asignado</h1>
+        <p>Tu usuario inició sesión, pero no tiene permisos administrativos ni una cuenta de jugador vinculada.</p>
+    </div>
+</section>
+
+<section class="content-panel empty-state">
+    <strong>Solicita ayuda al administrador.</strong>
+    <span>La cuenta debe ser staff para administrar o pertenecer al grupo Jugador y coincidir con un alias de jugador activo.</span>
+</section>
+{% endblock %}

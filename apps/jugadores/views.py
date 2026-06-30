@@ -1,5 +1,6 @@
 from django.contrib import messages
-from django.db import IntegrityError, transaction
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -8,6 +9,12 @@ from apps.common.decorators import admin_required
 from apps.bingos.models import Carton, Sesionjuego
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate
+from apps.jugadores.services import (
+    crear_acceso_para_jugador,
+    estado_cuenta_acceso_jugador,
+    sincronizar_alias_jugador_si_corresponde,
+)
+from apps.seguridad.forms import CrearAccesoJugadorForm
 
 from .forms import JugadorForm
 from .models import Jugador
@@ -83,6 +90,14 @@ def detalle(request, idjugador):
         Jugador.objects.select_related("idsocio"),
         idjugador=idjugador,
     )
+    return render(
+        request,
+        "jugadores/detalle.html",
+        _detalle_context(jugador),
+    )
+
+
+def _detalle_context(jugador, cuenta_acceso_form=None):
     cartones = (
         Carton.objects.filter(idjugador=jugador)
         .select_related("idpartida", "idpartida__idbingo")
@@ -93,33 +108,72 @@ def detalle(request, idjugador):
         .select_related("idplataforma", "idpartida")
         .order_by("-fechainiciosesion")[:20]
     )
+    cuenta_acceso = estado_cuenta_acceso_jugador(jugador)
+    if cuenta_acceso_form is None and cuenta_acceso["puede_crear"]:
+        cuenta_acceso_form = CrearAccesoJugadorForm(jugador)
+
+    return {
+        "jugador": jugador,
+        "cartones": cartones,
+        "sesiones": sesiones,
+        "cuenta_acceso": cuenta_acceso,
+        "cuenta_acceso_form": cuenta_acceso_form,
+    }
+
+
+@admin_required
+def crear_acceso(request, idjugador):
+    jugador = get_object_or_404(Jugador, idjugador=idjugador)
+    if request.method != "POST":
+        return redirect("jugadores:detalle", idjugador=jugador.idjugador)
+
+    form = CrearAccesoJugadorForm(jugador, request.POST)
+    if form.is_valid():
+        try:
+            crear_acceso_para_jugador(
+                jugador,
+                form.cleaned_data["password1"],
+            )
+        except ValidationError as exc:
+            form.add_error(None, exc)
+        except IntegrityError as exc:
+            form.add_error(None, "No fue posible crear la cuenta de acceso.")
+        else:
+            messages.success(
+                request,
+                "Cuenta de acceso creada correctamente.",
+            )
+            return redirect("jugadores:detalle", idjugador=jugador.idjugador)
 
     return render(
         request,
         "jugadores/detalle.html",
-        {
-            "jugador": jugador,
-            "cartones": cartones,
-            "sesiones": sesiones,
-        },
+        _detalle_context(jugador, cuenta_acceso_form=form),
     )
 
 
 @admin_required
 def editar(request, idjugador):
     jugador = get_object_or_404(Jugador, idjugador=idjugador)
+    alias_anterior = jugador.aliasjugador
 
     if request.method == "POST":
         form = JugadorForm(request.POST, instance=jugador)
         if form.is_valid():
             try:
-                with transaction.atomic():
-                    form.save()
+                jugador_guardado = sincronizar_alias_jugador_si_corresponde(
+                    form,
+                    alias_anterior,
+                )
             except IntegrityError as exc:
                 form.add_integrity_error(exc)
             else:
-                messages.success(request, "Jugador actualizado correctamente.")
-                return redirect("jugadores:detalle", idjugador=jugador.idjugador)
+                if jugador_guardado is not None:
+                    messages.success(request, "Jugador actualizado correctamente.")
+                    return redirect(
+                        "jugadores:detalle",
+                        idjugador=jugador_guardado.idjugador,
+                    )
     else:
         form = JugadorForm(instance=jugador)
 

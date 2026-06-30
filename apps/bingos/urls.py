@@ -6,6 +6,12 @@ from . import views
 app_name = "bingos"
 
 urlpatterns = [
+    path("mis-cartones/", views.mis_cartones, name="mis_cartones"),
+    path(
+        "mis-cartones/<str:codigocarton>/",
+        views.mi_carton_detalle,
+        name="mi_carton_detalle",
+    ),
     path("juego/", views.sala_juego_publica, name="sala_juego_publica"),
     path(
         "juego/partidas/<int:idpartidabingo>/tablero/",

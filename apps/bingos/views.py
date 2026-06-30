@@ -3,6 +3,7 @@ import logging
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, IntegrityError, connection, transaction
+from django.http import Http404
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -12,6 +13,7 @@ from django.views.decorators.http import require_GET, require_POST, require_http
 from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate
+from apps.jugadores.services import jugador_required
 
 from .forms import (
     AccesoCartonPublicoForm,
@@ -194,6 +196,132 @@ def carton_publico(request, codigocarton):
             **datos_carton,
         },
     )
+
+
+@jugador_required
+@require_GET
+def mis_cartones(request):
+    jugador = request.jugador
+    cartones = (
+        Carton.objects.filter(idjugador=jugador)
+        .select_related("idpartida", "idpartida__idbingo")
+        .order_by("-fechacompra", "codigocarton")
+    )
+    return render(
+        request,
+        "bingos/mis_cartones.html",
+        {
+            "jugador": jugador,
+            "cartones_resumen": [
+                _resumen_carton_privado(carton)
+                for carton in cartones
+            ],
+        },
+    )
+
+
+@jugador_required
+@require_GET
+def mi_carton_detalle(request, codigocarton):
+    jugador = request.jugador
+    carton = (
+        Carton.objects.select_related(
+            "idjugador",
+            "idpartida",
+            "idpartida__idbingo",
+        )
+        .filter(codigocarton=codigocarton, idjugador=jugador)
+        .first()
+    )
+    if carton is None:
+        raise Http404("Cartón no encontrado.")
+
+    error_carton = None
+    partida_carton = carton.idpartida
+    datos_carton = {
+        "matriz_carton": None,
+        "numeros_marcados": 0,
+        "total_numeros_carton": 24,
+        "numeros_faltantes": [],
+        "ultima_bola_codigo": (
+            preparar_datos_bolas_partida(partida_carton)["ultima_bola_codigo"]
+            if partida_carton is not None
+            else None
+        ),
+        "mensaje_estado_carton": (
+            mensaje_estado_carton_publico(partida_carton.estadopartida)
+            if partida_carton is not None
+            else None
+        ),
+    }
+    try:
+        datos_carton = preparar_datos_carton_jugador(carton)
+    except MatrizCartonInvalidaError as exc:
+        logger.warning(
+            "Matriz inválida en cartón privado %s: %s",
+            carton.pk,
+            exc,
+        )
+        error_carton = (
+            "La matriz de este cartón no está disponible. "
+            "Solicite ayuda al operador."
+        )
+    except CartonPublicoError as exc:
+        logger.warning(
+            "Cartón privado %s no disponible: %s",
+            carton.pk,
+            exc,
+        )
+        error_carton = str(exc)
+
+    return render(
+        request,
+        "bingos/mi_carton_detalle.html",
+        {
+            "jugador": jugador,
+            "carton": carton,
+            "partida": partida_carton,
+            "error_carton": error_carton,
+            **datos_carton,
+        },
+    )
+
+
+def _resumen_carton_privado(carton):
+    partida = carton.idpartida
+    resumen = {
+        "carton": carton,
+        "partida": partida,
+        "ultima_bola_codigo": None,
+        "numeros_marcados": 0,
+        "total_numeros_carton": 24,
+        "progreso": 0,
+        "error": None,
+    }
+    if partida is None:
+        resumen["error"] = "Cartón sin partida asociada."
+        return resumen
+
+    try:
+        datos_carton = preparar_datos_carton_jugador(carton)
+    except (MatrizCartonInvalidaError, CartonPublicoError) as exc:
+        resumen["ultima_bola_codigo"] = preparar_datos_bolas_partida(partida)[
+            "ultima_bola_codigo"
+        ]
+        resumen["error"] = str(exc)
+        return resumen
+
+    total = datos_carton["total_numeros_carton"] or 24
+    marcados = datos_carton["numeros_marcados"]
+    resumen.update(
+        {
+            "ultima_bola_codigo": datos_carton["ultima_bola_codigo"],
+            "numeros_marcados": marcados,
+            "total_numeros_carton": total,
+            "progreso": round((marcados / total) * 100) if total else 0,
+        }
+    )
+    return resumen
 
 
 @admin_required

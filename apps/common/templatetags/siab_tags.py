@@ -66,3 +66,12 @@ def bootstrap_widget(bound_field):
 @register.filter
 def has_field_errors(form):
     return any(field_name != NON_FIELD_ERRORS for field_name in form.errors)
+
+
+@register.filter
+def has_group(user, group_name):
+    if not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(user, "pk", None) is None:
+        return False
+    return user.groups.filter(name=group_name).exists()

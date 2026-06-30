@@ -27,6 +27,30 @@
                 <div><dt>Fecha de registro</dt><dd>{{ jugador.fecharegistrojugador|date:"d/m/Y H:i" }}</dd></div>
                 <div><dt>Avatar</dt><dd>{{ jugador.avatarjugador|default_dash }}</dd></div>
             </dl>
+
+            <div class="mt-4 pt-4 border-top">
+                <h2 class="section-subtitle">Cuenta de acceso</h2>
+                {% if cuenta_acceso.tiene_cuenta %}
+                <div class="alert alert-success mt-3 mb-0">
+                    Este jugador ya tiene cuenta de acceso.
+                    <strong>Usuario:</strong> {{ cuenta_acceso.usuario.username }}
+                </div>
+                {% elif cuenta_acceso.puede_crear %}
+                <p class="text-muted mt-2">Crea una cuenta Django usando el alias actual como usuario.</p>
+                <form method="post" action="{% url 'jugadores:crear_acceso' jugador.idjugador %}" novalidate>
+                    {% csrf_token %}
+                    {% include "includes/form_errors.html" with form=cuenta_acceso_form %}
+                    <div class="mb-3">{% include "includes/field.html" with field=cuenta_acceso_form.username %}</div>
+                    <div class="mb-3">{% include "includes/field.html" with field=cuenta_acceso_form.password1 %}</div>
+                    <div class="mb-3">{% include "includes/field.html" with field=cuenta_acceso_form.password2 %}</div>
+                    <button class="btn btn-primary w-100" type="submit">Crear acceso</button>
+                </form>
+                {% else %}
+                <div class="alert {% if cuenta_acceso.conflicto %}alert-danger{% else %}alert-warning{% endif %} mt-3 mb-0">
+                    {{ cuenta_acceso.mensaje }}
+                </div>
+                {% endif %}
+            </div>
         </div>
         <div class="col-lg-8">
             <h2 class="section-subtitle">Cartones</h2>

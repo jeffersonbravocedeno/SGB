@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Mis cartones{% endblock %}
+
+{% block content %}
+<section class="page-header public-page-header">
+    <div>
+        <p class="page-kicker">Panel de jugador</p>
+        <h1>Mis cartones</h1>
+        <p>{{ jugador.aliasjugador }} · cartones asignados a tu cuenta.</p>
+    </div>
+    <a class="btn btn-outline-light" href="{% url 'bingos:sala_juego_publica' %}">Sala de juego</a>
+</section>
+
+<section class="content-panel">
+    <div class="section-heading">
+        <div>
+            <h2>Cartones asignados</h2>
+            <p>Solo se muestran cartones vinculados a tu registro de jugador.</p>
+        </div>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover align-middle modern-table">
+            <thead>
+                <tr>
+                    <th>Código</th>
+                    <th>Bingo</th>
+                    <th>Ronda</th>
+                    <th>Cartón</th>
+                    <th>Partida</th>
+                    <th>Última bola</th>
+                    <th>Progreso</th>
+                    <th class="text-end">Acción</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in cartones_resumen %}
+                <tr>
+                    <td><strong>{{ item.carton.codigocarton }}</strong></td>
+                    <td>{{ item.partida.idbingo.titulobingo|default_dash }}</td>
+                    <td>{{ item.partida.nombreronda|default_dash }}</td>
+                    <td><span class="badge rounded-pill {{ item.carton.estadocarton|estado_class }}">{{ item.carton.estadocarton }}</span></td>
+                    <td>{% if item.partida %}<span class="badge rounded-pill {{ item.partida.estadopartida|estado_class }}">{{ item.partida.estadopartida|estado_partida_display }}</span>{% else %}-{% endif %}</td>
+                    <td>{{ item.ultima_bola_codigo|default:"-" }}</td>
+                    <td>
+                        <strong>{{ item.numeros_marcados }} / {{ item.total_numeros_carton }}</strong>
+                        <span class="text-muted">({{ item.progreso }}%)</span>
+                        {% if item.error %}<div class="small text-danger">{{ item.error }}</div>{% endif %}
+                    </td>
+                    <td class="text-end">
+                        <a class="btn btn-sm btn-outline-primary" href="{% url 'bingos:mi_carton_detalle' item.carton.codigocarton %}">Ver cartón</a>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="8">
+                        <div class="empty-state">
+                            <strong>No tienes cartones asignados.</strong>
+                            <span>Registrarte identifica tu cuenta, pero los cartones se asignan cuando el operador registra tu compra.</span>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}
