@@ -13,6 +13,8 @@
     <div class="d-flex gap-2">
         <a class="btn btn-outline-secondary" href="{% url 'bingos:detalle' partida.idbingo_id %}">Volver</a>
         <a class="btn btn-outline-secondary" href="{% url 'bingos:consola_operador' partida.idpartidabingo %}">Consola</a>
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:partida_reporte_pdf' partida.idpartidabingo %}">Descargar reporte PDF</a>
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:partida_cartones_excel' partida.idpartidabingo %}">Exportar cartones</a>
         {% if puede_asignar_cartones %}
         <a class="btn btn-outline-secondary" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">Generar cartón</a>
         {% else %}

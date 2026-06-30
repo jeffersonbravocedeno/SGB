@@ -3,7 +3,7 @@ import logging
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, IntegrityError, connection, transaction
-from django.http import Http404
+from django.http import Http404, HttpResponse
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -25,6 +25,14 @@ from .forms import (
 )
 from .models import Bingo, Carton, Partidabingo, Sesionjuego
 from .realtime import programar_publicacion_partida
+from .reportes import (
+    PDF_CONTENT_TYPE,
+    XLSX_CONTENT_TYPE,
+    generar_excel_cartones_partida,
+    generar_excel_resumen_bingo,
+    generar_pdf_reporte_partida,
+    nombre_archivo_seguro,
+)
 from .services import (
     ACCIONES_CONSOLA,
     BolaBingoError,
@@ -371,6 +379,27 @@ def bingo_detalle(request, idbingo):
 
 
 @admin_required
+def bingo_resumen_excel(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    partidas = list(
+        Partidabingo.objects.filter(idbingo=bingo)
+        .select_related("idjugadorganador")
+        .order_by("horainicio", "idpartidabingo")
+    )
+    cartones = list(
+        Carton.objects.filter(idpartida__in=partidas)
+        .select_related("idpartida", "idjugador")
+        .order_by("idpartida_id", "idcarton")
+    )
+    contenido = generar_excel_resumen_bingo(bingo, partidas, cartones)
+    return _attachment_response(
+        contenido,
+        XLSX_CONTENT_TYPE,
+        nombre_archivo_seguro("resumen_bingo", bingo.idbingo, "xlsx"),
+    )
+
+
+@admin_required
 def bingo_editar(request, idbingo):
     bingo = get_object_or_404(Bingo, idbingo=idbingo)
     if request.method == "POST":
@@ -477,6 +506,44 @@ def partida_detalle(request, idpartidabingo):
             "carton_generado": carton_generado,
             "matriz_carton_generado": matriz_carton_generado,
         },
+    )
+
+
+@admin_required
+def partida_reporte_pdf(request, idpartidabingo):
+    partida = get_object_or_404(
+        Partidabingo.objects.select_related("idbingo", "idjugadorganador"),
+        idpartidabingo=idpartidabingo,
+    )
+    cartones = list(
+        Carton.objects.filter(idpartida=partida)
+        .select_related("idjugador")
+        .order_by("codigocarton")
+    )
+    contenido = generar_pdf_reporte_partida(partida, cartones=cartones)
+    return _attachment_response(
+        contenido,
+        PDF_CONTENT_TYPE,
+        nombre_archivo_seguro("reporte_partida", partida.idpartidabingo, "pdf"),
+    )
+
+
+@admin_required
+def partida_cartones_excel(request, idpartidabingo):
+    partida = get_object_or_404(
+        Partidabingo.objects.select_related("idbingo"),
+        idpartidabingo=idpartidabingo,
+    )
+    cartones = list(
+        Carton.objects.filter(idpartida=partida)
+        .select_related("idjugador")
+        .order_by("codigocarton")
+    )
+    contenido = generar_excel_cartones_partida(partida, cartones)
+    return _attachment_response(
+        contenido,
+        XLSX_CONTENT_TYPE,
+        nombre_archivo_seguro("cartones_partida", partida.idpartidabingo, "xlsx"),
     )
 
 
@@ -947,6 +1014,12 @@ def _base_datos_permite_estado_partida(estado):
 
     constraint_definition = row[0] or ""
     return f"'{estado}'" in constraint_definition
+
+
+def _attachment_response(content, content_type, filename):
+    response = HttpResponse(content, content_type=content_type)
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
 
 
 @admin_required

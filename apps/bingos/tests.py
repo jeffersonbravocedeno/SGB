@@ -2,11 +2,13 @@ import asyncio
 import json
 from contextlib import nullcontext
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, call, patch
 
 from channels.layers import get_channel_layer
 from channels.testing import WebsocketCommunicator
+from openpyxl import load_workbook
 from django.contrib.auth.models import AnonymousUser, User
 from django.contrib.messages import get_messages
 from django.contrib.messages.storage.fallback import FallbackStorage
@@ -26,6 +28,14 @@ from .realtime import (
     construir_payload_publico_partida,
     nombre_grupo_partida,
     programar_publicacion_partida,
+)
+from .reportes import (
+    PDF_CONTENT_TYPE,
+    XLSX_CONTENT_TYPE,
+    construir_datos_reporte_partida,
+    generar_excel_cartones_partida,
+    generar_excel_resumen_bingo,
+    generar_pdf_reporte_partida,
 )
 from .services import (
     CASILLA_LIBRE,
@@ -89,7 +99,10 @@ from .views import (
     carton_publico,
     confirmar_desempate,
     desempate_operador,
+    bingo_resumen_excel,
+    partida_cartones_excel,
     partida_carton_nuevo,
+    partida_reporte_pdf,
     partidas_lista,
     sacar_bola,
     sala_juego_publica,
@@ -2751,3 +2764,302 @@ class PlantillasTiempoRealBingoTests(SimpleTestCase):
         self.assertIn("realtime_bingo.js", html)
         self.assertNotIn("Reclamar", html)
         self.assertNotIn("Validar cartón", html)
+
+
+class FakeReportQuerySet(list):
+    def select_related(self, *fields):
+        return self
+
+    def order_by(self, *fields):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+
+class ReportesAdministrativosTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.bingo = self._bingo()
+        self.ganador = Jugador(idjugador=41, aliasjugador="juan123")
+        self.partida = self._partida(
+            estado=ESTADO_PARTIDA_FINALIZADA,
+            ganador=self.ganador,
+            hay_desempate=True,
+            balota=67,
+        )
+        self.cartones = [
+            self._carton(31, "P20-C-31", self.ganador, Decimal("5.00"), "Vendido"),
+            self._carton(32, "P20-C-32", Jugador(idjugador=42, aliasjugador="maria456"), Decimal("5.00"), "Vendido"),
+            self._carton(33, "P20-C-33", None, None, "Disponible"),
+        ]
+
+    def _request(self, path, user):
+        request = self.factory.get(path)
+        request.user = user
+        return request
+
+    def _staff(self):
+        return User(username="admin", is_staff=True)
+
+    def _usuario_normal(self):
+        return User(username="usuario", is_staff=False, is_superuser=False)
+
+    def _bingo(self):
+        return Bingo(
+            idbingo=7,
+            titulobingo="Bingo de reportes",
+            fechaprogramadabingo=timezone.now(),
+            tipobingo="Virtual",
+            lugarbingo="CoopBingo",
+            preciocarton=Decimal("5.00"),
+            premiomayor=Decimal("100.00"),
+            descripcionpremiomayor="Premio mayor",
+            estadobingo="Programado",
+        )
+
+    def _partida(
+        self,
+        estado=ESTADO_PARTIDA_EN_CURSO,
+        ganador=None,
+        hay_desempate=False,
+        balota=None,
+    ):
+        return Partidabingo(
+            idpartidabingo=20,
+            idbingo=self.bingo,
+            idjugadorganador=ganador,
+            nombreronda="Ronda reportes",
+            valorefectivo=Decimal("100.00"),
+            premiomaterial="Canasta",
+            estadopartida=estado,
+            bolascantadas=serializar_bolas_cantadas([1, 16, 31]),
+            ultimabola=31,
+            haydesempate=hay_desempate,
+            idbingadores='[{"privado": "NO_EXPORTAR"}]',
+            bolamayordesempate=balota,
+            horainicio=timezone.now(),
+            horafin=timezone.now() if estado == ESTADO_PARTIDA_FINALIZADA else None,
+        )
+
+    def _carton(self, pk, codigo, jugador, precio, estado):
+        return Carton(
+            idcarton=pk,
+            idjugador=jugador,
+            idpartida=self.partida,
+            codigocarton=codigo,
+            matriznumeros=serializar_matriz_carton_bingo(matriz_carton_prueba()),
+            indicevictoria=1 if jugador == self.ganador else None,
+            preciopagado=precio,
+            fechacompra=timezone.now(),
+            estadocarton=estado,
+        )
+
+    def _patch_partida_reportes(self):
+        return (
+            patch("apps.bingos.views.get_object_or_404", return_value=self.partida),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=FakeReportQuerySet(self.cartones),
+            ),
+        )
+
+    def _patch_bingo_resumen(self):
+        return (
+            patch("apps.bingos.views.get_object_or_404", return_value=self.bingo),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter",
+                return_value=FakeReportQuerySet([self.partida]),
+            ),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=FakeReportQuerySet(self.cartones),
+            ),
+        )
+
+    def test_anonimo_es_redirigido_al_descargar_reportes(self):
+        casos = (
+            (partida_reporte_pdf, "/partidas/20/reporte/pdf/", (20,)),
+            (partida_cartones_excel, "/partidas/20/cartones/excel/", (20,)),
+            (bingo_resumen_excel, "/bingos/7/resumen/excel/", (7,)),
+        )
+        for view, path, args in casos:
+            with self.subTest(path=path):
+                response = view(self._request(path, AnonymousUser()), *args)
+
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("/login/", response["Location"])
+
+    def test_usuario_normal_y_jugador_reciben_403(self):
+        casos = (
+            (partida_reporte_pdf, "/partidas/20/reporte/pdf/", (20,)),
+            (partida_cartones_excel, "/partidas/20/cartones/excel/", (20,)),
+            (bingo_resumen_excel, "/bingos/7/resumen/excel/", (7,)),
+        )
+        for user in (self._usuario_normal(), User(username="jugador", is_staff=False)):
+            for view, path, args in casos:
+                with self.subTest(user=user.username, path=path):
+                    with self.assertRaises(PermissionDenied):
+                        view(self._request(path, user), *args)
+
+    def test_staff_descarga_pdf_de_partida(self):
+        reportes_patches = self._patch_partida_reportes()
+        with reportes_patches[0], reportes_patches[1]:
+            response = partida_reporte_pdf(
+                self._request("/partidas/20/reporte/pdf/", self._staff()),
+                20,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], PDF_CONTENT_TYPE)
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertIn("reporte_partida_20.pdf", response["Content-Disposition"])
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    def test_superusuario_descarga_reporte(self):
+        superuser = User(username="root", is_superuser=True)
+        reportes_patches = self._patch_partida_reportes()
+        with reportes_patches[0], reportes_patches[1]:
+            response = partida_reporte_pdf(
+                self._request("/partidas/20/reporte/pdf/", superuser),
+                20,
+            )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_staff_descarga_excel_de_cartones(self):
+        reportes_patches = self._patch_partida_reportes()
+        with reportes_patches[0], reportes_patches[1]:
+            response = partida_cartones_excel(
+                self._request("/partidas/20/cartones/excel/", self._staff()),
+                20,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], XLSX_CONTENT_TYPE)
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertIn("cartones_partida_20.xlsx", response["Content-Disposition"])
+        workbook = load_workbook(BytesIO(response.content))
+        self.assertIn("Cartones", workbook.sheetnames)
+
+    def test_staff_descarga_excel_resumen_de_bingo(self):
+        resumen_patches = self._patch_bingo_resumen()
+        with resumen_patches[0], resumen_patches[1], resumen_patches[2]:
+            response = bingo_resumen_excel(
+                self._request("/bingos/7/resumen/excel/", self._staff()),
+                7,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], XLSX_CONTENT_TYPE)
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertIn("resumen_bingo_7.xlsx", response["Content-Disposition"])
+        workbook = load_workbook(BytesIO(response.content))
+        self.assertIn("Resumen de partidas", workbook.sheetnames)
+
+    def test_excel_cartones_contiene_headers_resumen_y_no_privados(self):
+        contenido = generar_excel_cartones_partida(self.partida, self.cartones)
+        workbook = load_workbook(BytesIO(contenido))
+        worksheet = workbook["Cartones"]
+        headers = [cell.value for cell in worksheet[1]]
+
+        self.assertEqual(
+            headers,
+            [
+                "ID de cartón",
+                "Código de cartón",
+                "Jugador",
+                "Estado del cartón",
+                "Fecha de compra",
+                "Precio pagado",
+                "Índice de victoria",
+                "ID de partida",
+                "Nombre de ronda",
+                "Estado de partida",
+            ],
+        )
+        headers_lower = " ".join(str(header).lower() for header in headers)
+        for prohibido in ("correo", "contraseña", "password", "hash", "idbingadores"):
+            self.assertNotIn(prohibido, headers_lower)
+
+        resumen = {
+            worksheet.cell(row=row, column=1).value: worksheet.cell(row=row, column=2).value
+            for row in range(worksheet.max_row - 4, worksheet.max_row + 1)
+        }
+        self.assertEqual(resumen["Total de cartones"], 3)
+        self.assertEqual(resumen["Total recaudado"], 10)
+        self.assertEqual(resumen["Cartones vendidos"], 2)
+        self.assertEqual(resumen["Cartones disponibles"], 1)
+
+    def test_excel_resumen_bingo_contiene_headers_resumen_y_no_privados(self):
+        contenido = generar_excel_resumen_bingo(
+            self.bingo,
+            [self.partida],
+            self.cartones,
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        worksheet = workbook["Resumen de partidas"]
+        headers = [cell.value for cell in worksheet[1]]
+
+        self.assertIn("ID de Bingo", headers)
+        self.assertIn("Recaudación total", headers)
+        self.assertIn("Balota mayor de desempate", headers)
+        headers_lower = " ".join(str(header).lower() for header in headers)
+        for prohibido in ("correo", "contraseña", "password", "hash", "idbingadores"):
+            self.assertNotIn(prohibido, headers_lower)
+
+        resumen = {
+            worksheet.cell(row=row, column=1).value: worksheet.cell(row=row, column=2).value
+            for row in range(worksheet.max_row - 5, worksheet.max_row + 1)
+        }
+        self.assertEqual(resumen["Total de partidas"], 1)
+        self.assertEqual(resumen["Partidas finalizadas"], 1)
+        self.assertEqual(resumen["Total de cartones"], 3)
+        self.assertEqual(resumen["Recaudación total"], 10)
+        self.assertEqual(resumen["Total de partidas con desempate"], 1)
+
+    def test_generar_reportes_no_modifica_objetos_ni_llama_save(self):
+        estado = self.partida.estadopartida
+        bolas = self.partida.bolascantadas
+        ganador = self.partida.idjugadorganador
+        self.partida.save = Mock()
+        for carton in self.cartones:
+            carton.save = Mock()
+
+        generar_pdf_reporte_partida(self.partida, self.cartones)
+        generar_excel_cartones_partida(self.partida, self.cartones)
+        generar_excel_resumen_bingo(self.bingo, [self.partida], self.cartones)
+
+        self.partida.save.assert_not_called()
+        for carton in self.cartones:
+            carton.save.assert_not_called()
+        self.assertEqual(self.partida.estadopartida, estado)
+        self.assertEqual(self.partida.bolascantadas, bolas)
+        self.assertEqual(self.partida.idjugadorganador, ganador)
+
+    def test_datos_partida_finalizada_incluyen_ganador_y_desempate_seguro(self):
+        datos = construir_datos_reporte_partida(self.partida, self.cartones)
+        pdf = generar_pdf_reporte_partida(self.partida, self.cartones)
+
+        self.assertTrue(datos["finalizada"])
+        self.assertEqual(datos["ganador"], "juan123")
+        self.assertEqual(datos["carton_ganador"], "P20-C-31")
+        self.assertTrue(datos["hubo_desempate"])
+        self.assertEqual(datos["balota_mayor_desempate"], "O-67")
+        self.assertNotIn("idbingadores", datos)
+        self.assertIn(b"juan123", pdf)
+        self.assertNotIn(b"NO_EXPORTAR", pdf)
+        self.assertNotIn(b"idbingadores", pdf)
+
+    def test_datos_partida_no_finalizada_no_inventan_ganador(self):
+        partida = self._partida(
+            estado=ESTADO_PARTIDA_EN_CURSO,
+            ganador=self.ganador,
+            hay_desempate=False,
+        )
+        datos = construir_datos_reporte_partida(partida, self.cartones)
+
+        self.assertFalse(datos["finalizada"])
+        self.assertIsNone(datos["ganador"])
+        self.assertIsNone(datos["carton_ganador"])
+        self.assertEqual(datos["mensaje_resultado"], "La partida aún no está finalizada.")

@@ -13,6 +13,7 @@
     <div class="d-flex gap-2">
         <a class="btn btn-outline-secondary" href="{% url 'bingos:lista' %}">Volver</a>
         <a class="btn btn-outline-secondary" href="{% url 'bingos:partidas_lista' %}">Partidas</a>
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:bingo_resumen_excel' bingo.idbingo %}">Exportar resumen</a>
         <a class="btn btn-primary" href="{% url 'bingos:editar' bingo.idbingo %}">Editar</a>
     </div>
 </section>

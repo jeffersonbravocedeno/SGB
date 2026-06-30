@@ -30,6 +30,11 @@ urlpatterns = [
     ),
     path("bingos/", views.bingos_lista, name="lista"),
     path("bingos/nuevo/", views.bingo_nuevo, name="nuevo"),
+    path(
+        "bingos/<int:idbingo>/resumen/excel/",
+        views.bingo_resumen_excel,
+        name="bingo_resumen_excel",
+    ),
     path("bingos/<int:idbingo>/", views.bingo_detalle, name="detalle"),
     path("bingos/<int:idbingo>/editar/", views.bingo_editar, name="editar"),
     path("bingos/<int:idbingo>/partidas/nueva/", views.partida_nueva, name="partida_nueva"),
@@ -52,6 +57,16 @@ urlpatterns = [
     ),
     path("partidas/<int:idpartidabingo>/sacar-bola/", views.sacar_bola, name="sacar_bola"),
     path("partidas/<int:idpartidabingo>/cartones/nuevo/", views.partida_carton_nuevo, name="partida_carton_nuevo"),
+    path(
+        "partidas/<int:idpartidabingo>/reporte/pdf/",
+        views.partida_reporte_pdf,
+        name="partida_reporte_pdf",
+    ),
+    path(
+        "partidas/<int:idpartidabingo>/cartones/excel/",
+        views.partida_cartones_excel,
+        name="partida_cartones_excel",
+    ),
     path(
         "partidas/<int:idpartidabingo>/cartones/<int:idcarton>/validar/",
         views.validar_carton,
