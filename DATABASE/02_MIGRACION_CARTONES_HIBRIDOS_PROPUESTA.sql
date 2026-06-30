@@ -1,18 +1,22 @@
 -- =============================================================================
 -- PROPUESTA / NO EJECUTAR
--- ETAPA 9.5A - MIGRACION DE CARTONES HIBRIDOS
+-- ETAPA 9.5B - MIGRACION HISTORICA DE CARTONES HIBRIDOS
 -- =============================================================================
--- Este archivo NO fue ejecutado. Contiene DDL y DML destructivos si se usa sin
--- el procedimiento, respaldo, ventana y aprobaciones documentadas.
+-- Este archivo NO fue ejecutado. Contiene DDL y DML y solo puede habilitarse
+-- en una etapa posterior, con respaldo restaurado, ventana y autorizacion.
 --
--- Bloqueo intencional para psql. Para una etapa futura autorizada se deberá
--- copiar y versionar el archivo, resolver todos los bloqueos, ensayarlo sobre
--- una restauración aislada y retirar explícitamente estas dos líneas.
+-- Bloqueo intencional para psql. La ejecucion futura exige copiar y versionar
+-- el archivo, ensayarlo y retirar explicitamente estas dos lineas.
 \echo 'PROPUESTA / NO EJECUTAR: migracion bloqueada intencionalmente.'
 \quit
 
--- A partir de aquí todo es una propuesta técnica no ejecutada.
--- Requiere PostgreSQL 16 y parte del esquema físico confirmado el 2026-06-30.
+-- A partir de aqui todo es una propuesta tecnica no ejecutada.
+-- Parte del esquema fisico confirmado en PostgreSQL 16.14 el 2026-06-30.
+--
+-- Regla historica: cada carton existente conserva exclusivamente la partida
+-- registrada en carton.idpartida. No se inventan participaciones para otras
+-- rondas del Bingo. La aplicacion Django adaptada sera responsable de crear
+-- una asignacion por cada ronda solo para cartones nuevos.
 
 BEGIN;
 
@@ -20,11 +24,12 @@ SET LOCAL lock_timeout = '10s';
 SET LOCAL statement_timeout = '15min';
 
 -- La ventana futura debe impedir escrituras concurrentes. Los bloqueos se
--- solicitan antes de validar para que el conjunto diagnosticado sea estable.
-LOCK TABLE bingo, partidabingo, carton, jugador IN SHARE ROW EXCLUSIVE MODE;
+-- solicitan antes de validar para mantener estable el conjunto diagnosticado.
+LOCK TABLE bingo, partidabingo, carton, jugador, sesionjuego
+    IN SHARE ROW EXCLUSIVE MODE;
 
--- Precondiciones estructurales y de integridad. Cualquier excepción revierte
--- la transacción completa.
+-- Bloqueos reales. Las advertencias historicas de precio de lista, datos de
+-- prueba, indice default 0 y fechas incoherentes no forman parte de este bloque.
 DO $precondiciones$
 BEGIN
     IF current_database() <> 'bingo' THEN
@@ -72,66 +77,61 @@ BEGIN
         SELECT 1
         FROM carton
         WHERE preciopagado < 0
-           OR (
-               lower(btrim(estadocarton)) = 'vendido'
-               AND (idjugador IS NULL OR preciopagado IS NULL OR preciopagado <= 0)
-           )
     ) THEN
-        RAISE EXCEPTION 'Existen cartones vendidos incompletos o precios invalidos';
-    END IF;
-
-    -- Bloqueos reales encontrados el 2026-06-30. No retirar estas validaciones
-    -- sin una decisión documentada para cada fila afectada.
-    IF EXISTS (
-        SELECT 1
-        FROM carton AS c
-        JOIN partidabingo AS p
-          ON p.idpartidabingo = c.idpartida
-        JOIN bingo AS b
-          ON b.idbingo = p.idbingo
-        WHERE c.preciopagado IS NOT NULL
-          AND c.preciopagado <> b.preciocarton
-    ) THEN
-        RAISE EXCEPTION
-            'Hay precios pagados distintos al precio de lista; aprobar su tratamiento';
+        RAISE EXCEPTION 'Existen cartones con precio negativo';
     END IF;
 
     IF EXISTS (
         SELECT 1
         FROM carton
-        WHERE indicevictoria IS NOT NULL
-          AND lower(btrim(estadocarton)) <> 'vendido'
+        WHERE lower(btrim(estadocarton)) = 'vendido'
+          AND idjugador IS NULL
     ) THEN
-        RAISE EXCEPTION
-            'Hay indices de victoria en cartones no vendidos; aprobar su semantica';
+        RAISE EXCEPTION 'Existen cartones vendidos sin jugador';
     END IF;
 
     IF EXISTS (
         SELECT 1
-        FROM partidabingo
-        WHERE horafin IS NOT NULL AND horafin < horainicio
+        FROM carton
+        WHERE lower(btrim(estadocarton)) = 'vendido'
+          AND (preciopagado IS NULL OR preciopagado <= 0)
     ) THEN
-        RAISE EXCEPTION 'Hay partidas con hora final anterior a hora inicial';
+        RAISE EXCEPTION 'Existen cartones vendidos sin precio positivo';
     END IF;
 
     IF EXISTS (
         SELECT 1
         FROM carton AS c
-        JOIN partidabingo AS p
-          ON p.idpartidabingo = c.idpartida
-        JOIN bingo AS b
-          ON b.idbingo = p.idbingo
-        WHERE concat_ws(' ', b.titulobingo, b.tipobingo, p.nombreronda)
-              ~* '(prueba|test|demo|ensayo|simulaci[oó]n)'
+        LEFT JOIN jugador AS j ON j.idjugador = c.idjugador
+        WHERE c.idjugador IS NOT NULL AND j.idjugador IS NULL
     ) THEN
-        RAISE EXCEPTION
-            'Hay cartones ligados a datos de prueba; aprobar inclusion o depuracion';
+        RAISE EXCEPTION 'Existen referencias huerfanas de carton a jugador';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM partidabingo AS p
+        LEFT JOIN bingo AS b ON b.idbingo = p.idbingo
+        WHERE b.idbingo IS NULL
+    ) THEN
+        RAISE EXCEPTION 'Existen referencias huerfanas de partida a Bingo';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM sesionjuego AS s
+        LEFT JOIN jugador AS j ON j.idjugador = s.idjugador
+        LEFT JOIN partidabingo AS p ON p.idpartidabingo = s.idpartida
+        WHERE j.idjugador IS NULL OR p.idpartidabingo IS NULL
+    ) THEN
+        RAISE EXCEPTION 'Existen referencias huerfanas en sesionjuego';
     END IF;
 END
 $precondiciones$;
 
--- Fase expansiva: la relación histórica carton.idpartida y el campo
--- carton.indicevictoria se conservan para compatibilidad y rollback.
+-- Fase expansiva. Solo se agrega y puebla carton.idbingo; no se modifican
+-- precios, codigos, matrices, propietarios, estados, idpartida ni
+-- indicevictoria de los 12 cartones historicos.
 ALTER TABLE carton
     ADD COLUMN idbingo integer;
 
@@ -155,8 +155,8 @@ ALTER TABLE carton
     ADD CONSTRAINT uq_carton_idcarton_idbingo
         UNIQUE (idcarton, idbingo);
 
--- Esta clave auxiliar permite una FK compuesta desde la tabla intermedia y
--- obliga a que cartón y partida pertenezcan al mismo Bingo sin usar triggers.
+-- La clave auxiliar permite la FK compuesta de la tabla intermedia. Junto con
+-- idbingo evita relacionar un carton con una partida de otro Bingo.
 ALTER TABLE partidabingo
     ADD CONSTRAINT uq_partidabingo_idpartida_idbingo
         UNIQUE (idpartidabingo, idbingo);
@@ -170,9 +170,9 @@ CREATE INDEX idx_carton_idjugador
 CREATE INDEX idx_partidabingo_idbingo
     ON partidabingo (idbingo);
 
--- La PK nueva usa IDENTITY de forma deliberada. Las cinco tablas existentes
--- tienen PK integer sin secuencia; antes del despliegue la aplicación deberá
--- mapear este campo como autogenerado o aprobar otra estrategia.
+-- Las tablas antiguas conservan sus PK integer manuales. La tabla nueva puede
+-- usar IDENTITY sin alterar esas PK, evita calcular MAX(id)+1 y exige que el
+-- futuro modelo Django managed=False mapee esta PK como autogenerada.
 CREATE TABLE carton_partida_bingo (
     idcartonpartidabingo integer GENERATED BY DEFAULT AS IDENTITY,
     idcarton integer NOT NULL,
@@ -197,15 +197,12 @@ CREATE TABLE carton_partida_bingo (
         REFERENCES partidabingo (idpartidabingo, idbingo),
     CONSTRAINT chk_cpb_estado
         CHECK (estado_participacion IN (
-            'Pendiente', 'En juego', 'Cerrado', 'Ganador', 'Anulado',
-            'No participo'
+            'Pendiente', 'En juego', 'Cerrado', 'Ganador', 'Anulado'
         )),
     CONSTRAINT chk_cpb_indice
-        CHECK (indicevictoria IS NULL OR indicevictoria >= 0),
+        CHECK (indicevictoria IS NULL OR indicevictoria > 0),
     CONSTRAINT chk_cpb_origen
-        CHECK (origen_asignacion IN (
-            'Historica original', 'Historica inferida', 'Aplicacion'
-        )),
+        CHECK (origen_asignacion IN ('Historica original', 'Aplicacion')),
     CONSTRAINT chk_cpb_origen_original
         CHECK (
             es_asignacion_original
@@ -222,9 +219,9 @@ CREATE INDEX idx_cpb_idbingo
 CREATE INDEX idx_cpb_partida_estado
     ON carton_partida_bingo (idpartida, estado_participacion);
 
--- Asignación histórica original: conserva la única relación demostrable y el
--- indicevictoria existente. No infiere automáticamente el cartón ganador a
--- partir de idjugadorganador.
+-- Una y solo una asignacion por carton historico: su partida original.
+-- No se usa idjugadorganador, no se consultan fechas para deducir participacion
+-- y el default historico indicevictoria=0 se convierte en NULL en la nueva tabla.
 INSERT INTO carton_partida_bingo (
     idcarton,
     idpartida,
@@ -247,93 +244,56 @@ SELECT
         WHEN p.estadopartida = 'Cancelada' THEN 'Anulado'
         ELSE 'Pendiente'
     END,
-    c.indicevictoria,
+    CASE
+        WHEN c.indicevictoria > 0 THEN c.indicevictoria
+        ELSE NULL
+    END,
     true,
     'Historica original',
     'Relacion original conservada desde carton.idpartida',
-    COALESCE(c.fechacompra, p.horainicio),
-    CASE WHEN p.estadopartida = 'Finalizada' THEN p.horafin END
+    COALESCE(c.fechacompra, CURRENT_TIMESTAMP),
+    NULL
 FROM carton AS c
 JOIN partidabingo AS p
   ON p.idpartidabingo = c.idpartida
  AND p.idbingo = c.idbingo;
 
--- Asignaciones históricas inferidas para las demás rondas del mismo Bingo.
--- "No participo" evita afirmar participación cuando el cartón fue comprado
--- después de terminar la ronda destino. La regla y el vocabulario requieren
--- aprobación funcional antes de retirar el bloqueo inicial del archivo.
-INSERT INTO carton_partida_bingo (
-    idcarton,
-    idpartida,
-    idbingo,
-    estado_participacion,
-    indicevictoria,
-    es_asignacion_original,
-    origen_asignacion,
-    motivoestado,
-    fechacreacion,
-    fechavalidacion
-)
-SELECT
-    c.idcarton,
-    p.idpartidabingo,
-    c.idbingo,
-    CASE
-        WHEN p.estadopartida = 'Finalizada'
-         AND c.fechacompra IS NOT NULL
-         AND c.fechacompra > COALESCE(p.horafin, p.horainicio)
-            THEN 'No participo'
-        WHEN p.estadopartida = 'Finalizada' THEN 'Cerrado'
-        WHEN p.estadopartida IN ('En curso', 'Desempate') THEN 'En juego'
-        WHEN p.estadopartida = 'Cancelada' THEN 'Anulado'
-        ELSE 'Pendiente'
-    END,
-    NULL,
-    false,
-    'Historica inferida',
-    'Asignacion generada por pertenencia al mismo Bingo',
-    COALESCE(c.fechacompra, p.horainicio),
-    CASE WHEN p.estadopartida = 'Finalizada' THEN p.horafin END
-FROM carton AS c
-JOIN partidabingo AS p
-  ON p.idbingo = c.idbingo
-WHERE p.idpartidabingo <> c.idpartida;
-
--- Validaciones dentro de la transacción.
+-- Validaciones dentro de la transaccion. Con el corte confirmado deben resultar
+-- 12 cartones, 12 asignaciones originales y 0 asignaciones no originales.
 DO $validacion$
 DECLARE
     v_cartones bigint;
     v_originales bigint;
+    v_no_originales bigint;
     v_asignaciones bigint;
-    v_esperadas bigint;
 BEGIN
     SELECT count(*) INTO v_cartones FROM carton;
 
-    SELECT count(*) FILTER (WHERE es_asignacion_original), count(*)
-    INTO v_originales, v_asignaciones
+    SELECT
+        count(*),
+        count(*) FILTER (WHERE es_asignacion_original),
+        count(*) FILTER (WHERE NOT es_asignacion_original)
+    INTO v_asignaciones, v_originales, v_no_originales
     FROM carton_partida_bingo;
 
-    SELECT COALESCE(sum(cartones * partidas), 0)
-    INTO v_esperadas
-    FROM (
-        SELECT
-            b.idbingo,
-            count(DISTINCT c.idcarton) AS cartones,
-            count(DISTINCT p.idpartidabingo) AS partidas
-        FROM bingo AS b
-        LEFT JOIN carton AS c ON c.idbingo = b.idbingo
-        LEFT JOIN partidabingo AS p ON p.idbingo = b.idbingo
-        GROUP BY b.idbingo
-    ) AS por_bingo;
-
-    IF v_originales <> v_cartones THEN
+    IF v_asignaciones <> v_cartones
+       OR v_originales <> v_cartones
+       OR v_no_originales <> 0 THEN
         RAISE EXCEPTION
-            'Originales esperadas %, obtenidas %', v_cartones, v_originales;
+            'Conteo historico invalido: cartones %, filas %, originales %, no originales %',
+            v_cartones, v_asignaciones, v_originales, v_no_originales;
     END IF;
 
-    IF v_asignaciones <> v_esperadas THEN
+    IF EXISTS (
+        SELECT 1
+        FROM carton_partida_bingo AS cpb
+        JOIN carton AS c ON c.idcarton = cpb.idcarton
+        WHERE cpb.idpartida <> c.idpartida
+           OR NOT cpb.es_asignacion_original
+           OR cpb.origen_asignacion <> 'Historica original'
+    ) THEN
         RAISE EXCEPTION
-            'Asignaciones esperadas %, obtenidas %', v_esperadas, v_asignaciones;
+            'Una asignacion historica no coincide con carton.idpartida';
     END IF;
 
     IF EXISTS (
@@ -348,13 +308,28 @@ BEGIN
 
     IF EXISTS (
         SELECT 1
-        FROM carton_partida_bingo
-        WHERE NOT es_asignacion_original AND indicevictoria IS NOT NULL
+        FROM carton_partida_bingo AS cpb
+        JOIN carton AS c ON c.idcarton = cpb.idcarton
+        WHERE cpb.indicevictoria IS DISTINCT FROM
+              CASE
+                  WHEN c.indicevictoria > 0 THEN c.indicevictoria
+                  ELSE NULL
+              END
     ) THEN
-        RAISE EXCEPTION 'Se replicaron indices a asignaciones inferidas';
+        RAISE EXCEPTION 'No se aplico correctamente el filtro de indicevictoria';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM carton_partida_bingo
+        WHERE estado_participacion = 'Ganador'
+    ) THEN
+        RAISE EXCEPTION 'La migracion historica infirio un ganador';
     END IF;
 END
 $validacion$;
 
 -- No retirar carton.idpartida ni carton.indicevictoria en esta fase.
+-- No crear aqui filas para otras partidas. Las asignaciones de cartones nuevos
+-- pertenecen a la futura aplicacion Django adaptada.
 COMMIT;

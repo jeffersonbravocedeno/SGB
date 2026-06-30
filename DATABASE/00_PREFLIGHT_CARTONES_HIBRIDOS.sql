@@ -469,8 +469,8 @@ LEFT JOIN bingo AS b
   ON b.idbingo = p.idbingo
 ORDER BY p.idbingo NULLS FIRST, c.idcarton;
 
--- 22. Simulación: asignaciones carton_partida_bingo por Bingo.
--- Cada cartón válido se asignaría a todas las partidas del Bingo derivado.
+-- 22. Migración histórica: una asignación original por cartón derivable.
+-- No se generan participaciones para otras partidas históricas del Bingo.
 WITH cartones_derivables AS (
     SELECT
         c.idcarton,
@@ -481,15 +481,6 @@ WITH cartones_derivables AS (
       ON p.idpartidabingo = c.idpartida
     JOIN bingo AS b
       ON b.idbingo = p.idbingo
-), asignaciones_simuladas AS (
-    SELECT
-        cd.idcarton,
-        cd.partida_original,
-        cd.idbingo,
-        p.idpartidabingo
-    FROM cartones_derivables AS cd
-    JOIN partidabingo AS p
-      ON p.idbingo = cd.idbingo
 ), resumen_cartones AS (
     SELECT
         idbingo,
@@ -502,70 +493,56 @@ WITH cartones_derivables AS (
         COUNT(*) AS partidas
     FROM partidabingo
     GROUP BY idbingo
-), resumen_asignaciones AS (
-    SELECT
-        idbingo,
-        COUNT(*) AS asignaciones_totales_simuladas,
-        COUNT(*) FILTER (
-            WHERE idpartidabingo = partida_original
-        ) AS asignaciones_historicas_originales,
-        COUNT(*) FILTER (
-            WHERE idpartidabingo <> partida_original
-        ) AS asignaciones_adicionales
-    FROM asignaciones_simuladas
-    GROUP BY idbingo
 )
 SELECT
     b.idbingo,
     b.titulobingo,
     COALESCE(rc.cartones_maestros, 0) AS cartones_maestros,
     COALESCE(rp.partidas, 0) AS partidas,
-    COALESCE(ra.asignaciones_totales_simuladas, 0)
-        AS asignaciones_totales_simuladas,
-    COALESCE(ra.asignaciones_historicas_originales, 0)
+    COALESCE(rc.cartones_maestros, 0)
         AS asignaciones_historicas_originales,
-    COALESCE(ra.asignaciones_adicionales, 0) AS asignaciones_adicionales
+    0::bigint AS asignaciones_historicas_inferidas
 FROM bingo AS b
 LEFT JOIN resumen_cartones AS rc
   ON rc.idbingo = b.idbingo
 LEFT JOIN resumen_partidas AS rp
   ON rp.idbingo = b.idbingo
-LEFT JOIN resumen_asignaciones AS ra
-  ON ra.idbingo = b.idbingo
 ORDER BY b.idbingo;
 
--- 23. Total global de asignaciones que se crearían.
-WITH asignaciones_simuladas AS (
+-- 23. Total global esperado para la migración histórica.
+-- indicevictoria solo se copiaría a la intermedia cuando sea mayor que cero.
+WITH asignaciones_historicas AS (
     SELECT
         c.idcarton,
         c.idpartida AS partida_original,
-        destino.idpartidabingo AS partida_destino,
-        origen.idbingo
+        origen.idbingo,
+        c.indicevictoria
     FROM carton AS c
     JOIN partidabingo AS origen
       ON origen.idpartidabingo = c.idpartida
     JOIN bingo AS b
       ON b.idbingo = origen.idbingo
-    JOIN partidabingo AS destino
-      ON destino.idbingo = origen.idbingo
 )
 SELECT
-    COUNT(*) AS asignaciones_totales_simuladas,
-    COUNT(*) FILTER (
-        WHERE partida_destino = partida_original
-    ) AS asignaciones_historicas_originales,
-    COUNT(*) FILTER (
-        WHERE partida_destino <> partida_original
-    ) AS asignaciones_adicionales,
+    COUNT(*) AS cartones_maestros,
+    COUNT(*) AS asignaciones_historicas_originales,
+    0::bigint AS asignaciones_historicas_inferidas,
+    COUNT(*) FILTER (WHERE indicevictoria > 0)
+        AS indices_positivos_a_copiar,
     COUNT(DISTINCT idcarton) AS cartones_derivables,
     COUNT(DISTINCT idbingo) AS bingos_involucrados
-FROM asignaciones_simuladas;
+FROM asignaciones_historicas;
 
--- 24. La simulación no debe producir pares cartón/partida duplicados.
-WITH asignaciones_simuladas AS (
+-- 24. Escenario futuro informativo; NO es el resultado de la migración.
+-- Cuando Django cree un cartón nuevo para un Bingo, deberá crear una fila por
+-- cada partida de ese Bingo. Aplicar teóricamente esa regla a la distribución
+-- actual daría 45 filas, pero los cartones históricos conservarán solo 12.
+WITH escenario_futuro AS (
     SELECT
         c.idcarton,
-        destino.idpartidabingo AS idpartida
+        origen.idbingo,
+        destino.idpartidabingo AS partida_destino,
+        c.idpartida AS partida_original
     FROM carton AS c
     JOIN partidabingo AS origen
       ON origen.idpartidabingo = c.idpartida
@@ -575,13 +552,15 @@ WITH asignaciones_simuladas AS (
       ON destino.idbingo = origen.idbingo
 )
 SELECT
-    a.idcarton,
-    a.idpartida,
-    COUNT(*) AS repeticiones
-FROM asignaciones_simuladas AS a
-GROUP BY a.idcarton, a.idpartida
-HAVING COUNT(*) > 1
-ORDER BY a.idcarton, a.idpartida;
+    COUNT(*) AS capacidad_teorica_regla_futura,
+    COUNT(*) FILTER (
+        WHERE partida_destino = partida_original
+    ) AS relaciones_originales_existentes,
+    COUNT(*) FILTER (
+        WHERE partida_destino <> partida_original
+    ) AS filas_adicionales_solo_teoricas,
+    COUNT(DISTINCT idcarton) AS resultado_esperado_migracion_historica
+FROM escenario_futuro;
 
 -- 25. Posibles cartones maestros duplicados por Bingo, jugador y matriz.
 -- No implica duplicación segura: requiere revisión de código y compra.
@@ -689,15 +668,21 @@ WHERE j.idjugador IS NULL
    OR p.idpartidabingo IS NULL
 ORDER BY s.idsesion;
 
--- 30. Resumen unificado de hallazgos para decidir si la migración es segura.
+-- 30. Resumen unificado. Solo las filas BLOQUEO impiden la expansión.
+-- Las ADVERTENCIAS se preservan sin normalización ni inferencias históricas.
 WITH hallazgos AS (
-    SELECT 'CARTON_SIN_PARTIDA' AS tipo, COUNT(*) AS cantidad
-    FROM carton
-    WHERE idpartida IS NULL
+    SELECT
+        'BLOQUEO' AS clasificacion,
+        'TABLA_DESTINO_YA_EXISTE' AS tipo,
+        COUNT(*) AS cantidad
+    FROM (
+        SELECT to_regclass('public.carton_partida_bingo') AS relacion
+    ) AS destino
+    WHERE relacion IS NOT NULL
 
     UNION ALL
 
-    SELECT 'CARTON_SIN_BINGO_DERIVABLE', COUNT(*)
+    SELECT 'BLOQUEO', 'CARTON_SIN_BINGO_DERIVABLE', COUNT(*)
     FROM carton AS c
     LEFT JOIN partidabingo AS p
       ON p.idpartidabingo = c.idpartida
@@ -709,29 +694,16 @@ WITH hallazgos AS (
 
     UNION ALL
 
-    SELECT 'CARTON_SIN_JUGADOR', COUNT(*)
-    FROM carton
-    WHERE idjugador IS NULL
-
-    UNION ALL
-
-    SELECT 'CARTON_SIN_MATRIZ', COUNT(*)
+    SELECT 'BLOQUEO', 'CARTON_SIN_MATRIZ', COUNT(*)
     FROM carton
     WHERE matriznumeros IS NULL OR btrim(matriznumeros) = ''
 
     UNION ALL
 
-    SELECT 'CODIGO_DUPLICADO_EXACTO', COALESCE(SUM(cantidad - 1), 0)
-    FROM (
-        SELECT COUNT(*) AS cantidad
-        FROM carton
-        GROUP BY codigocarton
-        HAVING COUNT(*) > 1
-    ) AS duplicados
-
-    UNION ALL
-
-    SELECT 'CODIGO_DUPLICADO_NORMALIZADO', COALESCE(SUM(cantidad - 1), 0)
+    SELECT
+        'BLOQUEO',
+        'CODIGO_DUPLICADO_NORMALIZADO',
+        COALESCE(SUM(cantidad - 1), 0)
     FROM (
         SELECT COUNT(*) AS cantidad
         FROM carton
@@ -741,51 +713,82 @@ WITH hallazgos AS (
 
     UNION ALL
 
-    SELECT 'ESTADO_CARTON_NO_ESPERADO', COUNT(*)
-    FROM carton
-    WHERE estadocarton IS NULL
-       OR btrim(estadocarton) = ''
-       OR estadocarton NOT IN ('Disponible', 'Vendido', 'Cerrado')
-
-    UNION ALL
-
-    SELECT 'PRECIO_NEGATIVO', COUNT(*)
+    SELECT 'BLOQUEO', 'PRECIO_NEGATIVO', COUNT(*)
     FROM carton
     WHERE preciopagado < 0
 
     UNION ALL
 
-    SELECT 'VENDIDO_SIN_PRECIO_POSITIVO', COUNT(*)
+    SELECT 'BLOQUEO', 'VENDIDO_SIN_JUGADOR', COUNT(*)
+    FROM carton
+    WHERE lower(btrim(estadocarton)) = 'vendido'
+      AND idjugador IS NULL
+
+    UNION ALL
+
+    SELECT 'BLOQUEO', 'VENDIDO_SIN_PRECIO_POSITIVO', COUNT(*)
     FROM carton
     WHERE lower(btrim(estadocarton)) = 'vendido'
       AND (preciopagado IS NULL OR preciopagado <= 0)
 
     UNION ALL
 
-    SELECT 'INDICE_VICTORIA_NEGATIVO', COUNT(*)
-    FROM carton
-    WHERE indicevictoria < 0
+    SELECT 'BLOQUEO', 'CARTON_JUGADOR_HUERFANO', COUNT(*)
+    FROM carton AS c
+    LEFT JOIN jugador AS j ON j.idjugador = c.idjugador
+    WHERE c.idjugador IS NOT NULL AND j.idjugador IS NULL
 
     UNION ALL
 
-    SELECT 'PARTIDA_SIN_BINGO', COUNT(*)
+    SELECT 'BLOQUEO', 'PARTIDA_BINGO_HUERFANO', COUNT(*)
     FROM partidabingo AS p
-    LEFT JOIN bingo AS b
-      ON b.idbingo = p.idbingo
+    LEFT JOIN bingo AS b ON b.idbingo = p.idbingo
     WHERE b.idbingo IS NULL
 
     UNION ALL
 
-    SELECT 'GANADOR_SIN_CARTON_EN_PARTIDA', COUNT(*)
-    FROM partidabingo AS p
-    WHERE p.idjugadorganador IS NOT NULL
-      AND NOT EXISTS (
-          SELECT 1
-          FROM carton AS c
-          WHERE c.idpartida = p.idpartidabingo
-            AND c.idjugador = p.idjugadorganador
-      )
+    SELECT 'BLOQUEO', 'SESION_REFERENCIA_HUERFANA', COUNT(*)
+    FROM sesionjuego AS s
+    LEFT JOIN jugador AS j ON j.idjugador = s.idjugador
+    LEFT JOIN partidabingo AS p ON p.idpartidabingo = s.idpartida
+    WHERE j.idjugador IS NULL OR p.idpartidabingo IS NULL
+
+    UNION ALL
+
+    SELECT 'ADVERTENCIA', 'DISPONIBLE_SIN_PRECIO', COUNT(*)
+    FROM carton
+    WHERE lower(btrim(estadocarton)) = 'disponible'
+      AND preciopagado IS NULL
+
+    UNION ALL
+
+    SELECT 'ADVERTENCIA', 'PRECIO_DISTINTO_LISTA', COUNT(*)
+    FROM carton AS c
+    JOIN partidabingo AS p ON p.idpartidabingo = c.idpartida
+    JOIN bingo AS b ON b.idbingo = p.idbingo
+    WHERE c.preciopagado IS NOT NULL
+      AND c.preciopagado <> b.preciocarton
+
+    UNION ALL
+
+    SELECT 'ADVERTENCIA', 'INDICE_DEFAULT_CERO', COUNT(*)
+    FROM carton
+    WHERE indicevictoria = 0
+
+    UNION ALL
+
+    SELECT 'ADVERTENCIA', 'HORA_FINAL_ANTERIOR_INICIO', COUNT(*)
+    FROM partidabingo
+    WHERE horafin IS NOT NULL AND horafin < horainicio
+
+    UNION ALL
+
+    SELECT 'ADVERTENCIA', 'DATO_CON_NOMBRE_DE_PRUEBA', COUNT(*)
+    FROM bingo AS b
+    LEFT JOIN partidabingo AS p ON p.idbingo = b.idbingo
+    WHERE concat_ws(' ', b.titulobingo, b.tipobingo, p.nombreronda)
+          ~* '(prueba|test|demo|ensayo|simulaci[oó]n)'
 )
-SELECT tipo, cantidad
+SELECT clasificacion, tipo, cantidad
 FROM hallazgos
-ORDER BY tipo;
+ORDER BY clasificacion, tipo;

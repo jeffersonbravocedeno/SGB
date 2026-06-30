@@ -1,6 +1,6 @@
 -- =============================================================================
 -- PROPUESTA / NO EJECUTAR
--- ETAPA 9.5A - ROLLBACK DE LA FASE EXPANSIVA DE CARTONES HIBRIDOS
+-- ETAPA 9.5B - ROLLBACK DE LA FASE EXPANSIVA DE CARTONES HIBRIDOS
 -- =============================================================================
 -- Este archivo NO fue ejecutado. Solo es aplicable antes de aceptar escrituras
 -- de la aplicación con el modelo híbrido y después de verificar un respaldo.
@@ -21,10 +21,14 @@ SET LOCAL statement_timeout = '15min';
 LOCK TABLE bingo, partidabingo, carton, carton_partida_bingo
     IN ACCESS EXCLUSIVE MODE;
 
--- Este rollback conserva carton.idpartida e indicevictoria, que la migración
--- expansiva no elimina. Se bloquea si ya existen filas creadas por la nueva
--- aplicación o si la referencia histórica dejó de ser suficiente.
+-- Este rollback presupone exactamente 12 asignaciones historicas originales,
+-- ninguna inferida y ninguna escritura de la aplicacion hibrida. Conserva
+-- carton.idpartida e indicevictoria, que la expansion no elimina.
 DO $precondiciones_rollback$
+DECLARE
+    v_cartones bigint;
+    v_asignaciones bigint;
+    v_originales bigint;
 BEGIN
     IF to_regclass('public.carton_partida_bingo') IS NULL THEN
         RAISE EXCEPTION
@@ -41,13 +45,33 @@ BEGIN
         RAISE EXCEPTION 'carton.idbingo no existe; estado no reconocido';
     END IF;
 
+    SELECT count(*) INTO v_cartones FROM carton;
+
+    SELECT
+        count(*),
+        count(*) FILTER (
+            WHERE es_asignacion_original
+              AND origen_asignacion = 'Historica original'
+        )
+    INTO v_asignaciones, v_originales
+    FROM carton_partida_bingo;
+
+    IF v_cartones <> 12
+       OR v_asignaciones <> 12
+       OR v_originales <> 12 THEN
+        RAISE EXCEPTION
+            'Rollback fuera de alcance: cartones %, asignaciones %, originales %',
+            v_cartones, v_asignaciones, v_originales;
+    END IF;
+
     IF EXISTS (
         SELECT 1
         FROM carton_partida_bingo
-        WHERE origen_asignacion = 'Aplicacion'
+        WHERE NOT es_asignacion_original
+           OR origen_asignacion <> 'Historica original'
     ) THEN
         RAISE EXCEPTION
-            'Existen asignaciones nuevas de la aplicacion; preservar antes de revertir';
+            'Existen asignaciones no historicas o escrituras de la aplicacion';
     END IF;
 
     IF EXISTS (

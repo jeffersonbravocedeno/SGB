@@ -1,6 +1,6 @@
 # Respaldo previo a cartones híbridos
 
-Estado: **PROCEDIMIENTO PROPUESTO / NO EJECUTADO**.
+Estado: **PROCEDIMIENTO PROPUESTO / NO EJECUTADO EN ETAPA 9.5B**.
 
 Este documento define el respaldo obligatorio antes de cualquier ejecución de
 `02_MIGRACION_CARTONES_HIBRIDOS_PROPUESTA.sql`. No crea respaldos ni autoriza
@@ -23,7 +23,7 @@ Además del archivo de respaldo, se deben conservar:
 
 ## Condiciones previas
 
-1. Resolver o aceptar expresamente los bloqueos documentados en
+1. Verificar que no exista ninguno de los bloqueos reales documentados en
    `DOCUMENTACION/ETAPA_9_5A_PREPARACION_CARTONES_HIBRIDOS.md`.
 2. Desplegar primero una versión de aplicación compatible o mantener todas las
    escrituras detenidas durante el ensayo.
@@ -35,8 +35,8 @@ Además del archivo de respaldo, se deben conservar:
 
 ## Comandos de referencia
 
-Los siguientes comandos son ejemplos. **No fueron ejecutados en la Etapa
-9.5A**. La contraseña debe suministrarse mediante `.pgpass`, un gestor de
+Los siguientes comandos son ejemplos. **No fueron ejecutados en las Etapas
+9.5A ni 9.5B**. La contraseña debe suministrarse mediante `.pgpass`, un gestor de
 secretos o una variable temporal; no debe escribirse en este documento.
 
 ```bash
@@ -107,8 +107,23 @@ En la copia restaurada se debe comprobar como mínimo:
 - 12 cartones con Bingo derivable;
 - códigos y matrices sin pérdidas;
 - 9 cartones vendidos y recaudación histórica vendida de `41.00`;
+- recaudación histórica total de `51.00`;
 - constraints, índices y claves foráneas equivalentes al origen;
 - ejecución completa del preflight sin errores.
+
+Después de ensayar la migración histórica propuesta sobre esa copia, la
+validación debe confirmar:
+
+- 12 cartones maestros;
+- 12 filas en `carton_partida_bingo`;
+- 12 asignaciones históricas originales;
+- 0 asignaciones históricas inferidas y 0 filas de aplicación;
+- una sola asignación por cartón, coincidente con `carton.idpartida`;
+- ningún `indicevictoria=0` copiado y ningún ganador inferido.
+
+La capacidad teórica de 45 filas al aplicar la regla híbrida completa sobre la
+distribución actual no es un control de esta migración. Para los cartones
+históricos el respaldo y el ensayo deben reconciliar 12 asignaciones, no 45.
 
 Si los datos cambian antes de la ventana definitiva, estos valores dejan de ser
 el control vigente: se debe generar un preflight y un respaldo nuevos.
@@ -130,6 +145,8 @@ El respaldo se considera aceptable únicamente cuando:
 - Antes de que la aplicación escriba con el modelo híbrido, puede usarse el
   rollback expansivo propuesto en
   `04_ROLLBACK_CARTONES_HIBRIDOS_PROPUESTA.sql`.
+- Ese rollback exige conservar exactamente las 12 asignaciones históricas
+  originales, sin filas inferidas ni escrituras de la aplicación adaptada.
 - Después de aceptar escrituras nuevas, ese rollback deja de ser suficiente:
   se debe detener la aplicación, preservar los datos nuevos y ejecutar un plan
   de reversión específico o restaurar el respaldo completo.
