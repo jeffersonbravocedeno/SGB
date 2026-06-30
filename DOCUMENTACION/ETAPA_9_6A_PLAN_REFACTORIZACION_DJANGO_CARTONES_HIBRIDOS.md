@@ -2,7 +2,7 @@
 
 Fecha: 2026-06-30.
 
-Estado: **PLAN TÉCNICO / SIN CAMBIOS DE CÓDIGO DJANGO**.
+Estado: **PLAN TÉCNICO / MAPEO ORM AÑADIDO EN ETAPA 9.6B**.
 
 ## 1. Alcance ejecutado
 
@@ -561,15 +561,22 @@ de ensayo recreable, nunca sobre `bingo`.
 
 ## 13. Estrategia de despliegue final
 
+La migración física y el despliegue del código híbrido requieren una ventana
+sin escrituras de cartones. En cuanto `carton.idbingo` pasa a `NOT NULL`, el
+código anterior deja de poder crear cartones: su `INSERT` no envía `idbingo` y
+PostgreSQL lo rechaza. Que las columnas nuevas no rompan ciertas lecturas del
+código antiguo no convierte ese código en compatible para escritura.
+
 1. Completar código y pruebas sobre `bingo_ensayo_hibridos` migrada.
 2. Preparar artefacto de aplicación compatible con el esquema expandido.
 3. Tomar respaldo y restaurarlo con éxito.
-4. Abrir ventana y detener escrituras.
+4. Abrir ventana y detener, como mínimo, todas las escrituras de cartones y la
+   creación de partidas que pueda generar participaciones.
 5. Confirmar `SELECT current_database()` y ejecutar la migración histórica en
    `bingo` solo con autorización independiente.
 6. Validar 12/12/0 y controles de integridad.
-7. Desplegar inmediatamente el código híbrido; el esquema expandido sigue
-   siendo compatible con el código antiguo durante el intervalo controlado.
+7. Desplegar inmediatamente el código híbrido, sin reactivar el flujo anterior
+   de creación de cartones durante el intervalo.
 8. Ejecutar checks, smoke tests presenciales/virtuales, generación de un cartón
    controlado, consola, ganador, Mis cartones y reportes.
 9. Reabrir escrituras únicamente si todos los controles pasan.
@@ -578,12 +585,13 @@ de ensayo recreable, nunca sobre `bingo`.
     posterior, cuando búsquedas estáticas, métricas y pruebas demuestren que ya
     no se usan.
 
-Si falla algo antes de escrituras híbridas, se puede volver al código anterior
-y usar el rollback ensayado. Después de escrituras nuevas se requiere una
-reversión específica que preserve maestros y participaciones; no se debe usar
-el rollback simple.
+Si falla algo antes de escrituras híbridas, se debe mantener la ventana cerrada,
+restaurar el código anterior y aplicar el rollback ensayado antes de permitirle
+crear cartones otra vez. Después de escrituras nuevas se requiere una reversión
+específica que preserve maestros y participaciones; no se debe usar el rollback
+simple.
 
-## 14. Validaciones locales de esta etapa
+## 14. Validaciones locales de la Etapa 9.6A
 
 | Control | Resultado |
 |---|---|
@@ -594,3 +602,30 @@ el rollback simple.
 | `python manage.py check` final | `System check identified no issues (0 silenced).` |
 | `git diff --check` final | Sin errores ni salida |
 | `git status --short` final | Solo este documento nuevo, sin seguimiento |
+
+## 15. Actualización de mapeo en la Etapa 9.6B
+
+Sin generar migraciones Django, `apps/bingos/models.py` incorpora:
+
+- `Carton.idbingo` como FK obligatoria hacia `Bingo`;
+- comentarios de compatibilidad sobre `Carton.idpartida` y
+  `Carton.indicevictoria`;
+- `CartonPartidaBingo` con los once campos físicos validados;
+- `AutoField` para la PK `IDENTITY BY DEFAULT`;
+- `managed = False`, tabla física y unicidad cartón/partida;
+- constantes mínimas de estado y origen.
+
+La comprobación de este mapeo debe ejecutarse únicamente con variables
+temporales apuntando a `bingo_ensayo_hibridos` y con la sesión PostgreSQL en
+solo lectura. No se debe iniciar el servidor ni probar formularios mientras la
+configuración efectiva apunte a la base real sin expandir.
+
+| Control 9.6B | Resultado |
+|---|---|
+| Base efectiva / sesión | `bingo_ensayo_hibridos` / solo lectura `on` |
+| `python manage.py check` sobre ensayo | Sin problemas |
+| Conteos ORM | 12 cartones / 12 participaciones / 12 originales / 0 no originales |
+| Cartones con `idbingo IS NULL` | 0 |
+| PK ORM | `AutoField`; primer valor validado: 1 |
+| Relaciones del primer registro | Carton, Partidabingo y Bingo válidos; mismo Bingo |
+| `git diff --check` | Sin errores ni salida |

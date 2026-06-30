@@ -55,9 +55,19 @@ class Partidabingo(models.Model):
 class Carton(models.Model):
     idcarton = models.IntegerField(primary_key=True)
     idjugador = models.ForeignKey('jugadores.Jugador', models.DO_NOTHING, db_column='idjugador', blank=True, null=True)
+    idbingo = models.ForeignKey(
+        'bingos.Bingo',
+        models.DO_NOTHING,
+        db_column='idbingo',
+        related_name='cartones',
+    )
+    # Referencia histórica/de compatibilidad. Los cartones nuevos usarán las
+    # participaciones y dejarán esta columna en NULL.
     idpartida = models.ForeignKey('bingos.Partidabingo', models.DO_NOTHING, db_column='idpartida', blank=True, null=True)
     codigocarton = models.CharField(unique=True, max_length=30)
     matriznumeros = models.TextField()
+    # Dato histórico/de compatibilidad. El resultado nuevo vive por ronda en
+    # CartonPartidaBingo y esta columna quedará en NULL para cartones nuevos.
     indicevictoria = models.IntegerField(blank=True, null=True)
     preciopagado = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
     fechacompra = models.DateTimeField(blank=True, null=True)
@@ -71,6 +81,49 @@ class Carton(models.Model):
         db_table = 'carton'
         verbose_name = 'Carton'
         verbose_name_plural = 'Cartones'
+
+
+class CartonPartidaBingo(models.Model):
+    ESTADO_PENDIENTE = 'Pendiente'
+    ESTADO_EN_JUEGO = 'En juego'
+    ESTADO_CERRADO = 'Cerrado'
+    ESTADO_GANADOR = 'Ganador'
+    ESTADO_ANULADO = 'Anulado'
+
+    ORIGEN_HISTORICA_ORIGINAL = 'Historica original'
+    ORIGEN_APLICACION = 'Aplicacion'
+
+    idcartonpartidabingo = models.AutoField(primary_key=True)
+    idcarton = models.ForeignKey(
+        'bingos.Carton',
+        models.DO_NOTHING,
+        db_column='idcarton',
+        related_name='participaciones',
+    )
+    idpartida = models.ForeignKey(
+        'bingos.Partidabingo',
+        models.DO_NOTHING,
+        db_column='idpartida',
+        related_name='participaciones_carton',
+    )
+    idbingo = models.ForeignKey(
+        'bingos.Bingo',
+        models.DO_NOTHING,
+        db_column='idbingo',
+        related_name='participaciones_carton',
+    )
+    estado_participacion = models.CharField(max_length=20)
+    indicevictoria = models.IntegerField(blank=True, null=True)
+    es_asignacion_original = models.BooleanField(default=False)
+    origen_asignacion = models.CharField(max_length=24)
+    motivoestado = models.CharField(max_length=255, blank=True, null=True)
+    fechacreacion = models.DateTimeField()
+    fechavalidacion = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'carton_partida_bingo'
+        unique_together = (('idcarton', 'idpartida'),)
 
 
 class Sesionjuego(models.Model):
