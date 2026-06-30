@@ -1,12 +1,12 @@
 import logging
 
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
 from django.db import DatabaseError, IntegrityError, transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
+from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate, safe_count
 
@@ -17,7 +17,7 @@ from .models import Ahorro, Aportesemanal, Pago, Prestamo
 logger = logging.getLogger(__name__)
 
 
-@login_required
+@admin_required
 def dashboard(request):
     cards = [
         {"label": "Préstamos activos", "value": _safe_filtered_count(Prestamo, estadoprestamo__icontains="Aprobado")},
@@ -36,7 +36,7 @@ def _safe_filtered_count(model, **filters):
         return None
 
 
-@login_required
+@admin_required
 def prestamos_lista(request):
     busqueda = request.GET.get("q", "").strip()
     prestamos = Prestamo.objects.select_related("idsocio").order_by("-fechasolicitud")
@@ -50,7 +50,7 @@ def prestamos_lista(request):
     return render(request, "finanzas/prestamos_lista.html", {"page_obj": paginate(request, prestamos), "busqueda": busqueda, "total": prestamos.count()})
 
 
-@login_required
+@admin_required
 def prestamo_nuevo(request):
     if request.method == "POST":
         form = PrestamoForm(request.POST)
@@ -68,14 +68,14 @@ def prestamo_nuevo(request):
     return render(request, "finanzas/prestamo_formulario.html", {"form": form, "titulo": "Nuevo préstamo"})
 
 
-@login_required
+@admin_required
 def prestamo_detalle(request, idprestamo):
     prestamo = get_object_or_404(Prestamo.objects.select_related("idsocio"), idprestamo=idprestamo)
     pagos = Pago.objects.filter(idprestamo=prestamo).select_related("idmetodopago").order_by("-fechapago")
     return render(request, "finanzas/prestamo_detalle.html", {"prestamo": prestamo, "pagos": pagos})
 
 
-@login_required
+@admin_required
 def prestamo_editar(request, idprestamo):
     prestamo = get_object_or_404(Prestamo, idprestamo=idprestamo)
     if request.method == "POST":
@@ -94,7 +94,7 @@ def prestamo_editar(request, idprestamo):
     return render(request, "finanzas/prestamo_formulario.html", {"form": form, "prestamo": prestamo, "titulo": "Editar préstamo"})
 
 
-@login_required
+@admin_required
 def pago_nuevo(request, idprestamo):
     prestamo = get_object_or_404(Prestamo.objects.select_related("idsocio"), idprestamo=idprestamo)
     if request.method == "POST":
@@ -115,7 +115,7 @@ def pago_nuevo(request, idprestamo):
     return render(request, "finanzas/pago_formulario.html", {"form": form, "prestamo": prestamo, "titulo": "Nuevo pago"})
 
 
-@login_required
+@admin_required
 def pagos_lista(request):
     busqueda = request.GET.get("q", "").strip()
     pagos = Pago.objects.select_related("idprestamo", "idprestamo__idsocio", "idmetodopago").order_by("-fechapago")
@@ -124,13 +124,13 @@ def pagos_lista(request):
     return render(request, "finanzas/pagos_lista.html", {"page_obj": paginate(request, pagos), "busqueda": busqueda, "total": pagos.count()})
 
 
-@login_required
+@admin_required
 def ahorros_lista(request):
     ahorros = Ahorro.objects.select_related("idsocio", "idbingo").order_by("-fechaahorro")
     return render(request, "finanzas/ahorros_lista.html", {"page_obj": paginate(request, ahorros), "total": ahorros.count()})
 
 
-@login_required
+@admin_required
 def ahorro_nuevo(request):
     if request.method == "POST":
         form = AhorroForm(request.POST)
@@ -147,13 +147,13 @@ def ahorro_nuevo(request):
     return render(request, "finanzas/ahorro_formulario.html", {"form": form, "titulo": "Nuevo ahorro"})
 
 
-@login_required
+@admin_required
 def aportes_lista(request):
     aportes = Aportesemanal.objects.select_related("idsocio", "idregalo", "idpartida").order_by("-fechaplanificadada")
     return render(request, "finanzas/aportes_lista.html", {"page_obj": paginate(request, aportes), "total": aportes.count()})
 
 
-@login_required
+@admin_required
 def aporte_nuevo(request):
     if request.method == "POST":
         form = AporteSemanalForm(request.POST)

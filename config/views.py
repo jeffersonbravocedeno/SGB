@@ -1,16 +1,16 @@
-from django.contrib.auth.decorators import login_required
 from django.http import HttpResponse
 from django.shortcuts import render
 from django.urls import reverse
 
 from apps.bingos.models import Bingo, Carton
+from apps.common.decorators import admin_required
 from apps.common.views import safe_count
 from apps.finanzas.models import Aportesemanal, Prestamo
 from apps.jugadores.models import Jugador
 from apps.socios.models import Socio
 
 
-@login_required
+@admin_required
 def home(request):
     quick_links = [
         {

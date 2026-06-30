@@ -1,10 +1,10 @@
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
+from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate
 from apps.finanzas.models import Ahorro, Aportesemanal, Prestamo
@@ -13,7 +13,7 @@ from .forms import CuentaBancariaForm, SocioForm
 from .models import Cuentabancaria, Socio
 
 
-@login_required
+@admin_required
 def lista(request):
     busqueda = request.GET.get("q", "").strip()
     socios = Socio.objects.select_related("idtiposocio").order_by(
@@ -41,7 +41,7 @@ def lista(request):
     )
 
 
-@login_required
+@admin_required
 def nuevo(request):
     if request.method == "POST":
         form = SocioForm(request.POST)
@@ -63,7 +63,7 @@ def nuevo(request):
     )
 
 
-@login_required
+@admin_required
 def detalle(request, idsocio):
     socio = get_object_or_404(Socio.objects.select_related("idtiposocio"), idsocio=idsocio)
     cuentas = Cuentabancaria.objects.filter(idsocio=socio).order_by("nombrebanco")
@@ -88,7 +88,7 @@ def detalle(request, idsocio):
     )
 
 
-@login_required
+@admin_required
 def editar(request, idsocio):
     socio = get_object_or_404(Socio, idsocio=idsocio)
     if request.method == "POST":
@@ -117,7 +117,7 @@ def editar(request, idsocio):
     )
 
 
-@login_required
+@admin_required
 def cuenta_nueva(request, idsocio):
     socio = get_object_or_404(Socio, idsocio=idsocio)
     if request.method == "POST":
@@ -144,7 +144,7 @@ def cuenta_nueva(request, idsocio):
     )
 
 
-@login_required
+@admin_required
 def cuenta_editar(request, idcuentabancaria):
     cuenta = get_object_or_404(
         Cuentabancaria.objects.select_related("idsocio"),

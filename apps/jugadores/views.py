@@ -1,10 +1,10 @@
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
+from apps.common.decorators import admin_required
 from apps.bingos.models import Carton, Sesionjuego
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate
@@ -13,7 +13,7 @@ from .forms import JugadorForm
 from .models import Jugador
 
 
-@login_required
+@admin_required
 def lista(request):
     busqueda = request.GET.get("q", "").strip()
     jugadores = (
@@ -39,7 +39,7 @@ def lista(request):
     )
 
 
-@login_required
+@admin_required
 def nuevo(request):
     if request.method == "POST":
         form = JugadorForm(request.POST)
@@ -77,7 +77,7 @@ def nuevo(request):
     )
 
 
-@login_required
+@admin_required
 def detalle(request, idjugador):
     jugador = get_object_or_404(
         Jugador.objects.select_related("idsocio"),
@@ -105,7 +105,7 @@ def detalle(request, idjugador):
     )
 
 
-@login_required
+@admin_required
 def editar(request, idjugador):
     jugador = get_object_or_404(Jugador, idjugador=idjugador)
 

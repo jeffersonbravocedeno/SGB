@@ -1,8 +1,8 @@
 from django.contrib import messages
-from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404, redirect, render
 
+from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate, safe_count
 
@@ -79,7 +79,7 @@ SECTIONS = {
 }
 
 
-@login_required
+@admin_required
 def dashboard(request):
     cards = [
         {"label": "Tipos de socio", "value": safe_count(Tiposocio), "url": "configuracion:tipos_socio_lista"},
@@ -102,7 +102,7 @@ def _rows(queryset, config):
     return [{"object": obj, "pk": _object_pk(obj), "values": config["values"](obj)} for obj in queryset]
 
 
-@login_required
+@admin_required
 def section_list(request, section):
     config = _section(section)
     queryset = config["model"].objects.order_by(config["order"])
@@ -123,7 +123,7 @@ def section_list(request, section):
     )
 
 
-@login_required
+@admin_required
 def section_new(request, section):
     config = _section(section)
     form_class = config["form"]
@@ -152,7 +152,7 @@ def section_new(request, section):
     )
 
 
-@login_required
+@admin_required
 def section_detail(request, section, pk):
     config = _section(section)
     obj = get_object_or_404(config["model"], pk=pk)
@@ -171,7 +171,7 @@ def section_detail(request, section, pk):
     )
 
 
-@login_required
+@admin_required
 def section_edit(request, section, pk):
     config = _section(section)
     obj = get_object_or_404(config["model"], pk=pk)
