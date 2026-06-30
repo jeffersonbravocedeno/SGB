@@ -1,8 +1,12 @@
+import asyncio
+import json
 from contextlib import nullcontext
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import Mock, call, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
+from channels.layers import get_channel_layer
+from channels.testing import WebsocketCommunicator
 from django.contrib.auth.models import AnonymousUser, User
 from django.contrib.messages import get_messages
 from django.contrib.messages.storage.fallback import FallbackStorage
@@ -17,6 +21,12 @@ from apps.jugadores.models import Jugador
 
 from .forms import AccesoCartonPublicoForm, GenerarAsignarCartonForm, PartidaBingoForm
 from .models import Bingo, Carton, Partidabingo
+from .consumers import PartidaPublicaConsumer
+from .realtime import (
+    construir_payload_publico_partida,
+    nombre_grupo_partida,
+    programar_publicacion_partida,
+)
 from .services import (
     CASILLA_LIBRE,
     ESTADO_PARTIDA_CANCELADA,
@@ -732,6 +742,7 @@ class RutaExtraccionBolaTests(SimpleTestCase):
         with (
             patch("apps.bingos.views.get_object_or_404", return_value=partida),
             patch("apps.bingos.views.extraer_siguiente_bola", return_value=12),
+            patch("apps.bingos.views.programar_publicacion_partida") as publicar_mock,
         ):
             response = sacar_bola(request, 1)
 
@@ -741,6 +752,7 @@ class RutaExtraccionBolaTests(SimpleTestCase):
             "Bola B-12 extraída correctamente.",
             [message.message for message in get_messages(request)],
         )
+        publicar_mock.assert_called_once_with(partida, "bola_extraida")
 
 
 class ReglaGanadorCartonTests(SimpleTestCase):
@@ -2178,6 +2190,7 @@ class ConsolaOperadorTests(SimpleTestCase):
         with (
             patch("apps.bingos.views._base_datos_permite_estado_partida", return_value=True),
             patch("apps.bingos.views.transaction.atomic", return_value=nullcontext()),
+            patch("apps.bingos.views.programar_publicacion_partida"),
         ):
             resultado = _procesar_accion_consola(request, partida, "pausar")
 
@@ -2197,6 +2210,7 @@ class ConsolaOperadorTests(SimpleTestCase):
         with (
             patch("apps.bingos.views._base_datos_permite_estado_partida", return_value=True),
             patch("apps.bingos.views.transaction.atomic", return_value=nullcontext()),
+            patch("apps.bingos.views.programar_publicacion_partida"),
         ):
             resultado = _procesar_accion_consola(request, partida, "reanudar")
 
@@ -2226,3 +2240,514 @@ class ConsolaOperadorTests(SimpleTestCase):
                 for message in get_messages(request)
             )
         )
+
+
+@override_settings(
+    ALLOWED_HOSTS=["localhost", "testserver"],
+    CHANNEL_LAYERS={
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
+        }
+    },
+)
+class WebSocketPublicoBingoTests(SimpleTestCase):
+    class CapaCanalesPrueba:
+        def __init__(self):
+            self.grupos_agregados = []
+            self.grupos_descartados = []
+
+        async def group_add(self, group_name, channel_name):
+            self.grupos_agregados.append((group_name, channel_name))
+
+        async def group_discard(self, group_name, channel_name):
+            self.grupos_descartados.append((group_name, channel_name))
+
+    def test_aplicacion_asgi_carga_correctamente(self):
+        from config.asgi import application
+
+        self.assertIsNotNone(application)
+
+    def test_ruta_websocket_publica_existe(self):
+        from apps.bingos.routing import websocket_urlpatterns
+
+        rutas_partida = [
+            ruta
+            for ruta in websocket_urlpatterns
+            if getattr(ruta, "name", None) == "ws_partida_publica"
+        ]
+
+        self.assertEqual(len(rutas_partida), 1)
+        self.assertEqual(
+            rutas_partida[0].callback.consumer_class,
+            PartidaPublicaConsumer,
+        )
+
+    def test_consumidor_acepta_partida_existente(self):
+        async def partida_existe(_consumer, _idpartidabingo):
+            return True
+
+        async def escenario():
+            consumidor = PartidaPublicaConsumer()
+            consumidor.scope = {
+                "url_route": {"kwargs": {"idpartidabingo": "20"}}
+            }
+            consumidor.channel_layer = self.CapaCanalesPrueba()
+            consumidor.channel_name = "canal-prueba"
+            consumidor.base_send = AsyncMock()
+
+            with patch.object(
+                PartidaPublicaConsumer,
+                "_partida_existe",
+                new=partida_existe,
+            ):
+                await consumidor.connect()
+
+            return consumidor
+
+        consumidor = asyncio.run(escenario())
+        consumidor.base_send.assert_awaited_once_with(
+            {"type": "websocket.accept", "subprotocol": None}
+        )
+        self.assertEqual(
+            consumidor.channel_layer.grupos_agregados,
+            [(nombre_grupo_partida(20), "canal-prueba")],
+        )
+
+    def test_partida_inexistente_se_cierra_de_forma_controlada(self):
+        async def partida_existe(_consumer, _idpartidabingo):
+            return False
+
+        async def escenario():
+            consumidor = PartidaPublicaConsumer()
+            consumidor.scope = {
+                "url_route": {"kwargs": {"idpartidabingo": "9999"}}
+            }
+            consumidor.channel_layer = self.CapaCanalesPrueba()
+            consumidor.channel_name = "canal-prueba"
+            consumidor.base_send = AsyncMock()
+
+            with patch.object(
+                PartidaPublicaConsumer,
+                "_partida_existe",
+                new=partida_existe,
+            ):
+                await consumidor.connect()
+
+            return consumidor
+
+        consumidor = asyncio.run(escenario())
+        consumidor.base_send.assert_awaited_once_with(
+            {"type": "websocket.close", "code": 4404}
+        )
+        self.assertEqual(consumidor.channel_layer.grupos_agregados, [])
+
+    def test_mensajes_del_cliente_se_ignoran_sin_acciones_admin(self):
+        consumidor = PartidaPublicaConsumer()
+        with patch("apps.bingos.models.Partidabingo.save") as guardar_mock:
+            resultado = asyncio.run(
+                consumidor.receive(
+                    text_data='{"accion": "sacar_bola", "estadopartida": "Finalizada"}'
+                )
+            )
+
+        self.assertIsNone(resultado)
+        guardar_mock.assert_not_called()
+
+    def test_evento_de_bola_llega_al_cliente_con_payload_publico(self):
+        from config.asgi import application
+
+        async def partida_existe(_consumer, _idpartidabingo):
+            return True
+
+        partida = partida_publica_prueba(bolas=[2, 23], ultima=23)
+        payload = construir_payload_publico_partida(
+            partida,
+            "bola_extraida",
+        )
+
+        async def escenario():
+            with patch.object(
+                PartidaPublicaConsumer,
+                "_partida_existe",
+                new=partida_existe,
+            ), patch("apps.bingos.models.Partidabingo.save") as guardar_mock:
+                comunicador = WebsocketCommunicator(
+                    application,
+                    "/ws/juego/partidas/20/",
+                    headers=[(b"origin", b"http://localhost")],
+                )
+                await get_channel_layer().flush()
+                try:
+                    conectado, _subprotocolo = await comunicador.connect(
+                        timeout=0.5
+                    )
+                    await comunicador.send_json_to(
+                        {
+                            "accion": "sacar_bola",
+                            "estadopartida": "Finalizada",
+                        }
+                    )
+                    sin_respuesta = await comunicador.receive_nothing(
+                        timeout=0.05
+                    )
+                    guardar_mock.assert_not_called()
+                    await get_channel_layer().group_send(
+                        nombre_grupo_partida(20),
+                        {
+                            "type": "partida.actualizada",
+                            "payload": payload,
+                        },
+                    )
+                    await asyncio.sleep(0.05)
+                    recibido = await comunicador.receive_json_from(
+                        timeout=0.5
+                    )
+                finally:
+                    comunicador.stop(exceptions=False)
+                return conectado, sin_respuesta, recibido
+
+        conectado, sin_respuesta, recibido = asyncio.run(escenario())
+        self.assertTrue(conectado)
+        self.assertTrue(sin_respuesta)
+        self.assertEqual(recibido, payload)
+        self.assertEqual(recibido["partida"]["ultima_bola"]["codigo"], "I-23")
+        self.assertEqual(recibido["partida"]["estado"], ESTADO_PARTIDA_EN_CURSO)
+        self.assertEqual(recibido["partida"]["total_extraidas"], 2)
+        self.assertEqual(recibido["partida"]["cantidad_extraida"], 2)
+        self.assertEqual(recibido["partida"]["restantes"], 73)
+
+    def test_consumidor_sin_capa_de_canales_cierra_controladamente(self):
+        async def partida_existe(_consumer, _idpartidabingo):
+            return True
+
+        async def escenario():
+            consumidor = PartidaPublicaConsumer()
+            consumidor.scope = {
+                "url_route": {"kwargs": {"idpartidabingo": "20"}}
+            }
+            consumidor.channel_layer = None
+            consumidor.channel_name = "canal-prueba"
+            consumidor.base_send = AsyncMock()
+
+            with patch.object(
+                PartidaPublicaConsumer,
+                "_partida_existe",
+                new=partida_existe,
+            ):
+                await consumidor.connect()
+
+            return consumidor
+
+        consumidor = asyncio.run(escenario())
+        consumidor.base_send.assert_awaited_once_with(
+            {"type": "websocket.close", "code": 1011}
+        )
+
+    def test_desconexion_descarta_el_grupo_publico(self):
+        async def escenario():
+            consumidor = PartidaPublicaConsumer()
+            consumidor.group_name = nombre_grupo_partida(20)
+            consumidor.channel_layer = self.CapaCanalesPrueba()
+            consumidor.channel_name = "canal-prueba"
+
+            await consumidor.disconnect(1000)
+            return consumidor
+
+        consumidor = asyncio.run(escenario())
+        self.assertEqual(
+            consumidor.channel_layer.grupos_descartados,
+            [(nombre_grupo_partida(20), "canal-prueba")],
+        )
+
+    def test_payload_websocket_no_incluye_privados_y_contiene_resumen_publico(self):
+        partida = partida_publica_prueba(bolas=[2, 23], ultima=23)
+        partida.idbingadores = (
+            '[{"idjugador":41,"tiro_desempate":75,'
+            '"codigocarton":"PRIVADO-001"}]'
+        )
+
+        payload = construir_payload_publico_partida(
+            partida,
+            "bola_extraida",
+        )
+        partida_payload = payload["partida"]
+        serializado = json.dumps(payload)
+
+        self.assertEqual(partida_payload["estado"], ESTADO_PARTIDA_EN_CURSO)
+        self.assertEqual(partida_payload["ultima_bola"]["codigo"], "I-23")
+        self.assertEqual(partida_payload["bolas_extraidas"], [2, 23])
+        self.assertEqual(partida_payload["total_extraidas"], 2)
+        self.assertEqual(partida_payload["cantidad_extraida"], 2)
+        self.assertEqual(partida_payload["restantes"], 73)
+        self.assertIsNone(partida_payload["ganador"])
+        self.assertNotIn("idbingadores", serializado)
+        self.assertNotIn("tiro_desempate", serializado)
+        self.assertNotIn("codigocarton", serializado)
+        self.assertNotIn("preciopagado", serializado)
+        self.assertNotIn("PRIVADO-001", serializado)
+
+
+class PayloadPublicoTiempoRealTests(SimpleTestCase):
+    def test_payload_excluye_datos_privados(self):
+        partida = partida_publica_prueba(bolas=[12])
+        partida.idbingadores = (
+            '[{"idjugador":41,"tiro_desempate":75,'
+            '"codigocarton":"PRIVADO-001"}]'
+        )
+        payload = construir_payload_publico_partida(partida, "actualizacion")
+        serializado = json.dumps(payload)
+
+        self.assertNotIn("idbingadores", serializado)
+        self.assertNotIn("tiro_desempate", serializado)
+        self.assertNotIn("codigocarton", serializado)
+        self.assertNotIn("preciopagado", serializado)
+        self.assertNotIn("PRIVADO-001", serializado)
+
+    def test_payload_refleja_pausa_reanudacion_y_desempate(self):
+        partida = partida_publica_prueba(estado=ESTADO_PARTIDA_PAUSADA)
+        pausada = construir_payload_publico_partida(partida, "partida_pausada")
+        partida.estadopartida = ESTADO_PARTIDA_EN_CURSO
+        reanudada = construir_payload_publico_partida(
+            partida,
+            "partida_reanudada",
+        )
+        partida.estadopartida = ESTADO_PARTIDA_DESEMPATE
+        partida.idbingadores = '[{"idjugador":41,"tiro_desempate":70}]'
+        desempate = construir_payload_publico_partida(
+            partida,
+            "desempate_detectado",
+        )
+
+        self.assertEqual(pausada["partida"]["estado"], ESTADO_PARTIDA_PAUSADA)
+        self.assertEqual(reanudada["partida"]["estado"], ESTADO_PARTIDA_EN_CURSO)
+        self.assertEqual(desempate["partida"]["estado"], ESTADO_PARTIDA_DESEMPATE)
+        self.assertNotIn("idbingadores", desempate["partida"])
+
+    def test_ganador_solo_se_publica_cuando_finaliza(self):
+        ganador = Jugador(idjugador=41, aliasjugador="campeon_publico")
+        partida = partida_publica_prueba(ganador=ganador)
+        en_curso = construir_payload_publico_partida(partida, "ganador_detectado")
+        partida.estadopartida = ESTADO_PARTIDA_FINALIZADA
+        partida.haydesempate = True
+        finalizada = construir_payload_publico_partida(
+            partida,
+            "desempate_finalizado",
+        )
+
+        self.assertIsNone(en_curso["partida"]["ganador"])
+        self.assertEqual(finalizada["partida"]["ganador"], "campeon_publico")
+        self.assertTrue(finalizada["partida"]["finalizada"])
+        self.assertTrue(finalizada["partida"]["resuelta_por_desempate"])
+
+    def test_publicacion_se_difiere_hasta_on_commit(self):
+        partida = partida_publica_prueba(bolas=[12])
+        callbacks = []
+        capa = Mock()
+        capa.group_send = AsyncMock()
+
+        with (
+            patch(
+                "apps.bingos.realtime.transaction.on_commit",
+                side_effect=callbacks.append,
+            ),
+            patch("apps.bingos.realtime.get_channel_layer", return_value=capa),
+        ):
+            programar_publicacion_partida(partida, "bola_extraida")
+            capa.group_send.assert_not_awaited()
+            self.assertEqual(len(callbacks), 1)
+            callbacks[0]()
+
+        capa.group_send.assert_awaited_once()
+
+
+class IntegracionPublicacionTiempoRealTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _request_con_mensajes(self, path, data=None):
+        request = self.factory.post(path, data or {})
+        request.user = User(username="admin", is_staff=True)
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def test_pausar_y_reanudar_publican_el_estado_confirmado(self):
+        casos = (
+            ("pausar", ESTADO_PARTIDA_EN_CURSO, "partida_pausada"),
+            ("reanudar", ESTADO_PARTIDA_PAUSADA, "partida_reanudada"),
+        )
+        for accion, estado_inicial, evento in casos:
+            with self.subTest(accion=accion):
+                request = self._request_con_mensajes(
+                    "/partidas/20/consola/",
+                    {"accion": accion},
+                )
+                partida = Partidabingo(
+                    idpartidabingo=20,
+                    estadopartida=estado_inicial,
+                    bolascantadas="[]",
+                )
+                partida.save = Mock()
+                with (
+                    patch(
+                        "apps.bingos.views._base_datos_permite_estado_partida",
+                        return_value=True,
+                    ),
+                    patch(
+                        "apps.bingos.views.transaction.atomic",
+                        return_value=nullcontext(),
+                    ),
+                    patch(
+                        "apps.bingos.views.programar_publicacion_partida"
+                    ) as publicar_mock,
+                ):
+                    resultado = _procesar_accion_consola(
+                        request,
+                        partida,
+                        accion,
+                    )
+
+                self.assertTrue(resultado)
+                publicar_mock.assert_called_once_with(partida, evento)
+
+    def test_detectar_desempate_publica_solo_actualizacion_publica(self):
+        request = self._request_con_mensajes(
+            "/partidas/20/cartones/31/validar/"
+        )
+        partida = partida_publica_prueba(estado=ESTADO_PARTIDA_DESEMPATE)
+        carton = carton_publico_prueba(partida=partida)
+        resultado = {
+            "resultado": "desempate",
+            "partida": partida,
+            "carton": carton,
+        }
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                side_effect=[partida, carton],
+            ),
+            patch(
+                "apps.bingos.views.validar_carton_ganador",
+                return_value=resultado,
+            ),
+            patch(
+                "apps.bingos.views.programar_publicacion_partida"
+            ) as publicar_mock,
+        ):
+            response = validar_carton(request, 20, 31)
+
+        self.assertEqual(response.status_code, 302)
+        publicar_mock.assert_called_once_with(partida, "desempate_detectado")
+
+    def test_confirmar_desempate_publica_finalizacion_con_ganador(self):
+        request = self._request_con_mensajes(
+            "/partidas/20/desempate/confirmar/"
+        )
+        partida = partida_publica_prueba(estado=ESTADO_PARTIDA_FINALIZADA)
+        confirmacion = {
+            "partida": partida,
+            "resultado": {
+                "idjugador": 41,
+                "jugador": "juan123",
+                "codigo": "O-67",
+            },
+        }
+        with (
+            patch("apps.bingos.views.get_object_or_404", return_value=partida),
+            patch(
+                "apps.bingos.views.confirmar_y_finalizar_desempate",
+                return_value=confirmacion,
+            ),
+            patch(
+                "apps.bingos.views.programar_publicacion_partida"
+            ) as publicar_mock,
+        ):
+            response = confirmar_desempate(request, 20)
+
+        self.assertEqual(response.status_code, 302)
+        publicar_mock.assert_called_once_with(
+            partida,
+            "desempate_finalizado",
+            ganador_publico="juan123",
+        )
+
+    def test_error_de_transaccion_no_publica_cambio_parcial(self):
+        request = self._request_con_mensajes(
+            "/partidas/20/consola/",
+            {"accion": "pausar"},
+        )
+        partida = Partidabingo(
+            idpartidabingo=20,
+            estadopartida=ESTADO_PARTIDA_EN_CURSO,
+        )
+        partida.save = Mock(side_effect=DatabaseError("fallo simulado"))
+        with (
+            patch(
+                "apps.bingos.views._base_datos_permite_estado_partida",
+                return_value=True,
+            ),
+            patch(
+                "apps.bingos.views.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            patch(
+                "apps.bingos.views.programar_publicacion_partida"
+            ) as publicar_mock,
+        ):
+            resultado = _procesar_accion_consola(
+                request,
+                partida,
+                "pausar",
+            )
+
+        self.assertFalse(resultado)
+        self.assertEqual(partida.estadopartida, ESTADO_PARTIDA_EN_CURSO)
+        publicar_mock.assert_not_called()
+
+
+@override_settings(
+    STORAGES={
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"
+        },
+    }
+)
+class PlantillasTiempoRealBingoTests(SimpleTestCase):
+    def setUp(self):
+        self.request = RequestFactory().get("/juego/")
+        self.request.user = AnonymousUser()
+
+    def test_tablero_conserva_actualizacion_manual_y_no_agrega_acciones_admin(self):
+        partida = partida_publica_prueba(bolas=[1, 23])
+        html = render_to_string(
+            "bingos/tablero_publico.html",
+            {"partida": partida, **preparar_datos_tablero_publico(partida)},
+            request=self.request,
+        )
+
+        self.assertIn("Actualizar tablero", html)
+        self.assertIn("data-realtime-bingo", html)
+        self.assertIn("realtime_bingo.js", html)
+        self.assertNotIn("Sacar siguiente bola", html)
+        self.assertNotIn("Validar cartón", html)
+
+    def test_carton_conserva_actualizacion_manual_sin_reclamo(self):
+        partida = partida_publica_prueba(bolas=[1, 23])
+        carton = carton_publico_prueba(partida=partida)
+        html = render_to_string(
+            "bingos/carton_publico.html",
+            {
+                "partida": partida,
+                "carton": carton,
+                "error_carton": None,
+                **preparar_datos_carton_jugador(carton),
+            },
+            request=self.request,
+        )
+
+        self.assertIn("Actualizar cartón", html)
+        self.assertIn("data-carton-cell", html)
+        self.assertIn("realtime_bingo.js", html)
+        self.assertNotIn("Reclamar", html)
+        self.assertNotIn("Validar cartón", html)

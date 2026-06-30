@@ -172,6 +172,38 @@ a {
         url("/static/img/dashboard-pattern.svg");
 }
 
+.realtime-status {
+    display: inline-flex;
+    min-height: 2.4rem;
+    align-items: center;
+    padding: 0.45rem 0.75rem;
+    border: 1px solid rgba(255, 255, 255, 0.42);
+    border-radius: 999px;
+    color: #ffffff;
+    background: rgba(20, 32, 51, 0.42);
+    font-size: 0.78rem;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.realtime-status::before {
+    width: 0.55rem;
+    height: 0.55rem;
+    margin-right: 0.45rem;
+    border-radius: 50%;
+    background: #d7e2ef;
+    content: "";
+}
+
+.realtime-status--connected::before {
+    background: #62e6a6;
+    box-shadow: 0 0 0 0.2rem rgba(98, 230, 166, 0.2);
+}
+
+.realtime-status--reconnecting::before {
+    background: #ffd36a;
+}
+
 .public-game-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));

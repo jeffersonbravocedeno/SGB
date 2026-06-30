@@ -767,6 +767,7 @@ def preparar_datos_carton_jugador(carton):
         carton.matriznumeros,
         partida.bolascantadas,
     )
+    datos_bolas = preparar_datos_bolas_partida(partida)
     return {
         "matriz_carton": matriz,
         "numeros_marcados": contar_numeros_marcados_carton(
@@ -775,6 +776,7 @@ def preparar_datos_carton_jugador(carton):
         ),
         "total_numeros_carton": 24,
         "numeros_faltantes": faltantes,
+        "ultima_bola_codigo": datos_bolas["ultima_bola_codigo"],
         "mensaje_estado_carton": mensaje_estado_carton_publico(
             partida.estadopartida
         ),

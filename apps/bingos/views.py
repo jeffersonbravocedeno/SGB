@@ -22,6 +22,7 @@ from .forms import (
     PartidaBingoForm,
 )
 from .models import Bingo, Carton, Partidabingo, Sesionjuego
+from .realtime import programar_publicacion_partida
 from .services import (
     ACCIONES_CONSOLA,
     BolaBingoError,
@@ -152,6 +153,11 @@ def carton_publico(request, codigocarton):
         "numeros_marcados": 0,
         "total_numeros_carton": 24,
         "numeros_faltantes": [],
+        "ultima_bola_codigo": (
+            preparar_datos_bolas_partida(partida_carton)["ultima_bola_codigo"]
+            if partida_carton is not None
+            else None
+        ),
         "mensaje_estado_carton": (
             mensaje_estado_carton_publico(partida_carton.estadopartida)
             if partida_carton is not None
@@ -632,6 +638,11 @@ def confirmar_desempate(request, idpartidabingo):
     else:
         resultado = confirmacion["resultado"]
         nombre = resultado["jugador"] or f"Jugador #{resultado['idjugador']}"
+        programar_publicacion_partida(
+            confirmacion["partida"],
+            "desempate_finalizado",
+            ganador_publico=nombre,
+        )
         messages.success(
             request,
             f"Ganador confirmado: {nombre} con {resultado['codigo']}.",
@@ -663,6 +674,7 @@ def sacar_bola(request, idpartidabingo):
             "No fue posible sacar la siguiente bola. La partida no fue modificada.",
         )
     else:
+        programar_publicacion_partida(partida, "bola_extraida")
         messages.success(
             request,
             f"Bola {formatear_bola_bingo(nueva_bola)} extraída correctamente.",
@@ -702,11 +714,19 @@ def validar_carton(request, idpartidabingo, idcarton):
         )
     else:
         if resultado["resultado"] == "desempate":
+            programar_publicacion_partida(
+                resultado["partida"],
+                "desempate_detectado",
+            )
             messages.warning(
                 request,
                 "Se detectaron varios cartones ganadores. La partida pasó a Desempate.",
             )
         else:
+            programar_publicacion_partida(
+                resultado["partida"],
+                "ganador_detectado",
+            )
             messages.success(
                 request,
                 (
@@ -750,6 +770,13 @@ def _procesar_accion_consola(request, partida, accion):
             setattr(partida, field_name, value)
         with transaction.atomic():
             partida.save(update_fields=list(cambios))
+            eventos = {
+                "iniciar": "partida_iniciada",
+                "pausar": "partida_pausada",
+                "reanudar": "partida_reanudada",
+                "finalizar": "partida_finalizada",
+            }
+            programar_publicacion_partida(partida, eventos[accion])
     except DatabaseError:
         for field_name, value in valores_originales.items():
             setattr(partida, field_name, value)

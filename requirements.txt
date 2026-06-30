@@ -1,5 +1,8 @@
 asgiref==3.11.1
+channels==4.3.2
+channels-redis==4.3.0
 crispy-bootstrap5==2026.3
+daphne==4.2.2
 Django==5.2.15
 django-crispy-forms==2.6
 gunicorn==26.0.0

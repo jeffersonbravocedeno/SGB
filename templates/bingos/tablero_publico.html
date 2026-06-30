@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{% load siab_tags %}
+{% load static siab_tags %}
 
 {% block title %}SIAB | Tablero de Bingo{% endblock %}
 
 {% block content %}
+<div data-realtime-bingo data-realtime-mode="tablero" data-partida-id="{{ partida.idpartidabingo }}">
 <section class="page-header public-page-header">
     <div>
         <p class="page-kicker">TABLERO DE BINGO</p>
@@ -11,29 +12,28 @@
         <p>{{ partida.idbingo.titulobingo }} · Estado: {{ partida.estadopartida|estado_partida_display }}</p>
     </div>
     <div class="d-flex flex-wrap gap-2">
+        <span class="realtime-status realtime-status--manual" data-realtime-status role="status">Actualización manual</span>
         <a class="btn btn-outline-light" href="{% url 'bingos:sala_juego_publica' %}">Volver a la sala</a>
         <a class="btn btn-light" href="{% url 'bingos:tablero_publico' partida.idpartidabingo %}">Actualizar tablero</a>
     </div>
 </section>
 
-<div class="alert public-state-message" role="status">{{ mensaje_estado_publico }}</div>
+<div class="alert public-state-message" data-realtime-mensaje role="status">{{ mensaje_estado_publico }}</div>
 
-{% if partida.estadopartida == "Finalizada" %}
-<section class="content-panel public-result-card mb-3">
+<section class="content-panel public-result-card mb-3{% if partida.estadopartida != 'Finalizada' %} d-none{% endif %}" data-realtime-result>
     <p class="page-kicker text-primary mb-1">Partida finalizada</p>
-    {% if ganador_publico %}<h2>Ganador: {{ ganador_publico }}</h2>{% else %}<h2>Ganador no confirmado</h2>{% endif %}
-    {% if resuelta_por_desempate %}<p class="mb-0">La partida se resolvió mediante desempate.</p>{% endif %}
+    <h2 data-realtime-ganador>{% if ganador_publico %}Ganador: {{ ganador_publico }}{% else %}Ganador no confirmado{% endif %}</h2>
+    <p class="mb-0{% if not resuelta_por_desempate %} d-none{% endif %}" data-realtime-desempate>La partida se resolvió mediante desempate.</p>
 </section>
-{% endif %}
 
 <section class="content-panel mb-3">
     <dl class="public-board-summary">
         <div><dt>Bingo</dt><dd>{{ partida.idbingo.titulobingo }}</dd></div>
         <div><dt>Ronda</dt><dd>{{ partida.nombreronda }}</dd></div>
-        <div><dt>Estado</dt><dd>{{ partida.estadopartida|estado_partida_display }}</dd></div>
+        <div><dt>Estado</dt><dd data-realtime-estado>{{ partida.estadopartida|estado_partida_display }}</dd></div>
         <div><dt>Premio</dt><dd>${{ partida.valorefectivo|floatformat:2 }}{% if partida.premiomaterial %} · {{ partida.premiomaterial }}{% endif %}</dd></div>
-        <div><dt>Extraídas</dt><dd>{{ total_bolas_extraidas }} de 75 bolas</dd></div>
-        <div><dt>Restantes</dt><dd>{{ total_bolas_faltantes }} de 75 bolas</dd></div>
+        <div><dt>Extraídas</dt><dd><span data-realtime-total-extraidas>{{ total_bolas_extraidas }}</span> de 75 bolas</dd></div>
+        <div><dt>Restantes</dt><dd><span data-realtime-restantes>{{ total_bolas_faltantes }}</span> de 75 bolas</dd></div>
     </dl>
 </section>
 
@@ -41,11 +41,11 @@
     <div class="public-last-ball">
         <span>Última bola</span>
         {% if ultima_bola_codigo %}
-        <strong>{{ ultima_bola_codigo }}</strong>
+        <strong data-realtime-ultima-bola>{{ ultima_bola_codigo }}</strong>
         {% else %}
-        <strong>—</strong>
-        <p>Aún no se han extraído bolas.</p>
+        <strong data-realtime-ultima-bola>—</strong>
         {% endif %}
+        <p data-realtime-sin-bolas{% if ultima_bola_codigo %} hidden{% endif %}>Aún no se han extraído bolas.</p>
     </div>
 </section>
 
@@ -53,15 +53,12 @@
     <div class="section-heading">
         <div><h2>Historial de bolas</h2><p>Orden registrado de extracción.</p></div>
     </div>
-    {% if historial_bolas %}
-    <div class="public-ball-history d-flex flex-wrap gap-2" role="list" aria-label="Bolas extraídas">
+    <div class="public-ball-history d-flex flex-wrap gap-2{% if not historial_bolas %} d-none{% endif %}" data-realtime-history role="list" aria-label="Bolas extraídas">
         {% for bola in historial_bolas %}
         <span class="public-history-ball badge rounded-pill" role="listitem">{{ bola.codigo }}</span>
         {% endfor %}
     </div>
-    {% else %}
-    <div class="empty-state"><strong>Sin bolas extraídas</strong><span>Aún no se han extraído bolas.</span></div>
-    {% endif %}
+    <div class="empty-state{% if historial_bolas %} d-none{% endif %}" data-realtime-history-empty><strong>Sin bolas extraídas</strong><span>Aún no se han extraído bolas.</span></div>
 </section>
 
 <section class="content-panel">
@@ -74,9 +71,10 @@
             <section class="public-bingo-column col" role="rowgroup" aria-label="Columna {{ columna.letra }}">
                 <h3 class="public-bingo-column-title">{{ columna.letra }}</h3>
                 {% for bola in columna.bolas %}
-                <div class="public-bingo-ball{% if bola.extraida %} is-drawn{% endif %}" role="gridcell" title="{{ bola.codigo }}{% if bola.extraida %} extraída{% endif %}">
+                <div class="public-bingo-ball{% if bola.extraida %} is-drawn{% endif %}" data-bola-numero="{{ bola.numero }}" role="gridcell" title="{{ bola.codigo }}{% if bola.extraida %} extraída{% endif %}">
                     <span>{{ bola.numero }}</span>
-                    {% if bola.extraida %}<span class="visually-hidden">Extraída</span><span class="public-ball-check" aria-hidden="true">✓</span>{% endif %}
+                    <span class="visually-hidden" data-realtime-ball-state>{% if bola.extraida %}Extraída{% else %}Pendiente{% endif %}</span>
+                    <span class="public-ball-check" data-realtime-ball-check aria-hidden="true"{% if not bola.extraida %} hidden{% endif %}>✓</span>
                 </div>
                 {% endfor %}
             </section>
@@ -84,4 +82,6 @@
         </div>
     </div>
 </section>
+</div>
+<script src="{% static 'js/realtime_bingo.js' %}" defer></script>
 {% endblock %}
