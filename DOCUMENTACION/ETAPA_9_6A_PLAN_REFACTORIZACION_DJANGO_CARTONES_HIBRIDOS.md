@@ -944,3 +944,59 @@ Esta etapa no adapta todavía la pantalla completa de desempate híbrido, Mis
 cartones, acceso público, reportes, vistas de jugador ni WebSockets. Tampoco
 modifica JavaScript, CSS, administración, `.env` o el esquema físico. La base
 real `bingo` no fue tocada.
+
+## 20. Etapa 9.6D.3 — Mis cartones y consulta pública por participación
+
+`Mis cartones` consulta los maestros asignados al jugador y muestra cada
+cartón una sola vez, aunque tenga participaciones en varias rondas. La interfaz
+distingue visualmente entre `Histórico por partida`, para el modelo heredado
+con `Carton.idpartida` definida, y `Cartón de Bingo`, para el maestro híbrido
+con `Carton.idpartida = NULL`. En este último caso también informa el número
+de rondas reales disponibles y resume por defecto una sola participación.
+
+Los detalles privado y público aceptan el selector
+`?partida=<idpartida>`. Para cartones híbridos, las opciones proceden
+exclusivamente de `CartonPartidaBingo` y cada participación debe coincidir con
+el maestro consultado, la ronda solicitada y el mismo Bingo del maestro. Una
+ronda inválida, de otro cartón, de otro Bingo o sin participación se rechaza de
+forma controlada y no activa el flujo histórico como fallback.
+
+Cuando no se indica una ronda, la selección aplica este orden: `En curso`,
+`Pausada`, `Desempate`, `En espera`, `Programada`, la `Finalizada` más
+reciente, la `Cancelada` más reciente y, finalmente, la participación de menor
+ID. El progreso usa siempre la matriz del maestro y las bolas de la
+`Partidabingo` seleccionada; estado, índice de victoria y fecha de validación
+se obtienen de esa participación, sin usar `Carton.indicevictoria` como
+resultado híbrido.
+
+El detalle privado mantiene el filtro de propiedad por jugador. La consulta
+pública conserva el acceso por código y no expone precio pagado, correo, alias,
+nombre del jugador, información interna de otros cartones ni candidatos
+privados de desempate. Los cartones históricos conservan su relación directa
+con la partida y continúan por el servicio heredado.
+
+### 20.1 Pruebas aisladas y smoke de solo lectura
+
+Se ejecutó únicamente
+`apps.bingos.tests.CartonesPrivadosPublicosHibridosTests`: sus 15 pruebas
+pasaron y Django informó `Skipping setup of unused database(s): default.`. La
+clase cubre maestro único, propiedad privada, selección y prioridad de rondas,
+rechazos entre cartones y Bingos, progreso por bolas, compatibilidad histórica,
+privacidad pública y resultado funcional por participación.
+
+Como smoke de interfaz se ejecutaron diez métodos de esa misma clase, mediante
+`RequestFactory` y los mocks ya implementados, sin crear otro script ni datos
+temporales. Se comprobaron explícitamente el maestro único, detalle privado
+válido, rechazo de otro cartón y otro Bingo, prioridad de ronda activa, cambio
+de progreso entre rondas, flujo histórico, privacidad pública, rechazo de una
+ronda sin participación e índice procedente de `CartonPartidaBingo`.
+
+Antes y después del smoke, Django y PostgreSQL confirmaron
+`current_database() = bingo_ensayo_hibridos` y
+`transaction_read_only = on`. Los conteos permanecieron exactamente en 12
+cartones, 12 participaciones, 12 participaciones originales y 0 no originales;
+por tanto, el smoke no realizó escrituras.
+
+Esta etapa no modifica reportes, WebSockets, JavaScript ni CSS. Tampoco se
+modificó `.env`, se ejecutaron migraciones o se inició el servidor. La base
+real `bingo` no fue tocada.

@@ -26,9 +26,10 @@
                 <tr>
                     <th>Código</th>
                     <th>Bingo</th>
-                    <th>Ronda</th>
+                    <th>Tipo</th>
+                    <th>Rondas</th>
                     <th>Cartón</th>
-                    <th>Partida</th>
+                    <th>Ronda seleccionada</th>
                     <th>Última bola</th>
                     <th>Progreso</th>
                     <th class="text-end">Acción</th>
@@ -38,10 +39,22 @@
                 {% for item in cartones_resumen %}
                 <tr>
                     <td><strong>{{ item.carton.codigocarton }}</strong></td>
-                    <td>{{ item.partida.idbingo.titulobingo|default_dash }}</td>
-                    <td>{{ item.partida.nombreronda|default_dash }}</td>
+                    <td>{{ item.bingo.titulobingo|default_dash }}</td>
+                    <td>
+                        {% if item.tipo_carton == "hibrido" %}
+                        <span class="badge text-bg-primary">Cartón de Bingo</span>
+                        {% else %}
+                        <span class="badge text-bg-secondary">Histórico por partida</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ item.total_rondas }}</td>
                     <td><span class="badge rounded-pill {{ item.carton.estadocarton|estado_class }}">{{ item.carton.estadocarton }}</span></td>
-                    <td>{% if item.partida %}<span class="badge rounded-pill {{ item.partida.estadopartida|estado_class }}">{{ item.partida.estadopartida|estado_partida_display }}</span>{% else %}-{% endif %}</td>
+                    <td>
+                        {% if item.partida %}
+                        <strong>{{ item.partida.nombreronda }}</strong>
+                        <div><span class="badge rounded-pill {{ item.partida.estadopartida|estado_class }}">{% if item.estado_participacion %}{{ item.estado_participacion }}{% else %}{{ item.partida.estadopartida|estado_partida_display }}{% endif %}</span></div>
+                        {% else %}-{% endif %}
+                    </td>
                     <td>{{ item.ultima_bola_codigo|default:"-" }}</td>
                     <td>
                         <strong>{{ item.numeros_marcados }} / {{ item.total_numeros_carton }}</strong>
@@ -54,7 +67,7 @@
                 </tr>
                 {% empty %}
                 <tr>
-                    <td colspan="8">
+                    <td colspan="9">
                         <div class="empty-state">
                             <strong>No tienes cartones asignados.</strong>
                             <span>Registrarte identifica tu cuenta, pero los cartones se asignan cuando el operador registra tu compra.</span>

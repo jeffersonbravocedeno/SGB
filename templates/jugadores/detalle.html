@@ -56,18 +56,32 @@
             <h2 class="section-subtitle">Cartones</h2>
             <div class="table-responsive mb-4">
                 <table class="table modern-table align-middle">
-                    <thead><tr><th>Código</th><th>Partida</th><th>Precio</th><th>Compra</th><th>Estado</th></tr></thead>
+                    <thead><tr><th>Código</th><th>Tipo</th><th>Bingo / partida</th><th>Precio</th><th>Compra</th><th>Estado</th></tr></thead>
                     <tbody>
                         {% for carton in cartones %}
                         <tr>
                             <td>{{ carton.codigocarton }}</td>
-                            <td>{{ carton.idpartida|default_dash }}</td>
+                            <td>
+                                {% if carton.idpartida_id %}
+                                <span class="badge text-bg-secondary">Histórico por partida</span>
+                                {% else %}
+                                <span class="badge text-bg-primary">Cartón de Bingo</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if carton.idpartida_id %}
+                                {{ carton.idpartida|default_dash }}
+                                {% else %}
+                                {{ carton.idbingo.titulobingo|default_dash }}
+                                <div class="small text-muted">{{ carton.participaciones_hibridas_cargadas|length }} ronda{{ carton.participaciones_hibridas_cargadas|length|pluralize:"s" }}</div>
+                                {% endif %}
+                            </td>
                             <td>${{ carton.preciopagado|floatformat:2 }}</td>
                             <td>{{ carton.fechacompra|date:"d/m/Y H:i"|default_dash }}</td>
                             <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
                         </tr>
                         {% empty %}
-                        <tr><td colspan="5" class="text-muted">No hay cartones relacionados.</td></tr>
+                        <tr><td colspan="6" class="text-muted">No hay cartones relacionados.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>

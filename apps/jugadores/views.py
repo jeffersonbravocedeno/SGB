@@ -1,12 +1,12 @@
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from apps.common.decorators import admin_required
-from apps.bingos.models import Carton, Sesionjuego
+from apps.bingos.models import Carton, CartonPartidaBingo, Sesionjuego
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate
 from apps.jugadores.services import (
@@ -100,7 +100,18 @@ def detalle(request, idjugador):
 def _detalle_context(jugador, cuenta_acceso_form=None):
     cartones = (
         Carton.objects.filter(idjugador=jugador)
-        .select_related("idpartida", "idpartida__idbingo")
+        .select_related("idbingo", "idpartida", "idpartida__idbingo")
+        .prefetch_related(
+            Prefetch(
+                "participaciones",
+                queryset=CartonPartidaBingo.objects.select_related(
+                    "idpartida",
+                    "idpartida__idbingo",
+                    "idbingo",
+                ).order_by("idcartonpartidabingo"),
+                to_attr="participaciones_hibridas_cargadas",
+            )
+        )
         .order_by("-fechacompra")[:20]
     )
     sesiones = (

@@ -16,7 +16,7 @@ from django.contrib.messages import get_messages
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.exceptions import PermissionDenied
 from django.db import DatabaseError
-from django.http import HttpResponse
+from django.http import Http404, HttpResponse
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase, override_settings
 from django.urls import resolve, reverse
@@ -113,7 +113,11 @@ from .services import (
     validar_venta_carton_para_bingo,
 )
 from .views import (
+    _participaciones_hibridas_carton,
     _procesar_accion_consola,
+    _preparar_datos_carton_hibrido,
+    _resumen_carton_privado,
+    _seleccionar_participacion_hibrida,
     acceder_carton_publico,
     bingo_carton_nuevo,
     carton_publico,
@@ -125,6 +129,8 @@ from .views import (
     partida_carton_nuevo,
     partida_reporte_pdf,
     partidas_lista,
+    mi_carton_detalle,
+    mis_cartones,
     sacar_bola,
     sala_juego_publica,
     sortear_desempate,
@@ -4432,3 +4438,410 @@ class ReportesAdministrativosTests(SimpleTestCase):
         self.assertIsNone(datos["ganador"])
         self.assertIsNone(datos["carton_ganador"])
         self.assertEqual(datos["mensaje_resultado"], "La partida aún no está finalizada.")
+
+
+class _CartonesConsultaQuerySet(list):
+    def select_related(self, *fields):
+        return self
+
+    def order_by(self, *fields):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        return self[0] if self else None
+
+
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class CartonesPrivadosPublicosHibridosTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.bingo = Bingo(idbingo=70, titulobingo="Bingo por maestro")
+        self.otro_bingo = Bingo(idbingo=71, titulobingo="Otro Bingo")
+        self.jugador = Jugador(
+            idjugador=41,
+            aliasjugador="dueno_privado",
+            correojugador="privado@example.com",
+        )
+        self.otro_jugador = Jugador(
+            idjugador=42,
+            aliasjugador="otro_jugador",
+            correojugador="otro@example.com",
+        )
+        ahora = timezone.now()
+        self.partida_activa = self._partida(
+            701,
+            self.bingo,
+            ESTADO_PARTIDA_EN_CURSO,
+            [1, 16, 31],
+            ahora,
+        )
+        self.partida_pendiente = self._partida(
+            702,
+            self.bingo,
+            ESTADO_PARTIDA_EN_ESPERA,
+            [1],
+            ahora + timedelta(minutes=1),
+        )
+        self.partida_finalizada = self._partida(
+            703,
+            self.bingo,
+            ESTADO_PARTIDA_FINALIZADA,
+            [1, 16],
+            ahora - timedelta(days=1),
+        )
+        self.partida_otro_bingo = self._partida(
+            704,
+            self.otro_bingo,
+            ESTADO_PARTIDA_EN_CURSO,
+            [1, 16, 31, 46],
+            ahora,
+        )
+        self.carton = Carton(
+            idcarton=801,
+            idjugador=self.jugador,
+            idbingo=self.bingo,
+            idpartida=None,
+            codigocarton="B70-C-HIBRIDO",
+            matriznumeros=serializar_matriz_carton_bingo(
+                matriz_carton_prueba()
+            ),
+            indicevictoria=999,
+            preciopagado=Decimal("9876.54"),
+            estadocarton="Vendido",
+        )
+        self.participacion_activa = self._participacion(
+            901,
+            self.carton,
+            self.partida_activa,
+            CartonPartidaBingo.ESTADO_EN_JUEGO,
+            indice=7,
+        )
+        self.participacion_pendiente = self._participacion(
+            902,
+            self.carton,
+            self.partida_pendiente,
+            CartonPartidaBingo.ESTADO_PENDIENTE,
+        )
+        self.participacion_finalizada = self._participacion(
+            903,
+            self.carton,
+            self.partida_finalizada,
+            CartonPartidaBingo.ESTADO_CERRADO,
+        )
+        self.participaciones = [
+            self.participacion_activa,
+            self.participacion_pendiente,
+            self.participacion_finalizada,
+        ]
+        self.carton.participaciones_hibridas_cargadas = self.participaciones
+        self.carton_historico = Carton(
+            idcarton=802,
+            idjugador=self.jugador,
+            idbingo=self.bingo,
+            idpartida=self.partida_activa,
+            codigocarton="P701-C-HISTORICO",
+            matriznumeros=self.carton.matriznumeros,
+            indicevictoria=4,
+            estadocarton="Vendido",
+        )
+
+    def _partida(self, pk, bingo, estado, bolas, fecha):
+        return Partidabingo(
+            idpartidabingo=pk,
+            idbingo=bingo,
+            nombreronda=f"Ronda {pk}",
+            estadopartida=estado,
+            bolascantadas=serializar_bolas_cantadas(bolas),
+            ultimabola=bolas[-1] if bolas else 0,
+            horainicio=fecha,
+            horafin=fecha if estado == ESTADO_PARTIDA_FINALIZADA else None,
+            haydesempate=False,
+        )
+
+    def _participacion(self, pk, carton, partida, estado, indice=None):
+        return CartonPartidaBingo(
+            idcartonpartidabingo=pk,
+            idcarton=carton,
+            idpartida=partida,
+            idbingo=partida.idbingo,
+            estado_participacion=estado,
+            indicevictoria=indice,
+            es_asignacion_original=False,
+            origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
+            fechavalidacion=timezone.now() if indice else None,
+        )
+
+    def _request(self, path, query=None, jugador=False):
+        request = self.factory.get(path, query or {})
+        request.user = (
+            User(username=self.jugador.aliasjugador)
+            if jugador
+            else AnonymousUser()
+        )
+        if getattr(request.user, "is_authenticated", False):
+            request.user.pk = 50
+        request.session = {}
+        return request
+
+    def test_mis_cartones_lista_un_maestro_una_sola_vez(self):
+        capturado = {}
+
+        def fake_render(_request, _template, contexto):
+            capturado.update(contexto)
+            return HttpResponse(status=200)
+
+        with (
+            patch(
+                "apps.jugadores.services.obtener_jugador_autenticado",
+                return_value=self.jugador,
+            ),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=_CartonesConsultaQuerySet([self.carton]),
+            ),
+            patch("apps.bingos.views.render", side_effect=fake_render),
+        ):
+            response = mis_cartones(
+                self._request("/mis-cartones/", jugador=True)
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(capturado["cartones_resumen"]), 1)
+        self.assertEqual(capturado["cartones_resumen"][0]["total_rondas"], 3)
+
+    def test_carton_historico_conserva_resumen_heredado(self):
+        resumen = _resumen_carton_privado(self.carton_historico)
+
+        self.assertEqual(resumen["tipo_carton"], "historico")
+        self.assertEqual(resumen["partida"], self.partida_activa)
+        self.assertEqual(resumen["total_rondas"], 1)
+
+    def test_detalle_hibrido_selecciona_pareja_carton_ronda(self):
+        seleccionada = _seleccionar_participacion_hibrida(
+            self.participaciones,
+            str(self.partida_pendiente.pk),
+        )
+
+        self.assertIs(seleccionada, self.participacion_pendiente)
+        self.assertEqual(seleccionada.idcarton_id, self.carton.pk)
+
+    def test_rechaza_ronda_perteneciente_a_otro_carton(self):
+        otro_carton = Carton(
+            idcarton=803,
+            idbingo=self.bingo,
+            idjugador=self.otro_jugador,
+            idpartida=None,
+        )
+        otra_partida = self._partida(
+            705,
+            self.bingo,
+            ESTADO_PARTIDA_EN_CURSO,
+            [],
+            timezone.now(),
+        )
+        self._participacion(
+            904,
+            otro_carton,
+            otra_partida,
+            CartonPartidaBingo.ESTADO_PENDIENTE,
+        )
+
+        with self.assertRaises(Http404):
+            _seleccionar_participacion_hibrida(
+                self.participaciones,
+                str(otra_partida.pk),
+            )
+
+    def test_rechaza_ronda_de_otro_bingo(self):
+        with self.assertRaises(Http404):
+            _seleccionar_participacion_hibrida(
+                self.participaciones,
+                str(self.partida_otro_bingo.pk),
+            )
+
+    def test_consulta_limita_selector_a_participaciones_del_maestro(self):
+        del self.carton.participaciones_hibridas_cargadas
+        consulta = Mock()
+        consulta.select_related.return_value.order_by.return_value = (
+            self.participaciones
+        )
+        with patch(
+            "apps.bingos.views.CartonPartidaBingo.objects.filter",
+            return_value=consulta,
+        ) as filtrar:
+            resultado = _participaciones_hibridas_carton(self.carton)
+
+        self.assertEqual(resultado, self.participaciones)
+        filtrar.assert_called_once_with(idcarton=self.carton)
+
+    def test_participacion_de_otro_bingo_se_rechaza(self):
+        inconsistente = self._participacion(
+            905,
+            self.carton,
+            self.partida_otro_bingo,
+            CartonPartidaBingo.ESTADO_PENDIENTE,
+        )
+        self.carton.participaciones_hibridas_cargadas = [inconsistente]
+
+        with self.assertRaisesMessage(CartonPublicoError, "mismo Bingo"):
+            _participaciones_hibridas_carton(self.carton)
+
+    def test_ronda_por_defecto_prioriza_la_activa(self):
+        seleccionada = _seleccionar_participacion_hibrida(
+            [self.participacion_finalizada, self.participacion_pendiente,
+             self.participacion_activa],
+            None,
+        )
+
+        self.assertIs(seleccionada, self.participacion_activa)
+
+    def test_progreso_usa_bolas_de_la_ronda_seleccionada(self):
+        datos_activa = _preparar_datos_carton_hibrido(
+            self.carton,
+            self.partida_activa,
+        )
+        datos_pendiente = _preparar_datos_carton_hibrido(
+            self.carton,
+            self.partida_pendiente,
+        )
+
+        self.assertEqual(datos_activa["numeros_marcados"], 3)
+        self.assertEqual(datos_pendiente["numeros_marcados"], 1)
+
+    def test_detalle_privado_no_permite_carton_de_otro_jugador(self):
+        consulta = _CartonesConsultaQuerySet()
+        with (
+            patch(
+                "apps.jugadores.services.obtener_jugador_autenticado",
+                return_value=self.jugador,
+            ),
+            patch(
+                "apps.bingos.views.Carton.objects.select_related",
+                return_value=consulta,
+            ),
+        ):
+            with self.assertRaises(Http404):
+                mi_carton_detalle(
+                    self._request(
+                        "/mis-cartones/AJENO/",
+                        jugador=True,
+                    ),
+                    "AJENO",
+                )
+
+    def test_acceso_publico_hibrido_no_expone_dueno_ni_precio(self):
+        consulta = Mock()
+        consulta.filter.return_value.first.return_value = self.carton
+        with patch(
+            "apps.bingos.views.Carton.objects.select_related",
+            return_value=consulta,
+        ):
+            response = carton_publico(
+                self._request(f"/juego/cartones/{self.carton.codigocarton}/"),
+                self.carton.codigocarton,
+            )
+
+        contenido = response.content.decode()
+        self.assertNotIn(self.jugador.aliasjugador, contenido)
+        self.assertNotIn(self.jugador.correojugador, contenido)
+        self.assertNotIn("9876.54", contenido)
+        self.assertNotIn("Precio pagado", contenido)
+
+    def test_acceso_publico_historico_usa_flujo_existente(self):
+        consulta = Mock()
+        consulta.filter.return_value.first.return_value = self.carton_historico
+        with (
+            patch(
+                "apps.bingos.views.Carton.objects.select_related",
+                return_value=consulta,
+            ),
+            patch(
+                "apps.bingos.views.preparar_datos_carton_jugador",
+                return_value={
+                    **_preparar_datos_carton_hibrido(
+                        self.carton_historico,
+                        self.partida_activa,
+                    )
+                },
+            ) as legado,
+            patch(
+                "apps.bingos.views.render",
+                return_value=HttpResponse(status=200),
+            ),
+        ):
+            response = carton_publico(
+                self._request(
+                    f"/juego/cartones/{self.carton_historico.codigocarton}/"
+                ),
+                self.carton_historico.codigocarton,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        legado.assert_called_once_with(self.carton_historico)
+
+    def test_acceso_publico_hibrido_rechaza_partida_sin_participacion(self):
+        consulta = Mock()
+        consulta.filter.return_value.first.return_value = self.carton
+        with patch(
+            "apps.bingos.views.Carton.objects.select_related",
+            return_value=consulta,
+        ):
+            with self.assertRaises(Http404):
+                carton_publico(
+                    self._request(
+                        f"/juego/cartones/{self.carton.codigocarton}/",
+                        {"partida": self.partida_otro_bingo.pk},
+                    ),
+                    self.carton.codigocarton,
+                )
+
+    def test_hibrido_usa_resultado_de_participacion_no_del_maestro(self):
+        capturado = {}
+        consulta = Mock()
+        consulta.filter.return_value.first.return_value = self.carton
+
+        def fake_render(_request, _template, contexto):
+            capturado.update(contexto)
+            return HttpResponse(status=200)
+
+        with (
+            patch(
+                "apps.bingos.views.Carton.objects.select_related",
+                return_value=consulta,
+            ),
+            patch("apps.bingos.views.render", side_effect=fake_render),
+        ):
+            carton_publico(
+                self._request(f"/juego/cartones/{self.carton.codigocarton}/"),
+                self.carton.codigocarton,
+            )
+
+        self.assertIsNone(self.carton.idpartida)
+        self.assertEqual(self.carton.indicevictoria, 999)
+        self.assertEqual(
+            capturado["participacion_seleccionada"].indicevictoria,
+            7,
+        )
+
+    def test_rutas_privadas_y_publicas_conservan_nombres(self):
+        self.assertIs(resolve("/mis-cartones/").func, mis_cartones)
+        self.assertIs(
+            resolve(f"/mis-cartones/{self.carton.codigocarton}/").func,
+            mi_carton_detalle,
+        )
+        self.assertIs(
+            resolve(f"/juego/cartones/{self.carton.codigocarton}/").func,
+            carton_publico,
+        )

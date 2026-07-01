@@ -40,6 +40,12 @@ from .services import (
     CartonPublicoError,
     CartonAsignacionError,
     DesempateError,
+    ESTADO_PARTIDA_CANCELADA,
+    ESTADO_PARTIDA_DESEMPATE,
+    ESTADO_PARTIDA_EN_CURSO,
+    ESTADO_PARTIDA_EN_ESPERA,
+    ESTADO_PARTIDA_FINALIZADA,
+    ESTADO_PARTIDA_PAUSADA,
     ESTADO_PARTIDA_PROGRAMADA,
     ESTADOS_PARTIDA_VALORES,
     EstadoPartidaError,
@@ -47,6 +53,8 @@ from .services import (
     ValidacionCartonError,
     acciones_disponibles_consola,
     confirmar_y_finalizar_desempate,
+    construir_matriz_marcada_carton,
+    contar_numeros_marcados_carton,
     crear_carton_maestro_para_bingo,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
@@ -54,6 +62,7 @@ from .services import (
     formatear_bola_bingo,
     mensaje_estado_carton_publico,
     normalizar_estado_partida,
+    obtener_numeros_faltantes_carton,
     obtener_participaciones_hibridas_partida,
     parse_bolas_cantadas,
     parsear_candidatos_desempate,
@@ -139,6 +148,7 @@ def carton_publico(request, codigocarton):
     carton = (
         Carton.objects.select_related(
             "idjugador",
+            "idbingo",
             "idpartida",
             "idpartida__idbingo",
         )
@@ -162,25 +172,27 @@ def carton_publico(request, codigocarton):
         )
 
     error_carton = None
+    es_hibrido = carton.idpartida_id is None
     partida_carton = carton.idpartida
-    datos_carton = {
-        "matriz_carton": None,
-        "numeros_marcados": 0,
-        "total_numeros_carton": 24,
-        "numeros_faltantes": [],
-        "ultima_bola_codigo": (
-            preparar_datos_bolas_partida(partida_carton)["ultima_bola_codigo"]
-            if partida_carton is not None
-            else None
-        ),
-        "mensaje_estado_carton": (
-            mensaje_estado_carton_publico(partida_carton.estadopartida)
-            if partida_carton is not None
-            else None
-        ),
-    }
+    participacion_seleccionada = None
+    participaciones_disponibles = []
+    datos_carton = _datos_carton_vacios(partida_carton)
     try:
-        datos_carton = preparar_datos_carton_jugador(carton)
+        if es_hibrido:
+            participaciones_disponibles = _participaciones_hibridas_carton(
+                carton
+            )
+            participacion_seleccionada = _seleccionar_participacion_hibrida(
+                participaciones_disponibles,
+                request.GET.get("partida"),
+            )
+            partida_carton = participacion_seleccionada.idpartida
+            datos_carton = _preparar_datos_carton_hibrido(
+                carton,
+                partida_carton,
+            )
+        else:
+            datos_carton = preparar_datos_carton_jugador(carton)
     except MatrizCartonInvalidaError as exc:
         logger.warning(
             "Matriz inválida en consulta pública de cartón %s: %s",
@@ -205,6 +217,9 @@ def carton_publico(request, codigocarton):
         {
             "carton": carton,
             "partida": partida_carton,
+            "es_hibrido": es_hibrido,
+            "participacion_seleccionada": participacion_seleccionada,
+            "participaciones_disponibles": participaciones_disponibles,
             "error_carton": error_carton,
             **datos_carton,
         },
@@ -217,7 +232,7 @@ def mis_cartones(request):
     jugador = request.jugador
     cartones = (
         Carton.objects.filter(idjugador=jugador)
-        .select_related("idpartida", "idpartida__idbingo")
+        .select_related("idbingo", "idpartida", "idpartida__idbingo")
         .order_by("-fechacompra", "codigocarton")
     )
     return render(
@@ -240,6 +255,7 @@ def mi_carton_detalle(request, codigocarton):
     carton = (
         Carton.objects.select_related(
             "idjugador",
+            "idbingo",
             "idpartida",
             "idpartida__idbingo",
         )
@@ -250,25 +266,27 @@ def mi_carton_detalle(request, codigocarton):
         raise Http404("Cartón no encontrado.")
 
     error_carton = None
+    es_hibrido = carton.idpartida_id is None
     partida_carton = carton.idpartida
-    datos_carton = {
-        "matriz_carton": None,
-        "numeros_marcados": 0,
-        "total_numeros_carton": 24,
-        "numeros_faltantes": [],
-        "ultima_bola_codigo": (
-            preparar_datos_bolas_partida(partida_carton)["ultima_bola_codigo"]
-            if partida_carton is not None
-            else None
-        ),
-        "mensaje_estado_carton": (
-            mensaje_estado_carton_publico(partida_carton.estadopartida)
-            if partida_carton is not None
-            else None
-        ),
-    }
+    participacion_seleccionada = None
+    participaciones_disponibles = []
+    datos_carton = _datos_carton_vacios(partida_carton)
     try:
-        datos_carton = preparar_datos_carton_jugador(carton)
+        if es_hibrido:
+            participaciones_disponibles = _participaciones_hibridas_carton(
+                carton
+            )
+            participacion_seleccionada = _seleccionar_participacion_hibrida(
+                participaciones_disponibles,
+                request.GET.get("partida"),
+            )
+            partida_carton = participacion_seleccionada.idpartida
+            datos_carton = _preparar_datos_carton_hibrido(
+                carton,
+                partida_carton,
+            )
+        else:
+            datos_carton = preparar_datos_carton_jugador(carton)
     except MatrizCartonInvalidaError as exc:
         logger.warning(
             "Matriz inválida en cartón privado %s: %s",
@@ -294,6 +312,9 @@ def mi_carton_detalle(request, codigocarton):
             "jugador": jugador,
             "carton": carton,
             "partida": partida_carton,
+            "es_hibrido": es_hibrido,
+            "participacion_seleccionada": participacion_seleccionada,
+            "participaciones_disponibles": participaciones_disponibles,
             "error_carton": error_carton,
             **datos_carton,
         },
@@ -305,6 +326,10 @@ def _resumen_carton_privado(carton):
     resumen = {
         "carton": carton,
         "partida": partida,
+        "bingo": partida.idbingo if partida is not None else None,
+        "tipo_carton": "historico" if partida is not None else "hibrido",
+        "total_rondas": 1 if partida is not None else 0,
+        "estado_participacion": None,
         "ultima_bola_codigo": None,
         "numeros_marcados": 0,
         "total_numeros_carton": 24,
@@ -312,17 +337,36 @@ def _resumen_carton_privado(carton):
         "error": None,
     }
     if partida is None:
-        resumen["error"] = "Cartón sin partida asociada."
-        return resumen
-
-    try:
-        datos_carton = preparar_datos_carton_jugador(carton)
-    except (MatrizCartonInvalidaError, CartonPublicoError) as exc:
-        resumen["ultima_bola_codigo"] = preparar_datos_bolas_partida(partida)[
-            "ultima_bola_codigo"
-        ]
-        resumen["error"] = str(exc)
-        return resumen
+        try:
+            participaciones = _participaciones_hibridas_carton(carton)
+            participacion = _seleccionar_participacion_hibrida(
+                participaciones,
+                None,
+            )
+            partida = participacion.idpartida
+            resumen.update(
+                {
+                    "partida": partida,
+                    "bingo": carton.idbingo,
+                    "total_rondas": len(participaciones),
+                    "estado_participacion": (
+                        participacion.estado_participacion
+                    ),
+                }
+            )
+            datos_carton = _preparar_datos_carton_hibrido(carton, partida)
+        except (MatrizCartonInvalidaError, CartonPublicoError) as exc:
+            resumen["error"] = str(exc)
+            return resumen
+    else:
+        try:
+            datos_carton = preparar_datos_carton_jugador(carton)
+        except (MatrizCartonInvalidaError, CartonPublicoError) as exc:
+            resumen["ultima_bola_codigo"] = preparar_datos_bolas_partida(partida)[
+                "ultima_bola_codigo"
+            ]
+            resumen["error"] = str(exc)
+            return resumen
 
     total = datos_carton["total_numeros_carton"] or 24
     marcados = datos_carton["numeros_marcados"]
@@ -335,6 +379,144 @@ def _resumen_carton_privado(carton):
         }
     )
     return resumen
+
+
+def _datos_carton_vacios(partida=None):
+    return {
+        "matriz_carton": None,
+        "numeros_marcados": 0,
+        "total_numeros_carton": 24,
+        "numeros_faltantes": [],
+        "ultima_bola_codigo": (
+            preparar_datos_bolas_partida(partida)["ultima_bola_codigo"]
+            if partida is not None
+            else None
+        ),
+        "mensaje_estado_carton": (
+            mensaje_estado_carton_publico(partida.estadopartida)
+            if partida is not None
+            else None
+        ),
+    }
+
+
+def _participaciones_hibridas_carton(carton):
+    if carton.idpartida_id is not None:
+        return []
+
+    participaciones = getattr(
+        carton,
+        "participaciones_hibridas_cargadas",
+        None,
+    )
+    if participaciones is None:
+        participaciones = list(
+            CartonPartidaBingo.objects.filter(idcarton=carton)
+            .select_related(
+                "idcarton",
+                "idcarton__idjugador",
+                "idcarton__idbingo",
+                "idpartida",
+                "idpartida__idbingo",
+                "idbingo",
+            )
+            .order_by("idcartonpartidabingo")
+        )
+    else:
+        participaciones = list(participaciones)
+
+    if not participaciones:
+        raise CartonPublicoError(
+            "Este cartón no tiene rondas disponibles."
+        )
+
+    idbingo_carton = carton.idbingo_id
+    for participacion in participaciones:
+        if (
+            participacion.idcarton_id != carton.pk
+            or participacion.idbingo_id != idbingo_carton
+            or participacion.idpartida.idbingo_id != idbingo_carton
+        ):
+            raise CartonPublicoError(
+                "La ronda del cartón no pertenece al mismo Bingo."
+            )
+    return participaciones
+
+
+def _seleccionar_participacion_hibrida(participaciones, partida_solicitada):
+    if partida_solicitada is not None:
+        valor = str(partida_solicitada).strip()
+        if not valor.isdigit() or int(valor) <= 0:
+            raise Http404("Ronda no válida para este cartón.")
+        idpartida = int(valor)
+        participacion = next(
+            (
+                item
+                for item in participaciones
+                if item.idpartida_id == idpartida
+            ),
+            None,
+        )
+        if participacion is None:
+            raise Http404("Ronda no encontrada para este cartón.")
+        return participacion
+
+    prioridades = (
+        ESTADO_PARTIDA_EN_CURSO,
+        ESTADO_PARTIDA_PAUSADA,
+        ESTADO_PARTIDA_DESEMPATE,
+        ESTADO_PARTIDA_EN_ESPERA,
+        ESTADO_PARTIDA_PROGRAMADA,
+        ESTADO_PARTIDA_FINALIZADA,
+        ESTADO_PARTIDA_CANCELADA,
+    )
+    for estado in prioridades:
+        candidatas = [
+            item
+            for item in participaciones
+            if normalizar_estado_partida(item.idpartida.estadopartida) == estado
+        ]
+        if not candidatas:
+            continue
+        if estado in {ESTADO_PARTIDA_FINALIZADA, ESTADO_PARTIDA_CANCELADA}:
+            return max(candidatas, key=_clave_participacion_reciente)
+        return min(candidatas, key=lambda item: item.pk)
+    return min(participaciones, key=lambda item: item.pk)
+
+
+def _clave_participacion_reciente(participacion):
+    partida = participacion.idpartida
+    fecha = partida.horafin or partida.horainicio
+    try:
+        valor_fecha = fecha.timestamp() if fecha is not None else float("-inf")
+    except (AttributeError, OSError, OverflowError, ValueError):
+        valor_fecha = float("-inf")
+    return valor_fecha, participacion.pk
+
+
+def _preparar_datos_carton_hibrido(carton, partida):
+    matriz = construir_matriz_marcada_carton(
+        carton.matriznumeros,
+        partida.bolascantadas,
+    )
+    faltantes = obtener_numeros_faltantes_carton(
+        carton.matriznumeros,
+        partida.bolascantadas,
+    )
+    datos_bolas = preparar_datos_bolas_partida(partida)
+    return {
+        "matriz_carton": matriz,
+        "numeros_marcados": contar_numeros_marcados_carton(
+            carton.matriznumeros,
+            partida.bolascantadas,
+        ),
+        "total_numeros_carton": 24,
+        "numeros_faltantes": faltantes,
+        "ultima_bola_codigo": datos_bolas["ultima_bola_codigo"],
+        "mensaje_estado_carton": mensaje_estado_carton_publico(
+            partida.estadopartida
+        ),
+    }
 
 
 @admin_required

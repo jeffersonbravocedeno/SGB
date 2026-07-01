@@ -7,24 +7,48 @@
 <div{% if partida %} data-realtime-bingo data-realtime-mode="carton" data-partida-id="{{ partida.idpartidabingo }}" data-total-numeros-carton="{{ total_numeros_carton }}"{% endif %}>
 <section class="page-header public-page-header">
     <div>
-        <p class="page-kicker">MI CARTÓN</p>
+        <p class="page-kicker">{% if es_hibrido %}CARTÓN DE BINGO{% else %}HISTÓRICO POR PARTIDA{% endif %}</p>
         <h1>{{ carton.codigocarton }}</h1>
-        {% if carton.idjugador.aliasjugador %}<p>Jugador: {{ carton.idjugador.aliasjugador }}</p>{% endif %}
     </div>
     <div class="d-flex flex-wrap gap-2">
         {% if partida %}<span class="realtime-status realtime-status--manual" data-realtime-status role="status">Actualización manual</span>{% endif %}
         <a class="btn btn-outline-light" href="{% url 'bingos:acceder_carton_publico' %}">Consultar otro cartón</a>
-        <a class="btn btn-light" href="{% url 'bingos:carton_publico' carton.codigocarton %}">Actualizar cartón</a>
+        <a class="btn btn-light" href="{% url 'bingos:carton_publico' carton.codigocarton %}{% if participacion_seleccionada %}?partida={{ participacion_seleccionada.idpartida_id }}{% endif %}">Actualizar cartón</a>
     </div>
 </section>
 
+{% if es_hibrido and participaciones_disponibles %}
+<section class="content-panel mb-3">
+    <div class="section-heading">
+        <div>
+            <h2>Rondas disponibles</h2>
+            <p>Este cartón participa en {{ participaciones_disponibles|length }} ronda{{ participaciones_disponibles|length|pluralize:"s" }} del mismo Bingo.</p>
+        </div>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        {% for participacion in participaciones_disponibles %}
+        <a class="btn btn-sm {% if participacion.idpartida_id == participacion_seleccionada.idpartida_id %}btn-primary{% else %}btn-outline-primary{% endif %}" href="{% url 'bingos:carton_publico' carton.codigocarton %}?partida={{ participacion.idpartida_id }}">
+            {{ participacion.idpartida.nombreronda }}
+        </a>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
 {% if partida %}
 <div class="alert public-state-message" data-realtime-mensaje role="status">{{ mensaje_estado_carton }}</div>
+{% if participacion_seleccionada.estado_participacion == "Ganador" %}
+<div class="alert alert-success" role="status">Este cartón ganó la ronda {{ partida.nombreronda }}.</div>
+{% endif %}
 <section class="content-panel mb-3">
     <dl class="public-board-summary">
         <div><dt>Bingo</dt><dd>{{ partida.idbingo.titulobingo }}</dd></div>
         <div><dt>Ronda</dt><dd>{{ partida.nombreronda }}</dd></div>
         <div><dt>Estado</dt><dd data-realtime-estado>{{ partida.estadopartida|estado_partida_display }}</dd></div>
+        {% if participacion_seleccionada %}
+        <div><dt>Participación</dt><dd>{{ participacion_seleccionada.estado_participacion }}</dd></div>
+        <div><dt>Índice de victoria</dt><dd>{{ participacion_seleccionada.indicevictoria|default:"-" }}</dd></div>
+        {% endif %}
         <div><dt>Última bola</dt><dd data-realtime-ultima-bola>{{ ultima_bola_codigo|default:"—" }}</dd></div>
         <div><dt>Progreso</dt><dd data-realtime-progreso>{{ numeros_marcados }} de {{ total_numeros_carton }} números marcados</dd></div>
     </dl>
