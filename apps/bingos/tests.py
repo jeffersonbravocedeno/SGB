@@ -1,6 +1,7 @@
 import asyncio
 import json
 from contextlib import nullcontext
+from datetime import timedelta
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -62,11 +63,14 @@ from .services import (
     carton_tiene_bingo_completo,
     contar_numeros_marcados_carton,
     confirmar_y_finalizar_desempate,
+    confirmar_y_finalizar_desempate_participaciones,
+    construir_candidato_desempate_participacion,
     crear_carton_maestro_para_bingo,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
     estado_partida_mostrar,
     evaluar_carton_en_partida,
+    evaluar_participacion_en_partida,
     extraer_siguiente_bola,
     formatear_bola_bingo,
     generar_codigo_carton,
@@ -75,6 +79,8 @@ from .services import (
     letra_bingo,
     normalizar_estado_partida,
     normalizar_candidatos_desempate,
+    normalizar_candidatos_desempate_participaciones,
+    obtener_participacion_carton_en_partida,
     obtener_balotas_disponibles_desempate,
     obtener_numeros_carton,
     obtener_numeros_faltantes_carton,
@@ -94,6 +100,7 @@ from .services import (
     serializar_matriz_carton_bingo,
     sortear_balota_desempate,
     validar_carton_ganador,
+    validar_participacion_ganadora,
     validar_venta_carton_para_bingo,
 )
 from .views import (
@@ -1271,6 +1278,460 @@ class ValidacionGanadorTests(SimpleTestCase):
             [item["carton"].pk for item in resultado],
             [vendido.pk],
         )
+
+
+class ParticipacionGanadoraHibridaTests(SimpleTestCase):
+    def setUp(self):
+        self.bingo = Bingo(idbingo=7, titulobingo="Bingo híbrido")
+        self.jugador = Jugador(idjugador=4, aliasjugador="jugador4")
+        self.matriz = matriz_carton_prueba()
+        self.numeros = obtener_numeros_carton(self.matriz)
+
+    def _partida(
+        self,
+        pk=21,
+        bolas=None,
+        estado=ESTADO_PARTIDA_EN_CURSO,
+        bingo=None,
+    ):
+        bolas = self.numeros if bolas is None else list(bolas)
+        return Partidabingo(
+            idpartidabingo=pk,
+            idbingo=bingo or self.bingo,
+            nombreronda=f"Ronda {pk}",
+            estadopartida=estado,
+            bolascantadas=serializar_bolas_cantadas(bolas),
+            ultimabola=bolas[-1] if bolas else 0,
+            idjugadorganador=None,
+            haydesempate=False,
+            idbingadores=None,
+        )
+
+    def _carton(self, pk=40, jugador=None, bingo=None, matriz=None):
+        carton = Carton(
+            idcarton=pk,
+            idbingo=bingo or self.bingo,
+            idjugador=jugador or self.jugador,
+            idpartida=None,
+            indicevictoria=None,
+            codigocarton=f"B7-C-{pk}",
+            matriznumeros=serializar_matriz_carton_bingo(
+                matriz or self.matriz
+            ),
+            estadocarton="Vendido",
+        )
+        carton.save = Mock()
+        return carton
+
+    def _participacion(
+        self,
+        carton,
+        partida,
+        pk=51,
+        estado=CartonPartidaBingo.ESTADO_PENDIENTE,
+        bingo=None,
+    ):
+        participacion = CartonPartidaBingo(
+            idcartonpartidabingo=pk,
+            idcarton=carton,
+            idpartida=partida,
+            idbingo=bingo or self.bingo,
+            estado_participacion=estado,
+            indicevictoria=None,
+            es_asignacion_original=False,
+            origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
+            fechavalidacion=None,
+        )
+        participacion.save = Mock()
+        return participacion
+
+    def _partida_bloqueada(self, partida):
+        bloqueada = Partidabingo(
+            idpartidabingo=partida.pk,
+            idbingo=partida.idbingo,
+            nombreronda=partida.nombreronda,
+            estadopartida=partida.estadopartida,
+            bolascantadas=partida.bolascantadas,
+            ultimabola=partida.ultimabola,
+            idjugadorganador=partida.idjugadorganador,
+            haydesempate=partida.haydesempate,
+            idbingadores=partida.idbingadores,
+        )
+        bloqueada.save = Mock()
+        return bloqueada
+
+    def _validar_sin_base(
+        self,
+        partida,
+        carton,
+        participaciones,
+        indice=24,
+        now=None,
+    ):
+        bloqueada = self._partida_bloqueada(partida)
+        cartones = {}
+        for participacion in participaciones:
+            participacion.idpartida = bloqueada
+            cartones[participacion.idcarton_id] = participacion.idcarton
+        cartones.setdefault(carton.pk, carton)
+        with (
+            patch(
+                "apps.bingos.services.transaction.atomic",
+                return_value=nullcontext(),
+            ) as atomic_mock,
+            patch(
+                "apps.bingos.services._bloquear_contexto_participaciones",
+                return_value=(bloqueada, participaciones, cartones),
+            ) as bloquear_mock,
+        ):
+            resultado = validar_participacion_ganadora(
+                partida,
+                carton,
+                indice,
+                now=now,
+            )
+        return resultado, bloqueada, atomic_mock, bloquear_mock
+
+    def test_resuelve_participacion_por_carton_y_partida(self):
+        partida = self._partida()
+        carton = self._carton()
+        participacion = self._participacion(carton, partida)
+
+        with (
+            patch(
+                "apps.bingos.services.Partidabingo.objects.get",
+                return_value=partida,
+            ) as partida_get,
+            patch(
+                "apps.bingos.services.Carton.objects.get",
+                return_value=carton,
+            ) as carton_get,
+            patch(
+                "apps.bingos.services.CartonPartidaBingo.objects.select_related"
+            ) as seleccionar,
+        ):
+            seleccionar.return_value.get.return_value = participacion
+            resultado = obtener_participacion_carton_en_partida(
+                partida.pk,
+                carton.pk,
+            )
+
+        self.assertEqual(resultado, participacion)
+        partida_get.assert_called_once_with(pk=partida.pk)
+        carton_get.assert_called_once_with(pk=carton.pk)
+        seleccionar.return_value.get.assert_called_once_with(
+            idcarton_id=carton.pk,
+            idpartida_id=partida.pk,
+        )
+
+    def test_rechaza_pareja_sin_participacion(self):
+        partida = self._partida()
+        carton = self._carton()
+        with (
+            patch(
+                "apps.bingos.services.Partidabingo.objects.get",
+                return_value=partida,
+            ),
+            patch(
+                "apps.bingos.services.Carton.objects.get",
+                return_value=carton,
+            ),
+            patch(
+                "apps.bingos.services.CartonPartidaBingo.objects.select_related"
+            ) as seleccionar,
+        ):
+            seleccionar.return_value.get.side_effect = (
+                CartonPartidaBingo.DoesNotExist
+            )
+            with self.assertRaisesMessage(
+                ValidacionCartonError,
+                "No existe una participación",
+            ):
+                obtener_participacion_carton_en_partida(partida, carton)
+
+    def test_rechaza_participacion_de_otro_bingo(self):
+        partida = self._partida()
+        carton = self._carton()
+        otro_bingo = Bingo(idbingo=8, titulobingo="Otro")
+        participacion = self._participacion(
+            carton,
+            partida,
+            bingo=otro_bingo,
+        )
+
+        with self.assertRaisesMessage(
+            ValidacionCartonError,
+            "participación pertenece a otro Bingo",
+        ):
+            evaluar_participacion_en_partida(participacion, partida)
+
+    def test_evalua_solo_bolas_de_la_partida_exacta(self):
+        carton = self._carton()
+        primera = self._partida(pk=21, bolas=self.numeros)
+        segunda = self._partida(pk=22, bolas=self.numeros[:-1])
+        participacion_primera = self._participacion(carton, primera, pk=51)
+        participacion_segunda = self._participacion(carton, segunda, pk=52)
+
+        self.assertTrue(
+            evaluar_participacion_en_partida(
+                participacion_primera,
+                primera,
+            )["completo"]
+        )
+        resultado_segunda = evaluar_participacion_en_partida(
+            participacion_segunda,
+            segunda,
+        )
+        self.assertFalse(resultado_segunda["completo"])
+        self.assertEqual(resultado_segunda["faltantes"], [self.numeros[-1]])
+
+    def test_marca_solo_participacion_sin_cambiar_historicos_del_maestro(self):
+        partida = self._partida()
+        otra_partida = self._partida(pk=22)
+        carton = self._carton()
+        participacion = self._participacion(carton, partida, pk=51)
+        otra_participacion = self._participacion(
+            carton,
+            otra_partida,
+            pk=52,
+        )
+        fecha = timezone.now()
+
+        resultado, bloqueada, atomic_mock, bloquear_mock = (
+            self._validar_sin_base(
+                partida,
+                carton,
+                [participacion],
+                indice=24,
+                now=fecha,
+            )
+        )
+
+        self.assertEqual(resultado["resultado"], "ganador")
+        self.assertEqual(
+            participacion.estado_participacion,
+            CartonPartidaBingo.ESTADO_GANADOR,
+        )
+        self.assertEqual(participacion.indicevictoria, 24)
+        self.assertEqual(participacion.fechavalidacion, fecha)
+        self.assertEqual(
+            otra_participacion.estado_participacion,
+            CartonPartidaBingo.ESTADO_PENDIENTE,
+        )
+        otra_participacion.save.assert_not_called()
+        self.assertIsNone(carton.idpartida)
+        self.assertIsNone(carton.indicevictoria)
+        carton.save.assert_not_called()
+        atomic_mock.assert_called_once_with()
+        bloquear_mock.assert_called_once_with(
+            partida.pk,
+            carton_id_adicional=carton.pk,
+        )
+        participacion.save.assert_called_once_with(
+            update_fields=[
+                "estado_participacion",
+                "indicevictoria",
+                "fechavalidacion",
+            ]
+        )
+        bloqueada.save.assert_called_once()
+
+    def test_mismo_carton_gana_dos_rondas_sin_mezclar_resultados(self):
+        primera = self._partida(pk=21)
+        segunda = self._partida(pk=22)
+        carton = self._carton()
+        participacion_primera = self._participacion(carton, primera, pk=51)
+        participacion_segunda = self._participacion(carton, segunda, pk=52)
+        fecha_primera = timezone.now()
+        fecha_segunda = fecha_primera + timedelta(seconds=1)
+
+        self._validar_sin_base(
+            primera,
+            carton,
+            [participacion_primera],
+            indice=24,
+            now=fecha_primera,
+        )
+        guardados_primera = participacion_primera.save.call_count
+        self._validar_sin_base(
+            segunda,
+            carton,
+            [participacion_segunda],
+            indice=25,
+            now=fecha_segunda,
+        )
+
+        self.assertEqual(
+            participacion_primera.estado_participacion,
+            CartonPartidaBingo.ESTADO_GANADOR,
+        )
+        self.assertEqual(
+            participacion_segunda.estado_participacion,
+            CartonPartidaBingo.ESTADO_GANADOR,
+        )
+        self.assertEqual(participacion_primera.indicevictoria, 24)
+        self.assertEqual(participacion_segunda.indicevictoria, 25)
+        self.assertEqual(participacion_primera.fechavalidacion, fecha_primera)
+        self.assertEqual(participacion_segunda.fechavalidacion, fecha_segunda)
+        self.assertEqual(participacion_primera.save.call_count, guardados_primera)
+        self.assertIsNone(carton.idpartida)
+        self.assertIsNone(carton.indicevictoria)
+        carton.save.assert_not_called()
+
+    def test_rechaza_indice_de_victoria_no_positivo(self):
+        partida = self._partida()
+        carton = self._carton()
+        for indice in (0, -1, None, True, "no-numero"):
+            with self.subTest(indice=indice):
+                with patch(
+                    "apps.bingos.services.transaction.atomic"
+                ) as atomic_mock:
+                    with self.assertRaisesMessage(
+                        ValidacionCartonError,
+                        "mayor que cero",
+                    ):
+                        validar_participacion_ganadora(
+                            partida,
+                            carton,
+                            indice,
+                        )
+                atomic_mock.assert_not_called()
+
+    def test_no_elige_arbitrariamente_si_hay_varias_ganadoras(self):
+        partida = self._partida()
+        otro_carton = self._carton(pk=41, jugador=self.jugador)
+        carton = self._carton(pk=40, jugador=self.jugador)
+        primera = self._participacion(carton, partida, pk=51)
+        segunda = self._participacion(otro_carton, partida, pk=52)
+
+        resultado, bloqueada, _atomic, _lock = self._validar_sin_base(
+            partida,
+            carton,
+            [primera, segunda],
+        )
+        candidatos = normalizar_candidatos_desempate_participaciones(
+            bloqueada.idbingadores,
+            partida=bloqueada,
+        )
+
+        self.assertEqual(resultado["resultado"], "desempate")
+        self.assertEqual(bloqueada.estadopartida, ESTADO_PARTIDA_DESEMPATE)
+        self.assertEqual(
+            [item["idcartonpartidabingo"] for item in candidatos],
+            [51, 52],
+        )
+        primera.save.assert_not_called()
+        segunda.save.assert_not_called()
+
+    def test_conserva_dos_candidatas_del_mismo_jugador(self):
+        partida = self._partida()
+        primer_carton = self._carton(pk=40, jugador=self.jugador)
+        segundo_carton = self._carton(pk=41, jugador=self.jugador)
+        candidatas = [
+            construir_candidato_desempate_participacion(
+                self._participacion(primer_carton, partida, pk=51)
+            ),
+            construir_candidato_desempate_participacion(
+                self._participacion(segundo_carton, partida, pk=52)
+            ),
+        ]
+
+        normalizadas = normalizar_candidatos_desempate_participaciones(
+            candidatas,
+            partida=partida,
+        )
+
+        self.assertEqual(len(normalizadas), 2)
+        self.assertEqual(
+            [item["idjugador"] for item in normalizadas],
+            [self.jugador.pk, self.jugador.pk],
+        )
+        self.assertEqual(
+            [item["idcartonpartidabingo"] for item in normalizadas],
+            [51, 52],
+        )
+
+    def test_rechaza_candidata_y_participacion_de_otra_partida(self):
+        primera = self._partida(pk=21)
+        segunda = self._partida(pk=22)
+        carton = self._carton()
+        participacion = self._participacion(carton, primera, pk=51)
+        candidato = construir_candidato_desempate_participacion(participacion)
+
+        with self.assertRaisesMessage(
+            DatosDesempateInvalidosError,
+            "otra partida",
+        ):
+            normalizar_candidatos_desempate_participaciones(
+                [candidato],
+                partida=segunda,
+            )
+        with self.assertRaisesMessage(
+            ValidacionCartonError,
+            "partida indicada",
+        ):
+            evaluar_participacion_en_partida(participacion, segunda)
+
+    def test_confirmar_desempate_actualiza_solo_candidatas_de_la_ronda(self):
+        partida = self._partida(estado=ESTADO_PARTIDA_DESEMPATE)
+        otra_partida = self._partida(pk=22)
+        primer_carton = self._carton(pk=40, jugador=self.jugador)
+        segundo_carton = self._carton(pk=41, jugador=self.jugador)
+        primera = self._participacion(primer_carton, partida, pk=51)
+        segunda = self._participacion(segundo_carton, partida, pk=52)
+        externa = self._participacion(primer_carton, otra_partida, pk=53)
+        candidatos = [
+            construir_candidato_desempate_participacion(primera),
+            construir_candidato_desempate_participacion(segunda),
+        ]
+        candidatos[0]["tiro_desempate"] = 70
+        candidatos[1]["tiro_desempate"] = 60
+        partida.idbingadores = json.dumps(candidatos)
+        partida.save = Mock()
+        fecha = timezone.now()
+
+        with (
+            patch(
+                "apps.bingos.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            patch(
+                "apps.bingos.services.Partidabingo.objects.select_for_update"
+            ) as lock_partida,
+            patch(
+                "apps.bingos.services._candidatos_y_participaciones_bloqueadas",
+                return_value=(candidatos, {51: primera, 52: segunda}),
+            ),
+        ):
+            lock_partida.return_value.get.return_value = partida
+            resultado = confirmar_y_finalizar_desempate_participaciones(
+                partida,
+                indicevictoria=24,
+                now=fecha,
+            )
+
+        self.assertEqual(resultado["participacion_ganadora"], primera)
+        self.assertEqual(
+            primera.estado_participacion,
+            CartonPartidaBingo.ESTADO_GANADOR,
+        )
+        self.assertEqual(
+            segunda.estado_participacion,
+            CartonPartidaBingo.ESTADO_CERRADO,
+        )
+        self.assertEqual(primera.indicevictoria, 24)
+        self.assertIsNone(segunda.indicevictoria)
+        self.assertEqual(primera.fechavalidacion, fecha)
+        self.assertEqual(segunda.fechavalidacion, fecha)
+        self.assertEqual(
+            externa.estado_participacion,
+            CartonPartidaBingo.ESTADO_PENDIENTE,
+        )
+        externa.save.assert_not_called()
+        primer_carton.save.assert_not_called()
+        segundo_carton.save.assert_not_called()
+        self.assertIsNone(primer_carton.idpartida)
+        self.assertIsNone(primer_carton.indicevictoria)
 
 
 class RutaValidacionCartonTests(SimpleTestCase):

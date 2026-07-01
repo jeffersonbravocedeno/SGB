@@ -3,7 +3,8 @@
 Fecha: 2026-06-30.
 
 Estado: **PLAN TÉCNICO / MAPEO ORM AÑADIDO EN ETAPA 9.6B / SERVICIO
-AISLADO VALIDADO EN ETAPA 9.6C.1**.
+AISLADO DE CREACIÓN VALIDADO EN ETAPA 9.6C.1 / GANADOR Y DESEMPATE POR
+PARTICIPACIÓN VALIDADOS EN ETAPA 9.6C.2**.
 
 Última actualización: 2026-07-01.
 
@@ -711,3 +712,89 @@ La búsqueda estática final solo encuentra el servicio nuevo en
 vista ni formulario lo utiliza todavía. En esta etapa tampoco se modificaron
 rutas, templates, reportes, WebSockets, JavaScript, CSS, administración ni
 `.env`, y no se escribió en la base real `bingo`.
+
+## 17. Ganador y desempate por participación en la Etapa 9.6C.2
+
+`apps/bingos/services.py` incorpora un flujo híbrido paralelo, sin modificar ni
+reemplazar `_carton_pertenece_a_partida(...)`,
+`evaluar_carton_en_partida(...)`, `buscar_cartones_ganadores(...)`,
+`validar_carton_ganador(...)` ni los servicios de desempate heredados. Los
+nuevos servicios principales son:
+
+- `obtener_participacion_carton_en_partida(...)`, que resuelve la pareja exacta
+  `(idcarton, idpartida)` y comprueba el mismo Bingo;
+- `evaluar_participacion_en_partida(...)` y
+  `buscar_participaciones_ganadoras(...)`, que usan la matriz del maestro y
+  exclusivamente las bolas de la ronda recibida;
+- `validar_participacion_ganadora(...)`, que bloquea partida, participaciones y
+  maestros, y guarda `Ganador`, índice positivo y fecha únicamente en
+  `CartonPartidaBingo`;
+- `construir_candidato_desempate_participacion(...)`,
+  `normalizar_candidatos_desempate_participaciones(...)` y
+  `serializar_candidatos_desempate_participaciones(...)`, que conservan
+  `idcartonpartidabingo`, cartón, partida, Bingo, jugador y código sin agrupar
+  solo por jugador;
+- `sortear_balota_desempate_participacion(...)` y
+  `confirmar_y_finalizar_desempate_participaciones(...)`, que operan y
+  actualizan candidatas de una única ronda.
+
+El resultado funcional vive en cada participación. El servicio no escribe
+`Carton.idpartida` ni `Carton.indicevictoria`; ambos permanecen en `NULL` para
+maestros nuevos. `Partidabingo.idjugadorganador` se conserva solo como resumen
+compatible derivado de la participación ganadora. Dos cartones distintos del
+mismo jugador permanecen como candidatas independientes, y la confirmación de
+desempate marca la participación exacta ganadora y cierra únicamente las demás
+candidatas de esa ronda.
+
+Esta separación permite que un mismo maestro gane varias rondas del mismo
+Bingo. Cada ronda mantiene su propio estado, índice y fecha, sin leer ni
+sobrescribir el resultado de otra participación.
+
+### 17.1 Pruebas unitarias aisladas
+
+Se ejecutó únicamente `ParticipacionGanadoraHibridaTests` con
+`DB_NAME=bingo_ensayo_hibridos` y PostgreSQL en solo lectura. Las 11 pruebas
+pasaron y cubren resolución exacta, ausencia de participación, coherencia de
+Bingo, bolas de la ronda correcta, campos históricos intactos, dos victorias
+independientes del mismo maestro, índice positivo, múltiples ganadoras sin
+elección arbitraria, dos candidatas del mismo jugador, rechazo de otra ronda y
+confirmación de desempate limitada a sus candidatas. Django informó
+`Skipping setup of unused database(s): default.`.
+
+### 17.2 Smoke temporal con rollback
+
+Antes de cada intento se ejecutó `SELECT current_database();` y el resultado
+fue exactamente `bingo_ensayo_hibridos`. El primer intento encontró una
+aserción demasiado estricta del script al comparar directamente un datetime
+Django con una columna PostgreSQL `timestamp without time zone`; aun así, el
+bloque de recuperación confirmó inmediatamente `12 / 12 / 12 / 0`, cero
+marcadores y secuencia `(12, true)`. Se corrigió únicamente esa aserción
+temporal, sin cambiar el servicio.
+
+El segundo intento creó dentro de una transacción externa un Bingo con marcador
+`SMOKE 9.6C.2`, dos rondas, un maestro y sus dos participaciones. La matriz del
+maestro completó ambas rondas. Primero se validó la participación de la ronda 1
+y se comprobó que la ronda 2 continuaba `Pendiente`; después se validó la ronda
+2. El resultado durante la transacción fue:
+
+| Control 9.6C.2 | Resultado |
+|---|---|
+| Maestro | El mismo `idcarton=13` en ambas rondas; históricos en `NULL` |
+| Participaciones | IDs 13 y 14, ambas `Ganador` |
+| Índices por ronda | 24 y 25 |
+| Fechas | No nulas, independientes y guardadas por participación |
+| Conteos temporales | 13 cartones / 14 participaciones / 12 originales / 2 no originales |
+| Históricos | Instantáneas de 12 cartones y 12 participaciones sin cambios |
+
+El script ejecutó `transaction.set_rollback(True)`. Tras el rollback no quedaron
+Bingo, partidas, maestro, participaciones ni nombres con `SMOKE 9.6C.2`. Los
+conteos volvieron a 12 cartones, 12 participaciones, 12 originales y 0 no
+originales. La secuencia de participaciones pasó temporalmente de `(12, true)`
+a `(14, true)` y fue restaurada exactamente a `(12, true)`. Una verificación
+independiente posterior confirmó lo anterior con `transaction_read_only=on`.
+
+La búsqueda estática mantiene los servicios nuevos limitados a
+`apps/bingos/services.py` y sus pruebas. Ninguna vista ni formulario usa aún el
+flujo híbrido de ganador/desempate. No se modificaron rutas, templates,
+reportes, WebSockets, JavaScript, CSS, administración ni `.env`, y la base real
+`bingo` no fue consultada para escrituras ni modificada.
