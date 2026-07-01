@@ -87,6 +87,7 @@ from .services import (
     normalizar_estado_partida,
     normalizar_candidatos_desempate,
     normalizar_candidatos_desempate_participaciones,
+    obtener_participaciones_hibridas_partida,
     obtener_participacion_carton_en_partida,
     obtener_balotas_disponibles_desempate,
     obtener_numeros_carton,
@@ -100,6 +101,7 @@ from .services import (
     preparar_datos_carton_jugador,
     preparar_datos_desempate,
     preparar_datos_tablero_publico,
+    preparar_participaciones_hibridas_para_consola,
     preparar_resumen_partida_publica,
     puede_asignar_cartones,
     serializar_bolas_cantadas,
@@ -115,6 +117,7 @@ from .views import (
     acceder_carton_publico,
     bingo_carton_nuevo,
     carton_publico,
+    consola_operador,
     confirmar_desempate,
     desempate_operador,
     bingo_resumen_excel,
@@ -2016,6 +2019,436 @@ class ParticipacionGanadoraHibridaTests(SimpleTestCase):
         self.assertIsNone(primer_carton.indicevictoria)
 
 
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class ConsolaValidacionHibridaTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.bingo = Bingo(idbingo=7, titulobingo="Bingo híbrido")
+        self.jugador = Jugador(idjugador=4, aliasjugador="jugador4")
+        self.matriz = matriz_carton_prueba()
+        self.numeros = obtener_numeros_carton(self.matriz)
+        self.partida = Partidabingo(
+            idpartidabingo=21,
+            idbingo=self.bingo,
+            nombreronda="Ronda híbrida",
+            estadopartida=ESTADO_PARTIDA_EN_CURSO,
+            bolascantadas=serializar_bolas_cantadas(self.numeros),
+            ultimabola=self.numeros[-1],
+            idbingadores=None,
+            haydesempate=False,
+        )
+        self.carton_hibrido = Carton(
+            idcarton=40,
+            idbingo=self.bingo,
+            idjugador=self.jugador,
+            idpartida=None,
+            indicevictoria=None,
+            codigocarton="B7-C-HIBRIDO",
+            matriznumeros=serializar_matriz_carton_bingo(self.matriz),
+            estadocarton="Vendido",
+        )
+        self.participacion = CartonPartidaBingo(
+            idcartonpartidabingo=51,
+            idcarton=self.carton_hibrido,
+            idpartida=self.partida,
+            idbingo=self.bingo,
+            estado_participacion=CartonPartidaBingo.ESTADO_EN_JUEGO,
+            indicevictoria=9,
+            es_asignacion_original=False,
+            origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
+            fechavalidacion=timezone.now(),
+        )
+        self.carton_heredado = Carton(
+            idcarton=41,
+            idbingo=self.bingo,
+            idjugador=self.jugador,
+            idpartida=self.partida,
+            indicevictoria=3,
+            codigocarton="P21-C-HEREDADO",
+            matriznumeros=serializar_matriz_carton_bingo(self.matriz),
+            estadocarton="Vendido",
+        )
+
+    def _request(self, carton=None):
+        carton = carton or self.carton_hibrido
+        request = self.factory.post(
+            reverse(
+                "bingos:validar_carton",
+                kwargs={
+                    "idpartidabingo": self.partida.pk,
+                    "idcarton": carton.pk,
+                },
+            )
+        )
+        request.user = User(username="admin", is_staff=True)
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def _consulta_participaciones(self, valores):
+        consulta = Mock()
+        consulta.select_related.return_value.order_by.return_value = valores
+        return consulta
+
+    def test_consulta_participaciones_de_la_partida_correcta(self):
+        consulta = self._consulta_participaciones([self.participacion])
+        with patch(
+            "apps.bingos.services.CartonPartidaBingo.objects.filter",
+            return_value=consulta,
+        ) as filtrar:
+            resultado = obtener_participaciones_hibridas_partida(self.partida)
+
+        self.assertEqual(resultado, [self.participacion])
+        filtrar.assert_called_once_with(
+            idpartida=self.partida,
+            idcarton__idpartida__isnull=True,
+        )
+        consulta.select_related.assert_called_once_with(
+            "idcarton",
+            "idcarton__idjugador",
+            "idcarton__idbingo",
+            "idpartida",
+            "idpartida__idbingo",
+            "idbingo",
+        )
+
+    def test_participacion_de_otra_partida_no_aparece(self):
+        otra_partida = Partidabingo(
+            idpartidabingo=22,
+            idbingo=self.bingo,
+            nombreronda="Otra ronda",
+        )
+        otra_participacion = CartonPartidaBingo(
+            idcartonpartidabingo=52,
+            idcarton=self.carton_hibrido,
+            idpartida=otra_partida,
+            idbingo=self.bingo,
+        )
+        consulta = self._consulta_participaciones([])
+        with patch(
+            "apps.bingos.services.CartonPartidaBingo.objects.filter",
+            return_value=consulta,
+        ):
+            resultado = obtener_participaciones_hibridas_partida(self.partida)
+
+        self.assertEqual(resultado, [])
+        self.assertNotIn(otra_participacion, resultado)
+
+    def test_participacion_de_otro_bingo_se_rechaza(self):
+        otro_bingo = Bingo(idbingo=8, titulobingo="Otro Bingo")
+        inconsistente = CartonPartidaBingo(
+            idcartonpartidabingo=53,
+            idcarton=self.carton_hibrido,
+            idpartida=self.partida,
+            idbingo=otro_bingo,
+        )
+        consulta = self._consulta_participaciones([inconsistente])
+        with patch(
+            "apps.bingos.services.CartonPartidaBingo.objects.filter",
+            return_value=consulta,
+        ):
+            with self.assertRaisesMessage(
+                ValidacionCartonError,
+                "otro Bingo",
+            ):
+                obtener_participaciones_hibridas_partida(self.partida)
+
+    def test_presentacion_usa_estado_e_indice_de_participacion(self):
+        self.carton_hibrido.indicevictoria = 88
+        datos = preparar_participaciones_hibridas_para_consola(
+            self.partida,
+            participaciones=[self.participacion],
+        )
+
+        self.assertEqual(len(datos), 1)
+        self.assertEqual(
+            datos[0]["estado_participacion"],
+            CartonPartidaBingo.ESTADO_EN_JUEGO,
+        )
+        self.assertEqual(datos[0]["indicevictoria"], 9)
+        self.assertNotEqual(
+            datos[0]["indicevictoria"],
+            self.carton_hibrido.indicevictoria,
+        )
+        self.assertEqual(datos[0]["cantidad_marcados"], 24)
+        self.assertEqual(datos[0]["progreso"], 100)
+
+    def test_consola_carga_grupos_heredado_e_hibrido_separados(self):
+        request = self.factory.get(
+            reverse(
+                "bingos:consola_operador",
+                kwargs={"idpartidabingo": self.partida.pk},
+            )
+        )
+        request.user = User(username="admin", is_staff=True)
+        consulta_cartones = Mock()
+        consulta_cartones.select_related.return_value.order_by.return_value = [
+            self.carton_heredado
+        ]
+        item_hibrido = {"participacion": self.participacion}
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.partida,
+            ),
+            patch(
+                "apps.bingos.views.acciones_disponibles_consola",
+                return_value=set(),
+            ),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=consulta_cartones,
+            ),
+            patch(
+                "apps.bingos.views.obtener_participaciones_hibridas_partida",
+                return_value=[self.participacion],
+            ) as obtener_hibridas,
+            patch(
+                "apps.bingos.views.preparar_participaciones_hibridas_para_consola",
+                return_value=[item_hibrido],
+            ),
+            patch(
+                "apps.bingos.views.preparar_cartones_para_validacion",
+                return_value=[{"carton": self.carton_heredado}],
+            ),
+            patch(
+                "apps.bingos.views.preparar_datos_bolas_partida",
+                return_value={},
+            ),
+            patch(
+                "apps.bingos.views.render",
+                return_value=HttpResponse(status=200),
+            ) as render_mock,
+        ):
+            response = consola_operador(request, self.partida.pk)
+
+        self.assertEqual(response.status_code, 200)
+        obtener_hibridas.assert_called_once_with(self.partida)
+        contexto = render_mock.call_args.args[2]
+        self.assertEqual(contexto["cartones"], [self.carton_heredado])
+        self.assertEqual(
+            contexto["participaciones_hibridas"],
+            [self.participacion],
+        )
+        self.assertEqual(
+            contexto["participaciones_hibridas_validacion"],
+            [item_hibrido],
+        )
+
+    def test_validacion_heredada_conserva_servicio_existente(self):
+        request = self._request(self.carton_heredado)
+        resultado = {
+            "resultado": "ganador",
+            "partida": self.partida,
+            "carton": self.carton_heredado,
+        }
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                side_effect=[self.partida, self.carton_heredado],
+            ),
+            patch(
+                "apps.bingos.views.validar_carton_ganador",
+                return_value=resultado,
+            ) as legado_mock,
+            patch(
+                "apps.bingos.views.validar_participacion_ganadora"
+            ) as hibrido_mock,
+            patch("apps.bingos.views.programar_publicacion_partida"),
+        ):
+            response = validar_carton(
+                request,
+                self.partida.pk,
+                self.carton_heredado.pk,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        legado_mock.assert_called_once_with(self.partida, self.carton_heredado)
+        hibrido_mock.assert_not_called()
+
+    def test_validacion_hibrida_usa_servicio_nuevo_y_no_toca_maestro(self):
+        request = self._request()
+        resultado = {
+            "resultado": "ganador",
+            "partida": self.partida,
+            "participacion": self.participacion,
+        }
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                side_effect=[self.partida, self.carton_hibrido],
+            ),
+            patch(
+                "apps.bingos.views.validar_participacion_ganadora",
+                return_value=resultado,
+            ) as hibrido_mock,
+            patch(
+                "apps.bingos.views.validar_carton_ganador"
+            ) as legado_mock,
+            patch("apps.bingos.views.programar_publicacion_partida"),
+        ):
+            response = validar_carton(
+                request,
+                self.partida.pk,
+                self.carton_hibrido.pk,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        hibrido_mock.assert_called_once_with(
+            partida=self.partida,
+            carton=self.carton_hibrido,
+            indicevictoria=len(self.numeros),
+        )
+        legado_mock.assert_not_called()
+        self.assertIsNone(self.carton_hibrido.idpartida)
+        self.assertIsNone(self.carton_hibrido.indicevictoria)
+
+    def test_exito_hibrido_comunica_victoria_de_ronda(self):
+        request = self._request()
+        resultado = {
+            "resultado": "ganador",
+            "partida": self.partida,
+            "participacion": self.participacion,
+        }
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                side_effect=[self.partida, self.carton_hibrido],
+            ),
+            patch(
+                "apps.bingos.views.validar_participacion_ganadora",
+                return_value=resultado,
+            ),
+            patch("apps.bingos.views.programar_publicacion_partida"),
+        ):
+            validar_carton(
+                request,
+                self.partida.pk,
+                self.carton_hibrido.pk,
+            )
+
+        mensajes = [mensaje.message for mensaje in get_messages(request)]
+        self.assertTrue(
+            any(
+                self.carton_hibrido.codigocarton in mensaje
+                and self.partida.nombreronda in mensaje
+                and "ganó la ronda" in mensaje
+                for mensaje in mensajes
+            )
+        )
+        self.assertFalse(any("todo el Bingo" in mensaje for mensaje in mensajes))
+
+    def test_error_hibrido_muestra_mensaje_util_sin_fallback(self):
+        request = self._request()
+        error = "No existe una participación para ese cartón y esa partida."
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                side_effect=[self.partida, self.carton_hibrido],
+            ),
+            patch(
+                "apps.bingos.views.validar_participacion_ganadora",
+                side_effect=ValidacionCartonError(error),
+            ),
+            patch(
+                "apps.bingos.views.validar_carton_ganador"
+            ) as legado_mock,
+        ):
+            response = validar_carton(
+                request,
+                self.partida.pk,
+                self.carton_hibrido.pk,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        legado_mock.assert_not_called()
+        self.assertIn(error, [mensaje.message for mensaje in get_messages(request)])
+
+    def test_resultado_hibrido_de_desempate_muestra_senal_clara(self):
+        request = self._request()
+        resultado = {
+            "resultado": "desempate",
+            "partida": self.partida,
+            "participacion": self.participacion,
+        }
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                side_effect=[self.partida, self.carton_hibrido],
+            ),
+            patch(
+                "apps.bingos.views.validar_participacion_ganadora",
+                return_value=resultado,
+            ),
+            patch("apps.bingos.views.programar_publicacion_partida"),
+        ):
+            validar_carton(
+                request,
+                self.partida.pk,
+                self.carton_hibrido.pk,
+            )
+
+        mensajes = [mensaje.message for mensaje in get_messages(request)]
+        self.assertTrue(any("Desempate" in mensaje for mensaje in mensajes))
+
+    def test_template_distingue_historico_y_carton_de_bingo(self):
+        item = preparar_participaciones_hibridas_para_consola(
+            self.partida,
+            participaciones=[self.participacion],
+        )[0]
+        request = self.factory.get("/partidas/21/consola/")
+        request.user = User(username="admin", is_staff=True)
+        html = render_to_string(
+            "bingos/consola_operador.html",
+            {
+                "partida": self.partida,
+                "acciones_consola": [],
+                "actualizacion_estados_pendiente": False,
+                "cartones": [self.carton_heredado],
+                "cartones_validacion": [],
+                "participaciones_hibridas": [self.participacion],
+                "participaciones_hibridas_validacion": [item],
+                "error_participaciones_hibridas": None,
+                "candidatos_desempate": [],
+                "puede_asignar_cartones": False,
+                "puede_validar_cartones": True,
+            },
+            request=request,
+        )
+
+        self.assertIn("Histórico por partida", html)
+        self.assertIn("Cartón de Bingo", html)
+        self.assertIn(self.carton_hibrido.codigocarton, html)
+        self.assertIn(CartonPartidaBingo.ESTADO_EN_JUEGO, html)
+        self.assertIn("Índice: 9", html)
+        self.assertIn("24 de 24 números marcados", html)
+
+    def test_rutas_principales_heredadas_siguen_resolviendo(self):
+        consola_url = reverse(
+            "bingos:consola_operador",
+            kwargs={"idpartidabingo": self.partida.pk},
+        )
+        validacion_url = reverse(
+            "bingos:validar_carton",
+            kwargs={
+                "idpartidabingo": self.partida.pk,
+                "idcarton": self.carton_heredado.pk,
+            },
+        )
+
+        self.assertEqual(resolve(consola_url).url_name, "consola_operador")
+        self.assertEqual(resolve(validacion_url).url_name, "validar_carton")
+
+
 class RutaValidacionCartonTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -2063,7 +2496,7 @@ class RutaValidacionCartonTests(SimpleTestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             obtener_mock.call_args_list[1],
-            call(Carton, idcarton=2, idpartida=partida),
+            call(Carton, idcarton=2),
         )
 
 

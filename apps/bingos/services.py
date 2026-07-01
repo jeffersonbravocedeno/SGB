@@ -1546,6 +1546,106 @@ def evaluar_participacion_en_partida(participacion, partida=None):
     }
 
 
+def obtener_participaciones_hibridas_partida(partida):
+    """Obtiene maestros híbridos de la ronda sin duplicar sus datos."""
+    participaciones = list(
+        CartonPartidaBingo.objects.filter(
+            idpartida=partida,
+            idcarton__idpartida__isnull=True,
+        )
+        .select_related(
+            "idcarton",
+            "idcarton__idjugador",
+            "idcarton__idbingo",
+            "idpartida",
+            "idpartida__idbingo",
+            "idbingo",
+        )
+        .order_by("idcarton__codigocarton", "idcartonpartidabingo")
+    )
+    for participacion in participaciones:
+        carton = participacion.idcarton
+        _validar_coherencia_participacion(participacion, carton, partida)
+        if carton.idpartida_id is not None:
+            raise ValidacionCartonError(
+                "Una participación híbrida referencia un cartón histórico."
+            )
+    return participaciones
+
+
+def preparar_participaciones_hibridas_para_consola(
+    partida,
+    participaciones=None,
+):
+    """Prepara estado y progreso por participación para la consola."""
+    participaciones = (
+        obtener_participaciones_hibridas_partida(partida)
+        if participaciones is None
+        else list(participaciones)
+    )
+    resultado = []
+    for participacion in participaciones:
+        carton = participacion.idcarton
+        _validar_coherencia_participacion(participacion, carton, partida)
+        if carton.idpartida_id is not None:
+            raise ValidacionCartonError(
+                "La consola híbrida recibió un cartón histórico."
+            )
+
+        error = None
+        matriz_marcada = None
+        faltantes = []
+        try:
+            matriz_marcada = construir_matriz_marcada_carton(
+                carton.matriznumeros,
+                partida.bolascantadas,
+            )
+            faltantes = obtener_numeros_faltantes_carton(
+                carton.matriznumeros,
+                partida.bolascantadas,
+            )
+        except MatrizCartonInvalidaError as exc:
+            error = "La matriz de este cartón es inválida y no puede ganar."
+            logger.warning(
+                "Matriz inválida en participación %s de partida %s: %s",
+                participacion.pk,
+                partida.pk,
+                exc,
+            )
+
+        cantidad_marcados = 24 - len(faltantes) if matriz_marcada else 0
+        resultado.append(
+            {
+                "tipo_registro": "hibrido",
+                "etiqueta_tipo": "Cartón de Bingo",
+                "participacion": participacion,
+                "carton": carton,
+                "matriz": matriz_marcada,
+                "faltantes": faltantes,
+                "faltantes_codigos": [
+                    formatear_bola_bingo(numero) for numero in faltantes
+                ],
+                "cantidad_marcados": cantidad_marcados,
+                "progreso": round((cantidad_marcados / 24) * 100),
+                "completo": matriz_marcada is not None and not faltantes,
+                "estado_participacion": participacion.estado_participacion,
+                "indicevictoria": participacion.indicevictoria,
+                "fechavalidacion": participacion.fechavalidacion,
+                "error": error,
+                "puede_validar": (
+                    error is None
+                    and participacion.estado_participacion
+                    in {
+                        CartonPartidaBingo.ESTADO_PENDIENTE,
+                        CartonPartidaBingo.ESTADO_EN_JUEGO,
+                    }
+                    and estado_permite_validar_carton(partida)
+                ),
+            }
+        )
+    return resultado
+
+
 def buscar_participaciones_ganadoras(partida, participaciones=None):
     """Busca ganadores por ronda conservando cada participación individual."""
     if participaciones is None:

@@ -54,6 +54,7 @@ from .services import (
     formatear_bola_bingo,
     mensaje_estado_carton_publico,
     normalizar_estado_partida,
+    obtener_participaciones_hibridas_partida,
     parse_bolas_cantadas,
     parsear_candidatos_desempate,
     preparar_cartones_para_validacion,
@@ -61,12 +62,14 @@ from .services import (
     preparar_datos_desempate,
     preparar_datos_bolas_partida,
     preparar_datos_tablero_publico,
+    preparar_participaciones_hibridas_para_consola,
     preparar_resumen_partida_publica,
     puede_asignar_cartones,
     estado_permite_validar_carton,
     preparar_accion_consola,
     sortear_balota_desempate,
     validar_carton_ganador,
+    validar_participacion_ganadora,
     validar_asignacion_cartones,
 )
 
@@ -785,6 +788,26 @@ def consola_operador(request, idpartidabingo):
         .select_related("idjugador")
         .order_by("codigocarton")
     )
+    error_participaciones_hibridas = None
+    try:
+        participaciones_hibridas = obtener_participaciones_hibridas_partida(
+            partida
+        )
+        participaciones_hibridas_validacion = (
+            preparar_participaciones_hibridas_para_consola(
+                partida,
+                participaciones=participaciones_hibridas,
+            )
+        )
+    except ValidacionCartonError as exc:
+        logger.warning(
+            "No fue posible preparar participaciones híbridas de la partida %s: %s",
+            partida.idpartidabingo,
+            exc,
+        )
+        error_participaciones_hibridas = str(exc)
+        participaciones_hibridas = []
+        participaciones_hibridas_validacion = []
     datos_bolas = preparar_datos_bolas_partida(partida)
     return render(
         request,
@@ -795,6 +818,11 @@ def consola_operador(request, idpartidabingo):
             "actualizacion_estados_pendiente": actualizacion_estados_pendiente,
             "bolas_cantadas": parse_bolas_cantadas(partida.bolascantadas),
             "cartones": cartones,
+            "participaciones_hibridas": participaciones_hibridas,
+            "participaciones_hibridas_validacion": (
+                participaciones_hibridas_validacion
+            ),
+            "error_participaciones_hibridas": error_participaciones_hibridas,
             "puede_asignar_cartones": puede_asignar_cartones(partida),
             "puede_validar_cartones": estado_permite_validar_carton(partida),
             "cartones_validacion": preparar_cartones_para_validacion(
@@ -960,10 +988,21 @@ def validar_carton(request, idpartidabingo, idcarton):
     carton = get_object_or_404(
         Carton,
         idcarton=idcarton,
-        idpartida=partida,
     )
+    es_hibrido = carton.idpartida_id is None
+    if not es_hibrido and carton.idpartida_id != partida.pk:
+        raise Http404("El cartón no pertenece a la partida indicada.")
     try:
-        resultado = validar_carton_ganador(partida, carton)
+        if es_hibrido:
+            resultado = validar_participacion_ganadora(
+                partida=partida,
+                carton=carton,
+                indicevictoria=len(
+                    parse_bolas_cantadas(partida.bolascantadas)
+                ),
+            )
+        else:
+            resultado = validar_carton_ganador(partida, carton)
     except ValidacionCartonError as exc:
         messages.error(request, str(exc))
     except DatabaseError:
@@ -991,13 +1030,22 @@ def validar_carton(request, idpartidabingo, idcarton):
                 resultado["partida"],
                 "ganador_detectado",
             )
-            messages.success(
-                request,
-                (
-                    f"Bingo confirmado para {resultado['carton'].idjugador} "
-                    f"con el cartón {resultado['carton'].codigocarton}."
-                ),
-            )
+            if es_hibrido:
+                messages.success(
+                    request,
+                    (
+                        f"El cartón {carton.codigocarton} ganó la ronda "
+                        f"{partida.nombreronda}."
+                    ),
+                )
+            else:
+                messages.success(
+                    request,
+                    (
+                        f"Bingo confirmado para {resultado['carton'].idjugador} "
+                        f"con el cartón {resultado['carton'].codigocarton}."
+                    ),
+                )
 
     return redirect(
         "bingos:consola_operador",

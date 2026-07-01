@@ -194,6 +194,10 @@
         {% endif %}
     </div>
 
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h3 class="section-subtitle mb-0">Cartones históricos de la partida</h3>
+        <span class="badge rounded-pill text-bg-secondary">Histórico por partida</span>
+    </div>
     {% if cartones_validacion %}
     <div class="winner-validation-grid">
         {% for item in cartones_validacion %}
@@ -244,15 +248,80 @@
         {% endfor %}
     </div>
     {% else %}
-    <div class="empty-state"><strong>No hay cartones para validar</strong><span>Los cartones vendidos y asignados aparecerán aquí.</span></div>
+    <div class="empty-state"><strong>No hay cartones históricos para validar</strong><span>Los cartones del flujo heredado aparecerán aquí.</span></div>
+    {% endif %}
+
+    <div class="d-flex justify-content-between align-items-center mt-4 mb-3">
+        <h3 class="section-subtitle mb-0">Participaciones híbridas de la ronda</h3>
+        <span class="badge rounded-pill text-bg-primary">Cartón de Bingo</span>
+    </div>
+    {% if error_participaciones_hibridas %}
+    <div class="alert alert-danger" role="alert">{{ error_participaciones_hibridas }}</div>
+    {% elif participaciones_hibridas_validacion %}
+    <div class="winner-validation-grid">
+        {% for item in participaciones_hibridas_validacion %}
+        <article class="winner-validation-card{% if item.completo %} is-complete{% endif %}">
+            <div class="winner-validation-header">
+                <div>
+                    <span class="badge rounded-pill text-bg-primary mb-2">{{ item.etiqueta_tipo }}</span>
+                    <span class="text-muted small d-block">{{ item.carton.codigocarton }}</span>
+                    <h3>{{ item.carton.idjugador|default:"Sin jugador" }}</h3>
+                    <small>Ronda: {{ partida.nombreronda }}</small>
+                </div>
+                <div class="text-end">
+                    <span class="badge rounded-pill {{ item.estado_participacion|estado_class }}">{{ item.estado_participacion }}</span>
+                    <small class="d-block mt-2">Índice: {{ item.indicevictoria|default_dash }}</small>
+                    <small class="d-block">Validación: {{ item.fechavalidacion|date:"d/m/Y H:i"|default_dash }}</small>
+                </div>
+            </div>
+
+            {% if item.matriz %}
+            <div class="table-responsive">
+                <table class="table table-bordered text-center align-middle bingo-validation-table">
+                    <thead class="table-dark">
+                        <tr><th>B</th><th>I</th><th>N</th><th>G</th><th>O</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for fila in item.matriz %}
+                        <tr>
+                            {% for casilla in fila %}
+                            <td class="{% if casilla.libre %}is-free{% elif casilla.marcada %}is-marked{% else %}is-pending{% endif %}">{{ casilla.valor }}</td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+
+            {% if item.error %}
+            <div class="alert alert-danger py-2 mb-0" role="alert">{{ item.error }}</div>
+            {% elif item.completo %}
+            <div class="validation-count is-complete">24 de 24 números marcados · 100%</div>
+            {% else %}
+            <div class="validation-count">{{ item.cantidad_marcados }} de 24 números marcados · {{ item.progreso }}%</div>
+            <div class="pending-ball-list">
+                {% for codigo in item.faltantes_codigos %}<span>{{ codigo }}</span>{% endfor %}
+            </div>
+            {% endif %}
+
+            <form method="post" action="{% url 'bingos:validar_carton' partida.idpartidabingo item.carton.idcarton %}">
+                {% csrf_token %}
+                <button class="btn btn-primary w-100" type="submit" {% if not item.puede_validar %}disabled{% endif %}>Validar participación de esta ronda</button>
+            </form>
+        </article>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state"><strong>No hay participaciones híbridas</strong><span>Los cartones vendidos para todo el Bingo aparecerán en su ronda correspondiente.</span></div>
     {% endif %}
 </section>
 
 <section class="content-panel">
     <div class="section-heading">
         <div>
-            <h2>Cartones de la partida</h2>
-            <p>Cartones asignados a jugadores para esta ronda</p>
+            <h2>Cartones históricos de la partida</h2>
+            <p>Registros que conservan la relación heredada mediante Carton.idpartida</p>
         </div>
         {% if puede_asignar_cartones %}
         <a class="btn btn-primary btn-sm" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">+ Generar cartón</a>
@@ -266,7 +335,7 @@
             <tbody>
                 {% for carton in cartones %}
                 <tr>
-                    <td>{{ carton.codigocarton }}</td>
+                    <td>{{ carton.codigocarton }} <span class="badge rounded-pill text-bg-secondary">Histórico por partida</span></td>
                     <td>{{ carton.idjugador|default:"Sin jugador" }}</td>
                     <td>${{ carton.preciopagado|floatformat:2 }}</td>
                     <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
@@ -278,5 +347,38 @@
             </tbody>
         </table>
     </div>
+</section>
+
+<section class="content-panel mt-3">
+    <div class="section-heading">
+        <div>
+            <h2>Participaciones de cartones de Bingo</h2>
+            <p>Estado y resultado independientes para la ronda {{ partida.nombreronda }}</p>
+        </div>
+        <span class="badge rounded-pill text-bg-primary">Cartón de Bingo</span>
+    </div>
+    {% if error_participaciones_hibridas %}
+    <div class="alert alert-danger" role="alert">{{ error_participaciones_hibridas }}</div>
+    {% elif participaciones_hibridas %}
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead><tr><th>Código maestro</th><th>Jugador</th><th>Ronda</th><th>Estado participación</th><th>Índice</th><th>Fecha validación</th></tr></thead>
+            <tbody>
+                {% for participacion in participaciones_hibridas %}
+                <tr>
+                    <td>{{ participacion.idcarton.codigocarton }}</td>
+                    <td>{{ participacion.idcarton.idjugador|default:"Sin jugador" }}</td>
+                    <td>{{ partida.nombreronda }}</td>
+                    <td><span class="badge rounded-pill {{ participacion.estado_participacion|estado_class }}">{{ participacion.estado_participacion }}</span></td>
+                    <td>{{ participacion.indicevictoria|default_dash }}</td>
+                    <td>{{ participacion.fechavalidacion|date:"d/m/Y H:i"|default_dash }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state"><strong>No hay cartones de Bingo en esta ronda</strong><span>Las participaciones híbridas se mostrarán sin duplicar matriz, código ni precio.</span></div>
+    {% endif %}
 </section>
 {% endblock %}

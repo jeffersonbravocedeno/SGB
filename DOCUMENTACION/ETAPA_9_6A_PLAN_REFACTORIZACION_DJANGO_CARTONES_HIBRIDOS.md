@@ -5,7 +5,8 @@ Fecha: 2026-06-30.
 Estado: **PLAN TÉCNICO / MAPEO ORM AÑADIDO EN ETAPA 9.6B / SERVICIO
 AISLADO DE CREACIÓN VALIDADO EN ETAPA 9.6C.1 / GANADOR Y DESEMPATE POR
 PARTICIPACIÓN VALIDADOS EN ETAPA 9.6C.2 / VENTA ADMINISTRATIVA POR BINGO
-INTEGRADA EN ETAPA 9.6D.1**.
+INTEGRADA EN ETAPA 9.6D.1 / CONSOLA Y VALIDACIÓN HÍBRIDA INTEGRADAS EN
+ETAPA 9.6D.2**.
 
 Última actualización: 2026-07-01.
 
@@ -868,4 +869,78 @@ y 0 no originales.
 Esta etapa todavía no adapta consola del operador, ganador/desempate desde la
 interfaz, Mis cartones, acceso público, reportes, WebSockets ni las vistas de
 jugadores. Tampoco modifica JavaScript, CSS, administración o `.env`. La base
+real `bingo` no fue tocada.
+
+## 19. Consola y validación híbrida en la Etapa 9.6D.2
+
+La consulta de participaciones para la consola quedó centralizada en dos
+servicios de solo lectura:
+
+- `obtener_participaciones_hibridas_partida(...)` filtra por la ronda exacta y
+  por maestros con `Carton.idpartida IS NULL`, precarga maestro, jugador y
+  relaciones de Bingo, aplica orden estable y valida que los tres objetos
+  pertenezcan al mismo Bingo;
+- `preparar_participaciones_hibridas_para_consola(...)` usa la matriz única del
+  maestro y las bolas de la ronda actual para calcular matriz marcada,
+  faltantes, cantidad marcada, porcentaje y posibilidad de validar.
+
+El filtro por `Carton.idpartida IS NULL` evita duplicar en el grupo híbrido las
+12 participaciones históricas originales, cuyos maestros conservan la relación
+heredada con una partida.
+
+### 19.1 Separación de la consola
+
+`consola_operador(...)` mantiene la consulta heredada
+`Carton.objects.filter(idpartida=partida)` y agrega un grupo independiente de
+participaciones híbridas. El template `consola_operador.html` identifica los
+dos grupos como `Histórico por partida` y `Cartón de Bingo`.
+
+Para cada participación híbrida se muestran código y matriz del maestro,
+jugador, ronda actual, estado de participación, índice de esa participación,
+fecha de validación y progreso calculado exclusivamente con las bolas de la
+ronda. No se copian ni persisten código, matriz o precio en
+`CartonPartidaBingo`. Las participaciones ganadoras, cerradas o anuladas se
+mantienen visibles, pero la acción de validación solo se habilita para
+`Pendiente` o `En juego` cuando la partida está `En curso`.
+
+Una incoherencia de ronda o Bingo se captura como error de negocio visible en
+la consola y no mezcla registros dentro del grupo heredado.
+
+### 19.2 Selección explícita del validador
+
+La ruta administrativa de validación se conserva. La vista obtiene primero el
+cartón solicitado y decide sin fallback:
+
+- si `Carton.idpartida_id` tiene valor, exige que coincida con la ronda y llama
+  sin cambios a `validar_carton_ganador(...)`;
+- si `Carton.idpartida_id` es `NULL`, llama exclusivamente a
+  `validar_participacion_ganadora(...)` para la pareja cartón/ronda.
+
+El índice híbrido enviado al servicio es la cantidad de bolas registradas en
+la ronda al momento de validar. El servicio conserva el resultado en
+`CartonPartidaBingo`; la vista no escribe `Carton.idpartida` ni
+`Carton.indicevictoria`. El éxito informa que el código ganó una ronda
+concreta, sin afirmar que ganó todo el Bingo. Cuando existen varias
+participaciones ganadoras, la consola muestra la señal de que la partida pasó
+a `Desempate`, conservando candidatos por participación.
+
+### 19.3 Pruebas y smoke
+
+Se ejecutó únicamente `ConsolaValidacionHibridaTests`. Las 12 pruebas pasaron y
+cubren consulta por ronda, exclusión de otra ronda, rechazo de otro Bingo,
+estado/índice propios de participación, grupos separados, servicio heredado,
+servicio híbrido, campos históricos intactos, mensaje de ronda, error sin
+fallback, señal de desempate, template y resolución de rutas. Django informó
+`Skipping setup of unused database(s): default.`.
+
+El smoke `/tmp/smoke_consola_hibrida_9_6d2.py` se ejecutó con
+`DB_NAME=bingo_ensayo_hibridos` y `transaction_read_only=on`. Usó
+`RequestFactory` y mocks de ambos validadores para comprobar consola,
+validación heredada, validación híbrida y error híbrido. No invocó servicios
+mutantes reales. Antes y después se confirmaron exactamente 12 cartones, 12
+participaciones, 12 originales y 0 no originales.
+
+Esta etapa no adapta todavía la pantalla completa de desempate híbrido, Mis
+cartones, acceso público, reportes, vistas de jugador ni WebSockets. Tampoco
+modifica JavaScript, CSS, administración, `.env` o el esquema físico. La base
 real `bingo` no fue tocada.
