@@ -2,7 +2,10 @@
 
 Fecha: 2026-06-30.
 
-Estado: **PLAN TÉCNICO / MAPEO ORM AÑADIDO EN ETAPA 9.6B**.
+Estado: **PLAN TÉCNICO / MAPEO ORM AÑADIDO EN ETAPA 9.6B / SERVICIO
+AISLADO VALIDADO EN ETAPA 9.6C.1**.
+
+Última actualización: 2026-07-01.
 
 ## 1. Alcance ejecutado
 
@@ -629,3 +632,82 @@ configuración efectiva apunte a la base real sin expandir.
 | PK ORM | `AutoField`; primer valor validado: 1 |
 | Relaciones del primer registro | Carton, Partidabingo y Bingo válidos; mismo Bingo |
 | `git diff --check` | Sin errores ni salida |
+
+## 16. Servicio aislado de creación en la Etapa 9.6C.1
+
+`apps/bingos/services.py` incorpora, sin reemplazar el flujo heredado
+`crear_y_asignar_carton(...)`, los siguientes símbolos:
+
+- `generar_codigo_carton_bingo(...)`, que emite códigos globales con formato
+  `B<idbingo>-C-<token>`;
+- `validar_venta_carton_para_bingo(...)`, que exige al menos una partida y
+  permite la venta únicamente si todas están en `Programada` o `En espera`;
+- `crear_carton_maestro_para_bingo(...)`, que recibe Bingo, jugador, precio y
+  fecha opcional, y ejecuta toda la creación dentro de `transaction.atomic()`.
+
+El servicio bloquea con `select_for_update()` el Bingo y sus partidas. Genera
+un solo maestro con dueño, precio, matriz, código y estado `Vendido`; para los
+cartones nuevos, `Carton.idpartida` y `Carton.indicevictoria` permanecen en
+`NULL`. La PK manual mediante `assign_next_integer_pk` se aplica únicamente al
+maestro heredado. Cada partida recibe una participación `Pendiente`, con
+`indicevictoria=NULL`, `es_asignacion_original=False`,
+`origen_asignacion='Aplicacion'` y `fechavalidacion=NULL`; su PK la asigna
+PostgreSQL mediante `IDENTITY`/`AutoField`. De este modo, el maestro se cobra
+una sola vez y tanto la matriz como el código se generan una sola vez.
+
+La política de venta rechaza `En curso`, `Pausada`, `Desempate`, `Finalizada`,
+`Cancelada` y cualquier estado distinto de los dos permitidos. Si falla la
+creación de una participación, el error se propaga para revertir maestro,
+participaciones, precio y cualquier cambio parcial.
+
+### 16.1 Pruebas unitarias aisladas
+
+Se ejecutó únicamente `CartonMaestroBingoTests` con
+`DB_NAME=bingo_ensayo_hibridos` y PostgreSQL en solo lectura. Las seis pruebas
+pasaron y cubren:
+
+- maestro único y una participación por partida;
+- prefijo de Bingo en el código;
+- rechazo de un Bingo sin partidas;
+- rechazo de partidas no aptas;
+- aceptación conjunta de `Programada` y `En espera`;
+- propagación del error de una participación para rollback atómico.
+
+Django informó `Skipping setup of unused database(s): default.`, por lo que
+estas pruebas unitarias no prepararon una base mutante.
+
+### 16.2 Prueba temporal sobre ensayo
+
+Antes de habilitar escrituras temporales se ejecutó
+`SELECT current_database();` y el resultado fue exactamente
+`bingo_ensayo_hibridos`. El smoke reutilizó un jugador existente y creó dentro
+de una transacción externa un Bingo, dos partidas vendibles, un maestro y dos
+participaciones. Durante la transacción se comprobó:
+
+| Control durante el smoke | Resultado |
+|---|---|
+| Conteos | 13 cartones / 14 participaciones / 12 originales / 2 no originales |
+| Maestro temporal | Uno; `idbingo` definido, históricos en `NULL`, precio único |
+| Código y matriz | Un código con prefijo de Bingo y una matriz Bingo 75 válida |
+| Participaciones | Dos, `Pendiente`, origen `Aplicacion`, no originales |
+| PK de participaciones | Asignadas automáticamente: 13 y 14 |
+| Históricos | Las instantáneas de los 12 cartones y 12 participaciones no cambiaron |
+
+El script ejecutó explícitamente `transaction.set_rollback(True)`. Tras salir
+de la transacción confirmó el rollback total: no quedaron el Bingo, partidas,
+maestro ni participaciones temporales, ni nombres que contengan
+`SMOKE 9.6C.1`. Los conteos volvieron exactamente a 12 cartones, 12
+participaciones, 12 originales y 0 no originales.
+
+La secuencia
+`public.carton_partida_bingo_idcartonpartidabingo_seq` pasó temporalmente de
+`(last_value=12, is_called=true)` a `(14, true)` y fue restaurada exactamente a
+`(12, true)`. Una comprobación independiente posterior, nuevamente con
+`transaction_read_only=on`, reconfirmó conteos, ausencia del marcador y estado
+de la secuencia.
+
+La búsqueda estática final solo encuentra el servicio nuevo en
+`apps/bingos/services.py` y sus pruebas en `apps/bingos/tests.py`: ninguna
+vista ni formulario lo utiliza todavía. En esta etapa tampoco se modificaron
+rutas, templates, reportes, WebSockets, JavaScript, CSS, administración ni
+`.env`, y no se escribió en la base real `bingo`.
