@@ -13,6 +13,10 @@
     <a class="btn btn-outline-light" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Volver</a>
 </section>
 
+<div class="alert alert-warning" role="note">
+    <strong>Flujo heredado por partida.</strong> Esta pantalla se mantiene temporalmente por compatibilidad. Para vender un cartón híbrido que participe en todas las rondas actuales y se cobre una sola vez, usa <a class="alert-link" href="{% url 'bingos:bingo_carton_nuevo' partida.idbingo_id %}">Vender cartón para todo el Bingo</a>.
+</div>
+
 <form class="content-panel" method="post" novalidate>
     {% csrf_token %}
     {% include "includes/form_errors.html" with form=form %}

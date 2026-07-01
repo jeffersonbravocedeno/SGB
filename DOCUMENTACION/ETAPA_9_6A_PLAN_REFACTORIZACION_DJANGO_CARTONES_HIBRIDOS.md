@@ -4,7 +4,8 @@ Fecha: 2026-06-30.
 
 Estado: **PLAN TÉCNICO / MAPEO ORM AÑADIDO EN ETAPA 9.6B / SERVICIO
 AISLADO DE CREACIÓN VALIDADO EN ETAPA 9.6C.1 / GANADOR Y DESEMPATE POR
-PARTICIPACIÓN VALIDADOS EN ETAPA 9.6C.2**.
+PARTICIPACIÓN VALIDADOS EN ETAPA 9.6C.2 / VENTA ADMINISTRATIVA POR BINGO
+INTEGRADA EN ETAPA 9.6D.1**.
 
 Última actualización: 2026-07-01.
 
@@ -798,3 +799,73 @@ La búsqueda estática mantiene los servicios nuevos limitados a
 flujo híbrido de ganador/desempate. No se modificaron rutas, templates,
 reportes, WebSockets, JavaScript, CSS, administración ni `.env`, y la base real
 `bingo` no fue consultada para escrituras ni modificada.
+
+## 18. Venta administrativa por Bingo en la Etapa 9.6D.1
+
+La interfaz administrativa incorpora `GenerarCartonBingoForm`, un formulario
+nuevo y separado que expone únicamente jugador y precio pagado. Ambos son
+obligatorios y el precio debe ser mayor que cero. No permite elegir partida,
+editar Bingo, código, matriz, estado ni campos históricos. La fecha continúa
+asignándose automáticamente, de acuerdo con el patrón de generación existente.
+
+Se agregó la ruta administrativa:
+
+```text
+bingos/<idbingo>/cartones/nuevo/
+```
+
+Su nombre es `bingos:bingo_carton_nuevo` y la vista
+`bingo_carton_nuevo(...)` conserva el patrón `@admin_required`: usuarios
+anónimos se redirigen al login y usuarios autenticados sin `is_staff` o
+`is_superuser` reciben acceso denegado.
+
+La vista obtiene el Bingo desde la URL y, en un POST válido, delega toda la
+operación exclusivamente a `crear_carton_maestro_para_bingo(...)`. No crea
+directamente `Carton` ni `CartonPartidaBingo`, no permite seleccionar ronda y no
+llama `crear_y_asignar_carton(...)`. Tras el éxito informa que se creó un
+cartón maestro para todo el Bingo y el número exacto de participaciones, y
+redirige al detalle administrativo del Bingo.
+
+Los rechazos de negocio mediante `CartonAsignacionError` vuelven a renderizar
+el formulario enlazado, conservan jugador y precio y muestran el motivo como
+error no asociado a un único campo. Los errores propios de jugador y precio se
+muestran por campo mediante `includes/field.html`; el resumen utiliza
+`includes/form_errors.html`.
+
+### 18.1 Templates y compatibilidad
+
+El template nuevo `templates/bingos/bingo_carton_generar.html` explica que se
+crean un solo código, matriz y precio, junto con una participación por cada
+partida actual. `templates/bingos/detalle.html` incluye el botón
+`Vender cartón para todo el Bingo` y una explicación visible únicamente para
+administradores.
+
+La ruta, vista, formulario y template heredados por partida permanecen
+disponibles y siguen llamando solo `crear_y_asignar_carton(...)`. En
+`partida_carton_generar.html` se añadió un aviso discreto que identifica ese
+flujo como heredado y enlaza la venta híbrida recomendada. No se mezclaron las
+dos lógicas dentro de una misma vista.
+
+### 18.2 Pruebas y smoke de interfaz
+
+Se ejecutó únicamente `VentaCartonBingoInterfazTests`. Las 8 pruebas pasaron y
+cubren campos expuestos, precios no positivos, autenticación y permiso,
+renderizado GET, llamada exacta al servicio, redirección y mensaje de éxito,
+error de negocio sin escrituras directas, conservación de la ruta heredada y
+enlace desde el detalle. Django informó
+`Skipping setup of unused database(s): default.`. El almacenamiento estático de
+las pruebas se aisló con `StaticFilesStorage`; no se modificó CSS ni la
+configuración del proyecto.
+
+El smoke temporal `/tmp/smoke_interfaz_carton_bingo_9_6d1.py` se ejecutó con
+`DB_NAME=bingo_ensayo_hibridos` y `transaction_read_only=on`. Usó
+`RequestFactory`, autenticación administrativa simulada y mocks del servicio
+de creación. Comprobó resolución de URL, GET, POST válido y POST rechazado sin
+invocar el servicio real ni insertar datos. Los conteos anteriores y
+posteriores fueron exactamente 12 cartones, 12 participaciones, 12 originales
+y 0 no originales.
+
+Esta etapa todavía no adapta consola del operador, ganador/desempate desde la
+interfaz, Mis cartones, acceso público, reportes, WebSockets ni las vistas de
+jugadores. Tampoco modifica JavaScript, CSS, administración o `.env`. La base
+real `bingo` no fue tocada.

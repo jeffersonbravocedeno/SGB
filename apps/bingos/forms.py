@@ -230,6 +230,42 @@ class GenerarAsignarCartonForm(FriendlyModelForm):
         return precio
 
 
+class GenerarCartonBingoForm(FriendlyModelForm):
+    """Datos mínimos para vender un maestro híbrido para todo un Bingo."""
+
+    non_negative_fields = ("preciopagado",)
+
+    class Meta:
+        model = Carton
+        fields = ("idjugador", "preciopagado")
+        labels = {
+            "idjugador": "Jugador",
+            "preciopagado": "Precio pagado",
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["idjugador"].required = True
+        self.fields["idjugador"].empty_label = "Seleccione un jugador"
+        self.fields["idjugador"].queryset = Jugador.objects.order_by(
+            "aliasjugador"
+        )
+        self.fields["preciopagado"].required = True
+        self.fields["preciopagado"].min_value = Decimal("0.01")
+        self.fields["preciopagado"].error_messages["min_value"] = (
+            "El precio pagado debe ser mayor que cero."
+        )
+        self.fields["preciopagado"].widget.attrs.update(
+            {"min": "0.01", "step": "0.01"}
+        )
+
+    def clean_preciopagado(self):
+        precio = self.cleaned_data.get("preciopagado")
+        if precio is None or precio <= 0:
+            raise ValidationError("El precio pagado debe ser mayor que cero.")
+        return precio
+
+
 class CartonPartidaForm(CartonForm):
     class Meta(CartonForm.Meta):
         fields = (

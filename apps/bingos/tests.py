@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, call, patch
 from channels.layers import get_channel_layer
 from channels.testing import WebsocketCommunicator
 from openpyxl import load_workbook
+from django import forms
 from django.contrib.auth.models import AnonymousUser, User
 from django.contrib.messages import get_messages
 from django.contrib.messages.storage.fallback import FallbackStorage
@@ -18,11 +19,17 @@ from django.db import DatabaseError
 from django.http import HttpResponse
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase, override_settings
+from django.urls import resolve, reverse
 from django.utils import timezone
 
 from apps.jugadores.models import Jugador
 
-from .forms import AccesoCartonPublicoForm, GenerarAsignarCartonForm, PartidaBingoForm
+from .forms import (
+    AccesoCartonPublicoForm,
+    GenerarAsignarCartonForm,
+    GenerarCartonBingoForm,
+    PartidaBingoForm,
+)
 from .models import Bingo, Carton, CartonPartidaBingo, Partidabingo
 from .consumers import PartidaPublicaConsumer
 from .realtime import (
@@ -106,6 +113,7 @@ from .services import (
 from .views import (
     _procesar_accion_consola,
     acceder_carton_publico,
+    bingo_carton_nuevo,
     carton_publico,
     confirmar_desempate,
     desempate_operador,
@@ -709,6 +717,280 @@ class FlujoAsignacionCartonTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         crear_mock.assert_not_called()
+
+
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class VentaCartonBingoInterfazTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.usuario_admin = User(username="admin", is_staff=True)
+        self.jugador = Jugador(idjugador=4, aliasjugador="jugador4")
+        self.bingo = Bingo(
+            idbingo=7,
+            titulobingo="Bingo híbrido administrativo",
+            preciocarton=Decimal("5.00"),
+        )
+
+    def _request(self, method="get", data=None, usuario=None, path=None):
+        path = path or reverse(
+            "bingos:bingo_carton_nuevo",
+            kwargs={"idbingo": self.bingo.pk},
+        )
+        request = getattr(self.factory, method)(path, data or {})
+        request.user = usuario or self.usuario_admin
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def _form_valido(self, data=None):
+        class FormPrueba(forms.Form):
+            idjugador = forms.IntegerField()
+            preciopagado = forms.DecimalField()
+
+        form = FormPrueba(
+            data=data
+            or {"idjugador": self.jugador.pk, "preciopagado": "5.00"}
+        )
+        form.is_valid()
+        form.cleaned_data = {
+            "idjugador": self.jugador,
+            "preciopagado": Decimal("5.00"),
+        }
+        form.is_valid = Mock(return_value=True)
+        return form
+
+    def test_formulario_hibrido_solo_expone_jugador_y_precio(self):
+        form = GenerarCartonBingoForm()
+
+        self.assertEqual(list(form.fields), ["idjugador", "preciopagado"])
+        for campo_historico in (
+            "idpartida",
+            "indicevictoria",
+            "codigocarton",
+            "matriznumeros",
+            "estadocarton",
+            "idbingo",
+        ):
+            self.assertNotIn(campo_historico, form.fields)
+
+    def test_formulario_rechaza_precio_cero_y_negativo(self):
+        for precio in ("0", "-1"):
+            with self.subTest(precio=precio):
+                form = GenerarCartonBingoForm(
+                    data={"idjugador": "", "preciopagado": precio}
+                )
+                self.assertFalse(form.is_valid())
+                self.assertIn("preciopagado", form.errors)
+                self.assertIn(
+                    "mayor que cero",
+                    " ".join(form.errors["preciopagado"]),
+                )
+
+    def test_ruta_nueva_exige_login_y_permiso_administrativo(self):
+        request_anonimo = self._request(usuario=AnonymousUser())
+        response = bingo_carton_nuevo(request_anonimo, self.bingo.pk)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("login", response["Location"])
+
+        request_no_admin = self._request(
+            usuario=User(username="jugador", is_staff=False)
+        )
+        with self.assertRaises(PermissionDenied):
+            bingo_carton_nuevo(request_no_admin, self.bingo.pk)
+
+    def test_get_muestra_formulario_y_nombre_del_bingo(self):
+        request = self._request()
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter"
+            ) as partidas_filter,
+            patch(
+                "apps.bingos.forms.Jugador.objects.order_by",
+                return_value=Jugador.objects.none(),
+            ),
+        ):
+            partidas_filter.return_value.count.return_value = 3
+            response = bingo_carton_nuevo(request, self.bingo.pk)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Vender cartón para todo el Bingo")
+        self.assertContains(response, self.bingo.titulobingo)
+        self.assertContains(response, "3 partidas actuales")
+
+    def test_post_valido_llama_servicio_redirige_y_muestra_resumen(self):
+        request = self._request(
+            method="post",
+            data={"idjugador": "4", "preciopagado": "5.00"},
+        )
+        form = self._form_valido(request.POST)
+        carton = Carton(
+            idcarton=40,
+            idbingo=self.bingo,
+            idjugador=self.jugador,
+            codigocarton="B7-C-PRUEBA",
+        )
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.GenerarCartonBingoForm",
+                return_value=form,
+            ),
+            patch(
+                "apps.bingos.views.crear_carton_maestro_para_bingo",
+                return_value=carton,
+            ) as crear_mock,
+            patch(
+                "apps.bingos.views.CartonPartidaBingo.objects.filter"
+            ) as participaciones_filter,
+        ):
+            participaciones_filter.return_value.count.return_value = 3
+            response = bingo_carton_nuevo(request, self.bingo.pk)
+
+        crear_mock.assert_called_once_with(
+            bingo=self.bingo,
+            jugador=self.jugador,
+            precio_pagado=Decimal("5.00"),
+            fecha_compra=None,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse("bingos:detalle", kwargs={"idbingo": self.bingo.pk}),
+        )
+        mensajes = [mensaje.message for mensaje in get_messages(request)]
+        self.assertTrue(
+            any(
+                "cartón maestro" in mensaje
+                and "3 participaciones" in mensaje
+                and "cada ronda" in mensaje
+                for mensaje in mensajes
+            )
+        )
+
+    def test_error_del_servicio_vuelve_al_formulario_sin_crear_directamente(self):
+        request = self._request(
+            method="post",
+            data={"idjugador": "4", "preciopagado": "5.00"},
+        )
+        form = self._form_valido(request.POST)
+        error = "Todas las partidas deben estar Programada o En espera."
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.GenerarCartonBingoForm",
+                return_value=form,
+            ),
+            patch(
+                "apps.bingos.views.crear_carton_maestro_para_bingo",
+                side_effect=CartonAsignacionError(error),
+            ),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter"
+            ) as partidas_filter,
+            patch(
+                "apps.bingos.views.Carton.objects.create"
+            ) as carton_create,
+            patch(
+                "apps.bingos.views.CartonPartidaBingo.objects.create"
+            ) as participacion_create,
+            patch(
+                "apps.bingos.views.render",
+                return_value=HttpResponse(status=200),
+            ),
+        ):
+            partidas_filter.return_value.count.return_value = 3
+            response = bingo_carton_nuevo(request, self.bingo.pk)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(error, form.non_field_errors())
+        self.assertEqual(form.data["idjugador"], "4")
+        self.assertEqual(form.data["preciopagado"], "5.00")
+        carton_create.assert_not_called()
+        participacion_create.assert_not_called()
+
+    def test_ruta_heredada_sigue_resolviendo_y_no_usa_servicio_hibrido(self):
+        partida = Partidabingo(
+            idpartidabingo=21,
+            idbingo=self.bingo,
+            nombreronda="Ronda heredada",
+            estadopartida=ESTADO_PARTIDA_PROGRAMADA,
+        )
+        url = reverse(
+            "bingos:partida_carton_nuevo",
+            kwargs={"idpartidabingo": partida.pk},
+        )
+        self.assertEqual(resolve(url).url_name, "partida_carton_nuevo")
+        request = self._request(
+            method="post",
+            path=url,
+            data={"idjugador": "4", "preciopagado": "5.00"},
+        )
+        form = self._form_valido(request.POST)
+        carton = Carton(
+            idcarton=41,
+            idbingo=self.bingo,
+            idpartida=partida,
+            idjugador=self.jugador,
+            codigocarton="P21-C-PRUEBA",
+        )
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=partida,
+            ),
+            patch(
+                "apps.bingos.views.GenerarAsignarCartonForm",
+                return_value=form,
+            ),
+            patch(
+                "apps.bingos.views.crear_y_asignar_carton",
+                return_value=carton,
+            ) as legado_mock,
+            patch(
+                "apps.bingos.views.crear_carton_maestro_para_bingo"
+            ) as hibrido_mock,
+        ):
+            response = partida_carton_nuevo(request, partida.pk)
+
+        self.assertEqual(response.status_code, 302)
+        legado_mock.assert_called_once()
+        hibrido_mock.assert_not_called()
+
+    def test_detalle_administrativo_enlaza_venta_por_bingo(self):
+        request = self._request()
+        html = render_to_string(
+            "bingos/detalle.html",
+            {"bingo": self.bingo, "partidas": [], "cartones": []},
+            request=request,
+        )
+        url = reverse(
+            "bingos:bingo_carton_nuevo",
+            kwargs={"idbingo": self.bingo.pk},
+        )
+
+        self.assertIn("Vender cartón para todo el Bingo", html)
+        self.assertIn(url, html)
+        self.assertIn("se cobra", html)
 
 
 class FormatoBolasBingoTests(SimpleTestCase):

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | {{ titulo }}{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Venta híbrida de cartones</p>
+        <h1>{{ titulo }}</h1>
+        <p>{{ bingo.titulobingo }}</p>
+    </div>
+    <a class="btn btn-outline-light" href="{% url 'bingos:detalle' bingo.idbingo %}">Volver</a>
+</section>
+
+<div class="alert alert-info" role="note">
+    Se creará un solo cartón maestro, con un único código, matriz y precio. El cartón tendrá una participación en cada una de las {{ total_partidas }} partida{{ total_partidas|pluralize:"s" }} actual{{ total_partidas|pluralize:"es" }} del Bingo y se cobrará una sola vez.
+</div>
+
+<form class="content-panel" method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Bingo seleccionado</h2>
+            <p>El Bingo y sus partidas provienen de la URL y no se pueden editar aquí.</p>
+        </div>
+        <dl class="detail-grid">
+            <div>
+                <dt>Bingo</dt>
+                <dd>{{ bingo.titulobingo }}</dd>
+            </div>
+            <div>
+                <dt>Partidas actuales</dt>
+                <dd>{{ total_partidas }}</dd>
+            </div>
+            <div>
+                <dt>Precio de referencia</dt>
+                <dd>${{ bingo.preciocarton|floatformat:2 }}</dd>
+            </div>
+        </dl>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Datos de la venta</h2>
+            <p>El código, la matriz, las participaciones, la fecha y el estado se generan automáticamente.</p>
+        </div>
+        <div class="row g-3">
+            <div class="col-md-6">{% include "includes/field.html" with field=form.idjugador %}</div>
+            <div class="col-md-6">{% include "includes/field.html" with field=form.preciopagado %}</div>
+        </div>
+    </div>
+
+    <div class="form-actions">
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:detalle' bingo.idbingo %}">Cancelar</a>
+        <button class="btn btn-primary" type="submit">Vender cartón para todo el Bingo</button>
+    </div>
+</form>
+{% endblock %}

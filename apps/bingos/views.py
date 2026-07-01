@@ -21,9 +21,10 @@ from .forms import (
     CartonForm,
     CartonPartidaForm,
     GenerarAsignarCartonForm,
+    GenerarCartonBingoForm,
     PartidaBingoForm,
 )
-from .models import Bingo, Carton, Partidabingo, Sesionjuego
+from .models import Bingo, Carton, CartonPartidaBingo, Partidabingo, Sesionjuego
 from .realtime import programar_publicacion_partida
 from .reportes import (
     PDF_CONTENT_TYPE,
@@ -46,6 +47,7 @@ from .services import (
     ValidacionCartonError,
     acciones_disponibles_consola,
     confirmar_y_finalizar_desempate,
+    crear_carton_maestro_para_bingo,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
     extraer_siguiente_bola,
@@ -375,6 +377,73 @@ def bingo_detalle(request, idbingo):
         request,
         "bingos/detalle.html",
         {"bingo": bingo, "partidas": partidas, "cartones": cartones},
+    )
+
+
+@admin_required
+def bingo_carton_nuevo(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    if request.method == "POST":
+        form = GenerarCartonBingoForm(request.POST)
+        if form.is_valid():
+            try:
+                carton = crear_carton_maestro_para_bingo(
+                    bingo=bingo,
+                    jugador=form.cleaned_data["idjugador"],
+                    precio_pagado=form.cleaned_data["preciopagado"],
+                    fecha_compra=None,
+                )
+            except CartonAsignacionError as exc:
+                form.add_error(None, str(exc))
+            except (IntegrityError, ValidationError):
+                logger.exception(
+                    "No fue posible validar o guardar el cartón maestro del Bingo %s",
+                    bingo.idbingo,
+                )
+                form.add_error(
+                    None,
+                    "No fue posible generar el cartón para todo el Bingo. "
+                    "No se creó ningún registro.",
+                )
+            except DatabaseError:
+                logger.exception(
+                    "No fue posible guardar el cartón maestro del Bingo %s",
+                    bingo.idbingo,
+                )
+                form.add_error(
+                    None,
+                    "No fue posible completar la venta. No se creó ningún registro.",
+                )
+            else:
+                total_participaciones = CartonPartidaBingo.objects.filter(
+                    idcarton=carton
+                ).count()
+                texto_participaciones = (
+                    "1 participación"
+                    if total_participaciones == 1
+                    else f"{total_participaciones} participaciones"
+                )
+                messages.success(
+                    request,
+                    "Se creó un cartón maestro para todo el Bingo y "
+                    f"{texto_participaciones}, una por cada ronda actual.",
+                )
+                return redirect("bingos:detalle", idbingo=bingo.idbingo)
+    else:
+        form = GenerarCartonBingoForm(
+            initial={"preciopagado": bingo.preciocarton}
+        )
+
+    total_partidas = Partidabingo.objects.filter(idbingo=bingo).count()
+    return render(
+        request,
+        "bingos/bingo_carton_generar.html",
+        {
+            "form": form,
+            "bingo": bingo,
+            "total_partidas": total_partidas,
+            "titulo": "Vender cartón para todo el Bingo",
+        },
     )
 
 
