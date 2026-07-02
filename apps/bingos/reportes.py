@@ -26,6 +26,15 @@ XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml
 MONEDA_FORMAT = '"$"#,##0.00'
 FECHA_FORMAT = "dd/mm/yyyy hh:mm"
 
+TIPO_HISTORICO = "historico"
+TIPO_HIBRIDO = "hibrido"
+TIPO_HISTORICO_ETIQUETA = "Histórico por partida"
+TIPO_HIBRIDO_ETIQUETA = "Cartón de Bingo"
+
+
+class ReporteHibridoError(Exception):
+    """Indica una relación inconsistente al construir un reporte híbrido."""
+
 
 def nombre_archivo_seguro(prefijo, identificador, extension):
     base = f"{prefijo}_{identificador}"
@@ -33,14 +42,246 @@ def nombre_archivo_seguro(prefijo, identificador, extension):
     return f"{base}.{extension}"
 
 
-def construir_datos_reporte_partida(partida, cartones=None, generado_en=None):
-    cartones = list(cartones or [])
+def construir_filas_reporte_partida(
+    partida,
+    cartones_historicos=None,
+    participaciones_hibridas=None,
+):
+    """Normaliza históricos y participaciones de una ronda sin escribir datos."""
+    idpartida = partida.pk
+    filas_historicas = []
+    for carton in list(cartones_historicos or []):
+        if getattr(carton, "idpartida_id", None) != idpartida:
+            continue
+        filas_historicas.append(
+            _fila_reporte_partida(
+                partida,
+                carton,
+                tipo=TIPO_HISTORICO,
+            )
+        )
+
+    filas_hibridas = []
+    participaciones_vistas = set()
+    for participacion in list(participaciones_hibridas or []):
+        if getattr(participacion, "idpartida_id", None) != idpartida:
+            continue
+        carton = participacion.idcarton
+        _validar_participacion_hibrida(partida, carton, participacion)
+        clave = (carton.pk, participacion.idpartida_id)
+        if clave in participaciones_vistas:
+            raise ReporteHibridoError(
+                "Existe más de una participación del mismo cartón en la ronda."
+            )
+        participaciones_vistas.add(clave)
+        filas_hibridas.append(
+            _fila_reporte_partida(
+                partida,
+                carton,
+                tipo=TIPO_HIBRIDO,
+                participacion=participacion,
+            )
+        )
+
+    clave_orden = lambda fila: (str(fila["codigo_carton"]), fila["idcarton"])
+    filas_historicas.sort(key=clave_orden)
+    filas_hibridas.sort(key=clave_orden)
+    return filas_historicas + filas_hibridas
+
+
+def construir_resumenes_cartones_bingo(
+    bingo,
+    cartones,
+    participaciones_hibridas=None,
+):
+    """Devuelve una fila de inventario por maestro, nunca por participación."""
+    idbingo = bingo.pk
+    maestros = []
+    maestros_por_id = {}
+    for carton in list(cartones or []):
+        if carton.pk in maestros_por_id:
+            continue
+        idbingo_carton = _idbingo_carton(carton)
+        if idbingo_carton not in (None, idbingo):
+            raise ReporteHibridoError(
+                "Un cartón del resumen no pertenece al Bingo solicitado."
+            )
+        maestros.append(carton)
+        maestros_por_id[carton.pk] = carton
+
+    participaciones_por_carton = defaultdict(list)
+    claves_vistas = set()
+    for participacion in list(participaciones_hibridas or []):
+        carton = participacion.idcarton
+        if carton.pk not in maestros_por_id:
+            raise ReporteHibridoError(
+                "Una participación no corresponde a los maestros del Bingo."
+            )
+        _validar_participacion_hibrida(
+            participacion.idpartida,
+            carton,
+            participacion,
+            bingo=bingo,
+        )
+        clave = (carton.pk, participacion.idpartida_id)
+        if clave in claves_vistas:
+            raise ReporteHibridoError(
+                "Existe más de una participación del mismo cartón en una ronda."
+            )
+        claves_vistas.add(clave)
+        participaciones_por_carton[carton.pk].append(participacion)
+
+    resumenes = []
+    for carton in maestros:
+        es_hibrido = getattr(carton, "idpartida_id", None) is None
+        participaciones = participaciones_por_carton.get(carton.pk, [])
+        if not es_hibrido and participaciones:
+            raise ReporteHibridoError(
+                "Un cartón histórico no puede reportarse como maestro híbrido."
+            )
+        estados = Counter(
+            participacion.estado_participacion
+            for participacion in participaciones
+        )
+        resumenes.append(
+            {
+                "tipo": TIPO_HIBRIDO if es_hibrido else TIPO_HISTORICO,
+                "tipo_etiqueta": (
+                    TIPO_HIBRIDO_ETIQUETA
+                    if es_hibrido
+                    else TIPO_HISTORICO_ETIQUETA
+                ),
+                "carton": carton,
+                "idcarton": carton.pk,
+                "codigo_carton": carton.codigocarton,
+                "jugador": carton.idjugador,
+                "estado_carton": carton.estadocarton,
+                "fecha_compra": carton.fechacompra,
+                "precio_pagado": carton.preciopagado,
+                "matriznumeros": carton.matriznumeros,
+                "total_participaciones": (
+                    len(participaciones) if es_hibrido else 1
+                ),
+                "rondas_ganadas": sum(
+                    cantidad
+                    for estado, cantidad in estados.items()
+                    if _estado_normalizado(estado) == "ganador"
+                ),
+                "rondas_pendientes_activas": sum(
+                    cantidad
+                    for estado, cantidad in estados.items()
+                    if _estado_normalizado(estado) in {"pendiente", "en juego"}
+                ),
+                "estados_participacion": _resumen_estados(estados),
+            }
+        )
+    return resumenes
+
+
+def _fila_reporte_partida(partida, carton, tipo, participacion=None):
+    es_hibrido = tipo == TIPO_HIBRIDO
+    return {
+        "tipo": tipo,
+        "tipo_etiqueta": (
+            TIPO_HIBRIDO_ETIQUETA if es_hibrido else TIPO_HISTORICO_ETIQUETA
+        ),
+        "carton": carton,
+        "participacion": participacion,
+        "codigo_carton": carton.codigocarton,
+        "idcarton": carton.pk,
+        "jugador": carton.idjugador,
+        "bingo": carton.idbingo if es_hibrido else partida.idbingo,
+        "partida": partida,
+        "estado_carton": carton.estadocarton,
+        "estado_participacion": (
+            participacion.estado_participacion if participacion else None
+        ),
+        "indicevictoria": (
+            participacion.indicevictoria
+            if participacion
+            else carton.indicevictoria
+        ),
+        "fecha_validacion": (
+            participacion.fechavalidacion if participacion else None
+        ),
+        "matriznumeros": carton.matriznumeros,
+        "es_ganador": (
+            _estado_normalizado(participacion.estado_participacion) == "ganador"
+            if participacion
+            else _es_carton_ganador_historico(partida, carton)
+        ),
+        "precio_pagado": carton.preciopagado,
+        "fecha_compra": carton.fechacompra,
+    }
+
+
+def _validar_participacion_hibrida(
+    partida,
+    carton,
+    participacion,
+    bingo=None,
+):
+    idbingo = (bingo or partida.idbingo).pk
+    if (
+        getattr(carton, "idpartida_id", None) is not None
+        or participacion.idcarton_id != carton.pk
+        or participacion.idpartida_id != partida.pk
+        or participacion.idbingo_id != idbingo
+        or getattr(partida, "idbingo_id", None) != idbingo
+        or getattr(participacion.idpartida, "idbingo_id", None) != idbingo
+        or _idbingo_carton(carton) != idbingo
+    ):
+        raise ReporteHibridoError(
+            "La participación, el cartón, la ronda y el Bingo no coinciden."
+        )
+
+
+def _idbingo_carton(carton):
+    idbingo = getattr(carton, "idbingo_id", None)
+    if idbingo is not None:
+        return idbingo
+    partida = getattr(carton, "idpartida", None)
+    return getattr(partida, "idbingo_id", None)
+
+
+def _es_carton_ganador_historico(partida, carton):
+    if estado_partida_mostrar(partida.estadopartida) != ESTADO_PARTIDA_FINALIZADA:
+        return False
+    id_ganador = _id_jugador(getattr(partida, "idjugadorganador", None))
+    return id_ganador is not None and _id_jugador(carton.idjugador) == id_ganador
+
+
+def _resumen_estados(estados):
+    if not estados:
+        return "-"
+    return ", ".join(
+        f"{estado}: {cantidad}"
+        for estado, cantidad in sorted(estados.items())
+    )
+
+
+def construir_datos_reporte_partida(
+    partida,
+    cartones=None,
+    generado_en=None,
+    participaciones_hibridas=None,
+    filas=None,
+):
+    filas = list(
+        filas
+        if filas is not None
+        else construir_filas_reporte_partida(
+            partida,
+            cartones_historicos=cartones,
+            participaciones_hibridas=participaciones_hibridas,
+        )
+    )
     datos_bolas = preparar_datos_bolas_partida(partida)
     bolas_extraidas = datos_bolas["bolas_extraidas"]
     estado = estado_partida_mostrar(partida.estadopartida)
     finalizada = estado == ESTADO_PARTIDA_FINALIZADA
     ganador = _alias_ganador(partida) if finalizada else None
-    carton_ganador = _carton_ganador(partida, cartones) if finalizada else None
+    fila_ganadora = _fila_ganadora(partida, filas) if finalizada else None
 
     return {
         "generado_en": generado_en or timezone.localtime(timezone.now()),
@@ -56,7 +297,10 @@ def construir_datos_reporte_partida(partida, cartones=None, generado_en=None):
         "hubo_desempate": bool(partida.haydesempate),
         "balota_mayor_desempate": _formatear_bola(partida.bolamayordesempate),
         "ganador": ganador,
-        "carton_ganador": carton_ganador.codigocarton if carton_ganador else None,
+        "carton_ganador": (
+            fila_ganadora["codigo_carton"] if fila_ganadora else None
+        ),
+        "filas_cartones": filas,
         "mensaje_resultado": (
             "Partida finalizada."
             if finalizada
@@ -65,8 +309,18 @@ def construir_datos_reporte_partida(partida, cartones=None, generado_en=None):
     }
 
 
-def generar_pdf_reporte_partida(partida, cartones=None):
-    datos = construir_datos_reporte_partida(partida, cartones=cartones)
+def generar_pdf_reporte_partida(
+    partida,
+    cartones=None,
+    participaciones_hibridas=None,
+    filas=None,
+):
+    datos = construir_datos_reporte_partida(
+        partida,
+        cartones=cartones,
+        participaciones_hibridas=participaciones_hibridas,
+        filas=filas,
+    )
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -130,6 +384,13 @@ def generar_pdf_reporte_partida(partida, cartones=None):
     story.append(Paragraph(bolas, styles["Normal"]))
     story.append(Spacer(1, 10))
 
+    story.append(Paragraph("Cartones de la partida", styles["Heading2"]))
+    if datos["filas_cartones"]:
+        story.append(_tabla_cartones_pdf(datos["filas_cartones"]))
+    else:
+        story.append(Paragraph("No hay cartones en esta partida.", styles["Normal"]))
+    story.append(Spacer(1, 10))
+
     story.append(Paragraph("Resultado", styles["Heading2"]))
     resultado = [(datos["mensaje_resultado"], "")]
     if datos["finalizada"]:
@@ -140,26 +401,44 @@ def generar_pdf_reporte_partida(partida, cartones=None):
             ]
         )
         if datos["carton_ganador"]:
-            resultado.append(("Cartón ganador", datos["carton_ganador"]))
+            resultado.append(("Cartón ganador de la ronda", datos["carton_ganador"]))
     story.append(_tabla_pdf(resultado))
 
     doc.build(story)
     return buffer.getvalue()
 
 
-def generar_excel_cartones_partida(partida, cartones):
+def generar_excel_cartones_partida(
+    partida,
+    cartones,
+    participaciones_hibridas=None,
+    filas=None,
+):
+    filas = list(
+        filas
+        if filas is not None
+        else construir_filas_reporte_partida(
+            partida,
+            cartones_historicos=cartones,
+            participaciones_hibridas=participaciones_hibridas,
+        )
+    )
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Cartones"
 
     headers = [
+        "Tipo de registro",
         "ID de cartón",
         "Código de cartón",
         "Jugador",
         "Estado del cartón",
+        "Estado de participación",
         "Fecha de compra",
         "Precio pagado",
         "Índice de victoria",
+        "Fecha de validación",
+        "Ganador de la ronda",
         "ID de partida",
         "Nombre de ronda",
         "Estado de partida",
@@ -168,19 +447,23 @@ def generar_excel_cartones_partida(partida, cartones):
 
     total_recaudado = Decimal("0.00")
     estados = Counter()
-    for carton in cartones:
-        precio = _decimal(carton.preciopagado)
+    for fila in filas:
+        precio = _decimal(fila["precio_pagado"])
         total_recaudado += precio
-        estados[_estado_normalizado(carton.estadocarton)] += 1
+        estados[_estado_normalizado(fila["estado_carton"])] += 1
         worksheet.append(
             [
-                carton.idcarton,
-                carton.codigocarton,
-                _nombre_jugador(carton.idjugador),
-                carton.estadocarton,
-                _fecha_para_excel(carton.fechacompra),
+                fila["tipo_etiqueta"],
+                fila["idcarton"],
+                fila["codigo_carton"],
+                _nombre_jugador(fila["jugador"]),
+                fila["estado_carton"],
+                fila["estado_participacion"] or "-",
+                _fecha_para_excel(fila["fecha_compra"]),
                 float(precio),
-                carton.indicevictoria,
+                fila["indicevictoria"],
+                _fecha_para_excel(fila["fecha_validacion"]),
+                _si_no(fila["es_ganador"]),
                 partida.idpartidabingo,
                 partida.nombreronda,
                 estado_partida_mostrar(partida.estadopartida),
@@ -189,7 +472,7 @@ def generar_excel_cartones_partida(partida, cartones):
 
     resumen_row = worksheet.max_row + 2
     resumen = [
-        ("Total de cartones", len(cartones)),
+        ("Total de cartones", len(filas)),
         ("Total recaudado", float(total_recaudado)),
         ("Cartones vendidos", estados.get("vendido", 0)),
         ("Cartones anulados", _cantidad_estados(estados, {"anulado", "anulada", "cancelado", "cancelada"})),
@@ -202,11 +485,28 @@ def generar_excel_cartones_partida(partida, cartones):
     worksheet.cell(row=resumen_row + 1, column=2).number_format = MONEDA_FORMAT
 
     _aplicar_formato_basico_excel(worksheet)
-    _aplicar_formato_columnas(worksheet, money_columns={6}, date_columns={5})
+    _aplicar_formato_columnas(
+        worksheet,
+        money_columns={8},
+        date_columns={7, 10},
+    )
     return _workbook_bytes(workbook)
 
 
-def generar_excel_resumen_bingo(bingo, partidas, cartones):
+def generar_excel_resumen_bingo(
+    bingo,
+    partidas,
+    cartones,
+    participaciones_hibridas=None,
+):
+    partidas = list(partidas or [])
+    cartones = list(cartones or [])
+    participaciones_hibridas = list(participaciones_hibridas or [])
+    resumenes_maestros = construir_resumenes_cartones_bingo(
+        bingo,
+        cartones,
+        participaciones_hibridas,
+    )
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Resumen de partidas"
@@ -221,6 +521,8 @@ def generar_excel_resumen_bingo(bingo, partidas, cartones):
         "Hora de inicio",
         "Hora de finalización",
         "Total de cartones",
+        "Cartones históricos",
+        "Participaciones híbridas",
         "Recaudación total",
         "Cantidad de bolas extraídas",
         "Ganador",
@@ -231,24 +533,43 @@ def generar_excel_resumen_bingo(bingo, partidas, cartones):
 
     cartones_por_partida = defaultdict(list)
     for carton in cartones:
-        cartones_por_partida[getattr(carton, "idpartida_id", None)].append(carton)
+        if getattr(carton, "idpartida_id", None) is not None:
+            cartones_por_partida[carton.idpartida_id].append(carton)
+    participaciones_por_partida = defaultdict(list)
+    for participacion in participaciones_hibridas:
+        participaciones_por_partida[participacion.idpartida_id].append(
+            participacion
+        )
 
-    total_cartones = 0
-    total_recaudado = Decimal("0.00")
+    total_cartones = len(resumenes_maestros)
+    total_recaudado = sum(
+        (_decimal(resumen["precio_pagado"]) for resumen in resumenes_maestros),
+        Decimal("0.00"),
+    )
     finalizadas = 0
     en_curso = 0
     con_desempate = 0
 
     for partida in partidas:
-        cartones_partida = cartones_por_partida.get(partida.idpartidabingo, [])
+        cartones_historicos = cartones_por_partida.get(
+            partida.idpartidabingo,
+            [],
+        )
+        participaciones_partida = participaciones_por_partida.get(
+            partida.idpartidabingo,
+            [],
+        )
+        filas_partida = construir_filas_reporte_partida(
+            partida,
+            cartones_historicos,
+            participaciones_partida,
+        )
         recaudacion = sum(
-            (_decimal(carton.preciopagado) for carton in cartones_partida),
+            (_decimal(fila["precio_pagado"]) for fila in filas_partida),
             Decimal("0.00"),
         )
         bolas = parsear_bolas_cantadas(partida.bolascantadas)
         estado = estado_partida_mostrar(partida.estadopartida)
-        total_cartones += len(cartones_partida)
-        total_recaudado += recaudacion
         finalizadas += 1 if estado == ESTADO_PARTIDA_FINALIZADA else 0
         en_curso += 1 if estado == "En curso" else 0
         con_desempate += 1 if partida.haydesempate else 0
@@ -262,7 +583,9 @@ def generar_excel_resumen_bingo(bingo, partidas, cartones):
                 _fecha_para_excel(bingo.fechaprogramadabingo),
                 _fecha_para_excel(partida.horainicio),
                 _fecha_para_excel(partida.horafin),
-                len(cartones_partida),
+                len(filas_partida),
+                len(cartones_historicos),
+                len(participaciones_partida),
                 float(recaudacion),
                 len(bolas),
                 _alias_ganador(partida) or "-",
@@ -289,8 +612,47 @@ def generar_excel_resumen_bingo(bingo, partidas, cartones):
     _aplicar_formato_basico_excel(worksheet)
     _aplicar_formato_columnas(
         worksheet,
-        money_columns={10},
+        money_columns={12},
         date_columns={6, 7, 8},
+    )
+
+    inventario = workbook.create_sheet("Cartones del Bingo")
+    inventario.append(
+        [
+            "Tipo de registro",
+            "ID de cartón",
+            "Código de cartón",
+            "Jugador",
+            "Estado del cartón",
+            "Fecha de compra",
+            "Precio pagado",
+            "Número de participaciones",
+            "Rondas ganadas",
+            "Rondas pendientes o activas",
+            "Estados de participación",
+        ]
+    )
+    for resumen in resumenes_maestros:
+        inventario.append(
+            [
+                resumen["tipo_etiqueta"],
+                resumen["idcarton"],
+                resumen["codigo_carton"],
+                _nombre_jugador(resumen["jugador"]),
+                resumen["estado_carton"],
+                _fecha_para_excel(resumen["fecha_compra"]),
+                float(_decimal(resumen["precio_pagado"])),
+                resumen["total_participaciones"],
+                resumen["rondas_ganadas"],
+                resumen["rondas_pendientes_activas"],
+                resumen["estados_participacion"],
+            ]
+        )
+    _aplicar_formato_basico_excel(inventario)
+    _aplicar_formato_columnas(
+        inventario,
+        money_columns={7},
+        date_columns={6},
     )
     return _workbook_bytes(workbook)
 
@@ -309,6 +671,56 @@ def _tabla_pdf(rows):
                 ("RIGHTPADDING", (0, 0), (-1, -1), 6),
                 ("TOPPADDING", (0, 0), (-1, -1), 5),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    return table
+
+
+def _tabla_cartones_pdf(filas):
+    rows = [
+        [
+            "Tipo",
+            "Código",
+            "Jugador",
+            "Estado cartón",
+            "Participación",
+            "Índice",
+            "Validación",
+            "Ganó ronda",
+        ]
+    ]
+    for fila in filas:
+        rows.append(
+            [
+                fila["tipo_etiqueta"],
+                fila["codigo_carton"],
+                _nombre_jugador(fila["jugador"]),
+                fila["estado_carton"],
+                fila["estado_participacion"] or "-",
+                fila["indicevictoria"] if fila["indicevictoria"] is not None else "-",
+                _formatear_fecha(fila["fecha_validacion"]),
+                _si_no(fila["es_ganador"]),
+            ]
+        )
+    table = Table(
+        rows,
+        colWidths=[58, 78, 70, 58, 65, 38, 83, 50],
+        repeatRows=1,
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#172033")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 6.5),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d9e0ea")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ]
         )
     )
@@ -357,6 +769,25 @@ def _carton_ganador(partida, cartones):
         if id_jugador == id_ganador:
             return carton
     return None
+
+
+def _fila_ganadora(partida, filas):
+    id_ganador = _id_jugador(getattr(partida, "idjugadorganador", None))
+    if id_ganador is None:
+        return None
+    for fila in filas:
+        if fila["es_ganador"] and _id_jugador(fila["jugador"]) == id_ganador:
+            return fila
+    for fila in filas:
+        if _id_jugador(fila["jugador"]) == id_ganador:
+            return fila
+    return None
+
+
+def _id_jugador(jugador):
+    if jugador is None:
+        return None
+    return getattr(jugador, "pk", None)
 
 
 def _alias_ganador(partida):

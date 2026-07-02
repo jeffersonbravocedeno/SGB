@@ -1000,3 +1000,68 @@ por tanto, el smoke no realizó escrituras.
 Esta etapa no modifica reportes, WebSockets, JavaScript ni CSS. Tampoco se
 modificó `.env`, se ejecutaron migraciones o se inició el servidor. La base
 real `bingo` no fue tocada.
+
+## 21. Etapa 9.6D.4 — Reportes PDF y Excel por participación
+
+Los reportes administrativos separan explícitamente los cartones históricos,
+obtenidos por `Carton.idpartida`, de las participaciones híbridas, obtenidas
+por `CartonPartidaBingo.idpartida`. Ambos orígenes se normalizan como filas de
+reporte uniformes. Para híbridos, código, matriz, jugador, estado del maestro,
+compra y precio proceden de `Carton`; ronda, estado de participación, índice
+de victoria y fecha de validación proceden de `CartonPartidaBingo`.
+
+Cada participación híbrida se valida contra su maestro, ronda y Bingo. Una
+relación inconsistente no se mezcla con los datos válidos y produce una
+respuesta administrativa controlada. Una participación de otra ronda se
+excluye del reporte actual, sin inferir la ronda desde `Carton.idpartida` ni
+usar `Carton.indicevictoria` como resultado híbrido.
+
+### 21.1 PDF y Excel por partida
+
+El PDF de partida conserva el resumen de Bingo, ronda, bolas, ganador y
+desempate, y agrega una tabla discreta de cartones. Cada fila identifica
+`Histórico por partida` o `Cartón de Bingo` y muestra código, jugador, estado
+del maestro, estado de participación, índice, fecha de validación y si ganó
+esa ronda. No presenta una victoria de ronda como victoria de todo el Bingo.
+
+El Excel de cartones por partida incluye una fila por cartón histórico y una
+por participación híbrida válida. Agrega columnas para tipo de registro,
+estado de participación, fecha de validación y ganador de la ronda. Un mismo
+maestro puede aparecer correctamente en los archivos de rondas diferentes,
+una vez por su participación concreta, sin tomar resultados de otra ronda.
+
+### 21.2 Excel resumen por Bingo
+
+La hoja `Resumen de partidas` agrega por ronda los cartones históricos y las
+participaciones híbridas, conservando la información administrativa existente.
+La hoja nueva `Cartones del Bingo` muestra una sola fila por maestro. Código,
+dueño, precio, matriz y fecha de compra no se repiten por cada participación.
+
+Cada maestro híbrido informa número de participaciones, rondas ganadas, rondas
+pendientes o activas y resumen de estados. Los totales de cartones y
+recaudación del Bingo se calculan sobre maestros únicos. Los cartones
+históricos mantienen su relación y resultado heredados sin inventar estados
+de participación.
+
+### 21.3 Pruebas y smoke de solo lectura
+
+Se ejecutaron `ReportesHibridosTests` y `ReportesAdministrativosTests` con
+`--keepdb`: las 23 pruebas pasaron y Django informó
+`Skipping setup of unused database(s): default.`. La cobertura comprueba la
+combinación histórico/híbrido, exclusión de otra ronda, rechazo de otro Bingo,
+índice por participación, maestro en varias rondas, PDF, ambos Excel,
+inventario único, cantidad de participaciones, compatibilidad histórica,
+respuestas de vistas y resolución de rutas existentes.
+
+El smoke ejecutó siete controles representativos mediante objetos no
+persistidos, mocks, `RequestFactory` y llamadas internas a los generadores.
+Antes y después, PostgreSQL confirmó
+`current_database() = bingo_ensayo_hibridos` y
+`transaction_read_only = on`. Los conteos permanecieron exactamente en 12
+cartones, 12 participaciones, 12 participaciones originales y 0 no originales;
+no hubo escrituras.
+
+No se modificaron WebSockets, JavaScript, CSS, administración, venta,
+formularios, consola, ganador, desempate, Mis cartones ni acceso público. No se
+modificó `.env`, no se ejecutaron migraciones ni se inició el servidor. La base
+real `bingo` no fue tocada.

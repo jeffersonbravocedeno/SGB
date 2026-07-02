@@ -39,8 +39,13 @@ from .realtime import (
 )
 from .reportes import (
     PDF_CONTENT_TYPE,
+    ReporteHibridoError,
+    TIPO_HIBRIDO,
+    TIPO_HISTORICO,
     XLSX_CONTENT_TYPE,
     construir_datos_reporte_partida,
+    construir_filas_reporte_partida,
+    construir_resumenes_cartones_bingo,
     generar_excel_cartones_partida,
     generar_excel_resumen_bingo,
     generar_pdf_reporte_partida,
@@ -4237,6 +4242,10 @@ class ReportesAdministrativosTests(SimpleTestCase):
                 "apps.bingos.views.Carton.objects.filter",
                 return_value=FakeReportQuerySet(self.cartones),
             ),
+            patch(
+                "apps.bingos.views.CartonPartidaBingo.objects.filter",
+                return_value=FakeReportQuerySet(),
+            ),
         )
 
     def _patch_bingo_resumen(self):
@@ -4249,6 +4258,10 @@ class ReportesAdministrativosTests(SimpleTestCase):
             patch(
                 "apps.bingos.views.Carton.objects.filter",
                 return_value=FakeReportQuerySet(self.cartones),
+            ),
+            patch(
+                "apps.bingos.views.CartonPartidaBingo.objects.filter",
+                return_value=FakeReportQuerySet(),
             ),
         )
 
@@ -4279,7 +4292,7 @@ class ReportesAdministrativosTests(SimpleTestCase):
 
     def test_staff_descarga_pdf_de_partida(self):
         reportes_patches = self._patch_partida_reportes()
-        with reportes_patches[0], reportes_patches[1]:
+        with reportes_patches[0], reportes_patches[1], reportes_patches[2]:
             response = partida_reporte_pdf(
                 self._request("/partidas/20/reporte/pdf/", self._staff()),
                 20,
@@ -4294,7 +4307,7 @@ class ReportesAdministrativosTests(SimpleTestCase):
     def test_superusuario_descarga_reporte(self):
         superuser = User(username="root", is_superuser=True)
         reportes_patches = self._patch_partida_reportes()
-        with reportes_patches[0], reportes_patches[1]:
+        with reportes_patches[0], reportes_patches[1], reportes_patches[2]:
             response = partida_reporte_pdf(
                 self._request("/partidas/20/reporte/pdf/", superuser),
                 20,
@@ -4304,7 +4317,7 @@ class ReportesAdministrativosTests(SimpleTestCase):
 
     def test_staff_descarga_excel_de_cartones(self):
         reportes_patches = self._patch_partida_reportes()
-        with reportes_patches[0], reportes_patches[1]:
+        with reportes_patches[0], reportes_patches[1], reportes_patches[2]:
             response = partida_cartones_excel(
                 self._request("/partidas/20/cartones/excel/", self._staff()),
                 20,
@@ -4319,7 +4332,12 @@ class ReportesAdministrativosTests(SimpleTestCase):
 
     def test_staff_descarga_excel_resumen_de_bingo(self):
         resumen_patches = self._patch_bingo_resumen()
-        with resumen_patches[0], resumen_patches[1], resumen_patches[2]:
+        with (
+            resumen_patches[0],
+            resumen_patches[1],
+            resumen_patches[2],
+            resumen_patches[3],
+        ):
             response = bingo_resumen_excel(
                 self._request("/bingos/7/resumen/excel/", self._staff()),
                 7,
@@ -4341,13 +4359,17 @@ class ReportesAdministrativosTests(SimpleTestCase):
         self.assertEqual(
             headers,
             [
+                "Tipo de registro",
                 "ID de cartón",
                 "Código de cartón",
                 "Jugador",
                 "Estado del cartón",
+                "Estado de participación",
                 "Fecha de compra",
                 "Precio pagado",
                 "Índice de victoria",
+                "Fecha de validación",
+                "Ganador de la ronda",
                 "ID de partida",
                 "Nombre de ronda",
                 "Estado de partida",
@@ -4438,6 +4460,310 @@ class ReportesAdministrativosTests(SimpleTestCase):
         self.assertIsNone(datos["ganador"])
         self.assertIsNone(datos["carton_ganador"])
         self.assertEqual(datos["mensaje_resultado"], "La partida aún no está finalizada.")
+
+
+class ReportesHibridosTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.bingo = Bingo(
+            idbingo=70,
+            titulobingo="Bingo híbrido de reportes",
+            fechaprogramadabingo=timezone.now(),
+            tipobingo="Virtual",
+            preciocarton=Decimal("12.00"),
+            premiomayor=Decimal("100.00"),
+            descripcionpremiomayor="Premio",
+        )
+        self.otro_bingo = Bingo(idbingo=71, titulobingo="Otro Bingo")
+        self.jugador_historico = Jugador(
+            idjugador=81,
+            aliasjugador="historico_reporte",
+        )
+        self.jugador_hibrido = Jugador(
+            idjugador=82,
+            aliasjugador="hibrido_reporte",
+        )
+        self.partida_uno = self._partida(
+            701,
+            self.bingo,
+            ESTADO_PARTIDA_FINALIZADA,
+            self.jugador_hibrido,
+        )
+        self.partida_dos = self._partida(
+            702,
+            self.bingo,
+            ESTADO_PARTIDA_EN_CURSO,
+        )
+        self.carton_historico = Carton(
+            idcarton=801,
+            idjugador=self.jugador_historico,
+            idbingo=self.bingo,
+            idpartida=self.partida_uno,
+            codigocarton="P701-C-HIST",
+            matriznumeros=serializar_matriz_carton_bingo(matriz_carton_prueba()),
+            indicevictoria=4,
+            preciopagado=Decimal("5.00"),
+            fechacompra=timezone.now(),
+            estadocarton="Vendido",
+        )
+        self.carton_hibrido = Carton(
+            idcarton=802,
+            idjugador=self.jugador_hibrido,
+            idbingo=self.bingo,
+            idpartida=None,
+            codigocarton="B70-C-MAESTRO",
+            matriznumeros=serializar_matriz_carton_bingo(matriz_carton_prueba()),
+            indicevictoria=999,
+            preciopagado=Decimal("12.00"),
+            fechacompra=timezone.now(),
+            estadocarton="Vendido",
+        )
+        self.participacion_uno = self._participacion(
+            901,
+            self.partida_uno,
+            CartonPartidaBingo.ESTADO_GANADOR,
+            indice=7,
+        )
+        self.participacion_dos = self._participacion(
+            902,
+            self.partida_dos,
+            CartonPartidaBingo.ESTADO_PENDIENTE,
+        )
+
+    def _partida(self, pk, bingo, estado, ganador=None):
+        ahora = timezone.now()
+        return Partidabingo(
+            idpartidabingo=pk,
+            idbingo=bingo,
+            idjugadorganador=ganador,
+            nombreronda=f"Ronda {pk}",
+            valorefectivo=Decimal("100.00"),
+            premiomaterial="Premio",
+            estadopartida=estado,
+            bolascantadas=serializar_bolas_cantadas([1, 16, 31]),
+            ultimabola=31,
+            haydesempate=False,
+            horainicio=ahora,
+            horafin=ahora if estado == ESTADO_PARTIDA_FINALIZADA else None,
+        )
+
+    def _participacion(self, pk, partida, estado, indice=None, bingo=None):
+        ahora = timezone.now()
+        return CartonPartidaBingo(
+            idcartonpartidabingo=pk,
+            idcarton=self.carton_hibrido,
+            idpartida=partida,
+            idbingo=bingo or partida.idbingo,
+            estado_participacion=estado,
+            indicevictoria=indice,
+            es_asignacion_original=False,
+            origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
+            fechacreacion=ahora,
+            fechavalidacion=ahora if indice is not None else None,
+        )
+
+    def _staff_request(self, path):
+        request = self.factory.get(path)
+        request.user = User(username="admin_reportes", is_staff=True)
+        return request
+
+    def test_reporte_partida_combina_historico_e_hibrido(self):
+        filas = construir_filas_reporte_partida(
+            self.partida_uno,
+            [self.carton_historico],
+            [self.participacion_uno],
+        )
+
+        self.assertEqual([fila["tipo"] for fila in filas], [TIPO_HISTORICO, TIPO_HIBRIDO])
+        self.assertEqual(
+            [fila["codigo_carton"] for fila in filas],
+            ["P701-C-HIST", "B70-C-MAESTRO"],
+        )
+
+    def test_participacion_de_otra_ronda_no_aparece(self):
+        filas = construir_filas_reporte_partida(
+            self.partida_uno,
+            [],
+            [self.participacion_dos],
+        )
+
+        self.assertEqual(filas, [])
+
+    def test_participacion_de_otro_bingo_produce_error_controlado(self):
+        inconsistente = self._participacion(
+            903,
+            self.partida_uno,
+            CartonPartidaBingo.ESTADO_PENDIENTE,
+            bingo=self.otro_bingo,
+        )
+
+        with self.assertRaisesMessage(ReporteHibridoError, "no coinciden"):
+            construir_filas_reporte_partida(
+                self.partida_uno,
+                [],
+                [inconsistente],
+            )
+
+    def test_hibrido_usa_maestro_y_resultado_de_participacion(self):
+        fila = construir_filas_reporte_partida(
+            self.partida_uno,
+            [],
+            [self.participacion_uno],
+        )[0]
+
+        self.assertEqual(fila["matriznumeros"], self.carton_hibrido.matriznumeros)
+        self.assertIs(fila["jugador"], self.jugador_hibrido)
+        self.assertIs(fila["partida"], self.partida_uno)
+        self.assertEqual(fila["indicevictoria"], 7)
+        self.assertNotEqual(fila["indicevictoria"], self.carton_hibrido.indicevictoria)
+        self.assertTrue(fila["es_ganador"])
+
+    def test_maestro_aparece_en_reportes_de_dos_rondas(self):
+        fila_uno = construir_filas_reporte_partida(
+            self.partida_uno,
+            [],
+            [self.participacion_uno],
+        )[0]
+        fila_dos = construir_filas_reporte_partida(
+            self.partida_dos,
+            [],
+            [self.participacion_dos],
+        )[0]
+
+        self.assertEqual(fila_uno["idcarton"], fila_dos["idcarton"])
+        self.assertNotEqual(fila_uno["partida"].pk, fila_dos["partida"].pk)
+        self.assertEqual(fila_uno["indicevictoria"], 7)
+        self.assertIsNone(fila_dos["indicevictoria"])
+
+    def test_pdf_partida_identifica_ambos_tipos_y_ganador_de_ronda(self):
+        contenido = generar_pdf_reporte_partida(
+            self.partida_uno,
+            [self.carton_historico],
+            [self.participacion_uno],
+        )
+
+        self.assertTrue(contenido.startswith(b"%PDF"))
+        self.assertIn(b"P701-C-HIST", contenido)
+        self.assertIn(b"B70-C-MAESTRO", contenido)
+        self.assertIn(b"Ganador", contenido)
+
+    def test_excel_partida_exporta_tipo_e_indice_de_participacion(self):
+        contenido = generar_excel_cartones_partida(
+            self.partida_uno,
+            [self.carton_historico],
+            [self.participacion_uno],
+        )
+        worksheet = load_workbook(BytesIO(contenido))["Cartones"]
+        headers = [cell.value for cell in worksheet[1]]
+        tipo = headers.index("Tipo de registro") + 1
+        codigo = headers.index("Código de cartón") + 1
+        indice = headers.index("Índice de victoria") + 1
+        estado = headers.index("Estado de participación") + 1
+        filas = {
+            worksheet.cell(row=row, column=codigo).value: row
+            for row in (2, 3)
+        }
+
+        fila_hibrida = filas[self.carton_hibrido.codigocarton]
+        self.assertEqual(worksheet.cell(fila_hibrida, tipo).value, "Cartón de Bingo")
+        self.assertEqual(worksheet.cell(fila_hibrida, indice).value, 7)
+        self.assertEqual(worksheet.cell(fila_hibrida, estado).value, "Ganador")
+
+    def test_resumen_bingo_no_duplica_maestro_y_cuenta_rondas(self):
+        resumenes = construir_resumenes_cartones_bingo(
+            self.bingo,
+            [self.carton_historico, self.carton_hibrido, self.carton_hibrido],
+            [self.participacion_uno, self.participacion_dos],
+        )
+
+        self.assertEqual(len(resumenes), 2)
+        hibrido = next(item for item in resumenes if item["tipo"] == TIPO_HIBRIDO)
+        self.assertEqual(hibrido["total_participaciones"], 2)
+        self.assertEqual(hibrido["rondas_ganadas"], 1)
+        self.assertEqual(hibrido["rondas_pendientes_activas"], 1)
+
+    def test_excel_resumen_muestra_inventario_unico_y_rondas(self):
+        contenido = generar_excel_resumen_bingo(
+            self.bingo,
+            [self.partida_uno, self.partida_dos],
+            [self.carton_historico, self.carton_hibrido],
+            [self.participacion_uno, self.participacion_dos],
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        inventario = workbook["Cartones del Bingo"]
+        codigos = [inventario.cell(row, 3).value for row in range(2, inventario.max_row + 1)]
+
+        self.assertEqual(codigos.count(self.carton_hibrido.codigocarton), 1)
+        fila_hibrida = codigos.index(self.carton_hibrido.codigocarton) + 2
+        self.assertEqual(inventario.cell(fila_hibrida, 8).value, 2)
+        self.assertEqual(inventario.cell(fila_hibrida, 9).value, 1)
+        resumen_partidas = workbook["Resumen de partidas"]
+        self.assertEqual(resumen_partidas.cell(2, 11).value, 1)
+        self.assertEqual(resumen_partidas.cell(3, 11).value, 1)
+
+    def test_vista_devuelve_400_para_participacion_inconsistente(self):
+        inconsistente = self._participacion(
+            904,
+            self.partida_uno,
+            CartonPartidaBingo.ESTADO_PENDIENTE,
+            bingo=self.otro_bingo,
+        )
+        with (
+            patch("apps.bingos.views.get_object_or_404", return_value=self.partida_uno),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=FakeReportQuerySet([self.carton_historico]),
+            ),
+            patch(
+                "apps.bingos.views.CartonPartidaBingo.objects.filter",
+                return_value=FakeReportQuerySet([inconsistente]),
+            ),
+        ):
+            response = partida_cartones_excel(
+                self._staff_request("/partidas/701/cartones/excel/"),
+                701,
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("no coinciden", response.content.decode())
+
+    def test_vistas_pdf_y_excel_siguen_respondiendo(self):
+        with (
+            patch("apps.bingos.views.get_object_or_404", return_value=self.partida_uno),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=FakeReportQuerySet([self.carton_historico]),
+            ),
+            patch(
+                "apps.bingos.views.CartonPartidaBingo.objects.filter",
+                return_value=FakeReportQuerySet([self.participacion_uno]),
+            ),
+        ):
+            pdf = partida_reporte_pdf(
+                self._staff_request("/partidas/701/reporte/pdf/"),
+                701,
+            )
+            excel = partida_cartones_excel(
+                self._staff_request("/partidas/701/cartones/excel/"),
+                701,
+            )
+
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(excel.status_code, 200)
+
+    def test_rutas_de_reportes_conservan_resolucion(self):
+        self.assertIs(
+            resolve("/partidas/701/reporte/pdf/").func,
+            partida_reporte_pdf,
+        )
+        self.assertIs(
+            resolve("/partidas/701/cartones/excel/").func,
+            partida_cartones_excel,
+        )
+        self.assertIs(
+            resolve("/bingos/70/resumen/excel/").func,
+            bingo_resumen_excel,
+        )
 
 
 class _CartonesConsultaQuerySet(list):

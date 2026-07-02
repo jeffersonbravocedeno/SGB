@@ -28,6 +28,7 @@ from .models import Bingo, Carton, CartonPartidaBingo, Partidabingo, Sesionjuego
 from .realtime import programar_publicacion_partida
 from .reportes import (
     PDF_CONTENT_TYPE,
+    ReporteHibridoError,
     XLSX_CONTENT_TYPE,
     generar_excel_cartones_partida,
     generar_excel_resumen_bingo,
@@ -641,11 +642,34 @@ def bingo_resumen_excel(request, idbingo):
         .order_by("horainicio", "idpartidabingo")
     )
     cartones = list(
-        Carton.objects.filter(idpartida__in=partidas)
-        .select_related("idpartida", "idjugador")
+        Carton.objects.filter(idbingo=bingo)
+        .select_related("idbingo", "idpartida", "idpartida__idbingo", "idjugador")
         .order_by("idpartida_id", "idcarton")
     )
-    contenido = generar_excel_resumen_bingo(bingo, partidas, cartones)
+    participaciones_hibridas = list(
+        CartonPartidaBingo.objects.filter(
+            idcarton__idbingo=bingo,
+            idcarton__idpartida__isnull=True,
+        )
+        .select_related(
+            "idcarton",
+            "idcarton__idbingo",
+            "idcarton__idjugador",
+            "idpartida",
+            "idpartida__idbingo",
+            "idbingo",
+        )
+        .order_by("idcarton_id", "idpartida_id")
+    )
+    try:
+        contenido = generar_excel_resumen_bingo(
+            bingo,
+            partidas,
+            cartones,
+            participaciones_hibridas,
+        )
+    except ReporteHibridoError as exc:
+        return _respuesta_error_reporte(exc)
     return _attachment_response(
         contenido,
         XLSX_CONTENT_TYPE,
@@ -771,10 +795,18 @@ def partida_reporte_pdf(request, idpartidabingo):
     )
     cartones = list(
         Carton.objects.filter(idpartida=partida)
-        .select_related("idjugador")
+        .select_related("idbingo", "idjugador", "idpartida")
         .order_by("codigocarton")
     )
-    contenido = generar_pdf_reporte_partida(partida, cartones=cartones)
+    participaciones_hibridas = _consultar_participaciones_reporte(partida)
+    try:
+        contenido = generar_pdf_reporte_partida(
+            partida,
+            cartones=cartones,
+            participaciones_hibridas=participaciones_hibridas,
+        )
+    except ReporteHibridoError as exc:
+        return _respuesta_error_reporte(exc)
     return _attachment_response(
         contenido,
         PDF_CONTENT_TYPE,
@@ -790,14 +822,49 @@ def partida_cartones_excel(request, idpartidabingo):
     )
     cartones = list(
         Carton.objects.filter(idpartida=partida)
-        .select_related("idjugador")
+        .select_related("idbingo", "idjugador", "idpartida")
         .order_by("codigocarton")
     )
-    contenido = generar_excel_cartones_partida(partida, cartones)
+    participaciones_hibridas = _consultar_participaciones_reporte(partida)
+    try:
+        contenido = generar_excel_cartones_partida(
+            partida,
+            cartones,
+            participaciones_hibridas,
+        )
+    except ReporteHibridoError as exc:
+        return _respuesta_error_reporte(exc)
     return _attachment_response(
         contenido,
         XLSX_CONTENT_TYPE,
         nombre_archivo_seguro("cartones_partida", partida.idpartidabingo, "xlsx"),
+    )
+
+
+def _consultar_participaciones_reporte(partida):
+    return list(
+        CartonPartidaBingo.objects.filter(
+            idpartida=partida,
+            idcarton__idpartida__isnull=True,
+        )
+        .select_related(
+            "idcarton",
+            "idcarton__idbingo",
+            "idcarton__idjugador",
+            "idpartida",
+            "idpartida__idbingo",
+            "idbingo",
+        )
+        .order_by("idcarton__codigocarton", "idcartonpartidabingo")
+    )
+
+
+def _respuesta_error_reporte(exc):
+    logger.warning("No fue posible generar el reporte híbrido: %s", exc)
+    return HttpResponse(
+        f"No fue posible generar el reporte: {exc}",
+        status=400,
+        content_type="text/plain; charset=utf-8",
     )
 
 
