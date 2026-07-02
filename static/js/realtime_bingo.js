@@ -132,6 +132,11 @@
         });
     }
 
+    function recargarVistaActual() {
+        // reload conserva la ruta, el query string y el fragmento actuales.
+        window.location.reload();
+    }
+
     function iniciarTiempoReal(raiz) {
         var partidaId = raiz.dataset.partidaId;
         if (!/^[1-9][0-9]*$/.test(partidaId || "") || !("WebSocket" in window)) {
@@ -166,6 +171,10 @@
                     !payload || payload.tipo !== "partida_actualizada" ||
                     !payload.partida || String(payload.partida.id) !== partidaId
                 ) {
+                    return;
+                }
+                if (payload.requiere_recarga === true) {
+                    recargarVistaActual();
                     return;
                 }
                 actualizarDatosComunes(raiz, payload.partida);

@@ -33,6 +33,7 @@ from .forms import (
 from .models import Bingo, Carton, CartonPartidaBingo, Partidabingo
 from .consumers import PartidaPublicaConsumer
 from .realtime import (
+    EVENTOS_REQUIEREN_RECARGA,
     construir_payload_publico_partida,
     nombre_grupo_partida,
     programar_publicacion_partida,
@@ -3916,7 +3917,7 @@ class PayloadPublicoTiempoRealTests(SimpleTestCase):
         self.assertEqual(desempate["partida"]["estado"], ESTADO_PARTIDA_DESEMPATE)
         self.assertNotIn("idbingadores", desempate["partida"])
 
-    def test_ganador_solo_se_publica_cuando_finaliza(self):
+    def test_ganador_solo_se_confirma_sin_publicar_alias(self):
         ganador = Jugador(idjugador=41, aliasjugador="campeon_publico")
         partida = partida_publica_prueba(ganador=ganador)
         en_curso = construir_payload_publico_partida(partida, "ganador_detectado")
@@ -3928,7 +3929,8 @@ class PayloadPublicoTiempoRealTests(SimpleTestCase):
         )
 
         self.assertIsNone(en_curso["partida"]["ganador"])
-        self.assertEqual(finalizada["partida"]["ganador"], "campeon_publico")
+        self.assertEqual(finalizada["partida"]["ganador"], "Confirmado")
+        self.assertNotIn("campeon_publico", json.dumps(finalizada))
         self.assertTrue(finalizada["partida"]["finalizada"])
         self.assertTrue(finalizada["partida"]["resuelta_por_desempate"])
 
@@ -4096,6 +4098,269 @@ class IntegracionPublicacionTiempoRealTests(SimpleTestCase):
         self.assertFalse(resultado)
         self.assertEqual(partida.estadopartida, ESTADO_PARTIDA_EN_CURSO)
         publicar_mock.assert_not_called()
+
+
+class TiempoRealParticipacionesHibridasTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.bingo = Bingo(idbingo=70, titulobingo="Bingo tiempo real")
+        self.partida_a = partida_publica_prueba(
+            bolas=[1, 16, 31],
+            pk=701,
+        )
+        self.partida_a.idbingo = self.bingo
+        self.partida_b = partida_publica_prueba(
+            bolas=[2, 17],
+            pk=702,
+        )
+        self.partida_b.idbingo = self.bingo
+        self.jugador = Jugador(
+            idjugador=81,
+            aliasjugador="alias_privado_ws",
+            correojugador="privado-ws@example.com",
+        )
+        self.carton_hibrido = Carton(
+            idcarton=801,
+            idjugador=self.jugador,
+            idbingo=self.bingo,
+            idpartida=None,
+            codigocarton="B70-C-WS",
+            matriznumeros=serializar_matriz_carton_bingo(matriz_carton_prueba()),
+            indicevictoria=999,
+            preciopagado=Decimal("25.00"),
+            estadocarton="Vendido",
+        )
+        self.carton_historico = Carton(
+            idcarton=802,
+            idjugador=self.jugador,
+            idbingo=self.bingo,
+            idpartida=self.partida_a,
+            codigocarton="P701-C-WS",
+            matriznumeros=self.carton_hibrido.matriznumeros,
+            indicevictoria=3,
+            estadocarton="Vendido",
+        )
+
+    def _request_con_mensajes(self, path):
+        request = self.factory.post(path)
+        request.user = User(username="admin_ws", is_staff=True)
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def test_grupo_se_construye_con_id_de_partida(self):
+        self.assertEqual(nombre_grupo_partida(self.partida_a.pk), "partida_701")
+
+    def test_partidas_distintas_producen_grupos_distintos(self):
+        self.assertNotEqual(
+            nombre_grupo_partida(self.partida_a.pk),
+            nombre_grupo_partida(self.partida_b.pk),
+        )
+
+    def test_publicacion_de_a_solo_se_dirige_al_grupo_de_a(self):
+        callbacks = []
+        capa = Mock()
+        capa.group_send = AsyncMock()
+        with (
+            patch(
+                "apps.bingos.realtime.transaction.on_commit",
+                side_effect=callbacks.append,
+            ),
+            patch("apps.bingos.realtime.get_channel_layer", return_value=capa),
+        ):
+            payload = programar_publicacion_partida(
+                self.partida_a,
+                "bola_extraida",
+            )
+            callbacks[0]()
+
+        capa.group_send.assert_awaited_once_with(
+            nombre_grupo_partida(self.partida_a.pk),
+            {
+                "type": "partida.actualizada",
+                "payload": payload,
+            },
+        )
+        self.assertNotEqual(
+            capa.group_send.await_args.args[0],
+            nombre_grupo_partida(self.partida_b.pk),
+        )
+
+    def test_extraccion_publica_la_partida_operada(self):
+        request = self._request_con_mensajes(
+            "/partidas/701/sacar-bola/"
+        )
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.partida_a,
+            ),
+            patch("apps.bingos.views.extraer_siguiente_bola", return_value=46),
+            patch(
+                "apps.bingos.views.programar_publicacion_partida"
+            ) as publicar,
+        ):
+            response = sacar_bola(request, self.partida_a.pk)
+
+        self.assertEqual(response.status_code, 302)
+        publicar.assert_called_once_with(self.partida_a, "bola_extraida")
+
+    def test_validacion_hibrida_publica_partida_del_resultado(self):
+        request = self._request_con_mensajes(
+            "/partidas/701/cartones/801/validar/"
+        )
+        resultado = {
+            "resultado": "ganador",
+            "partida": self.partida_a,
+            "carton": self.carton_hibrido,
+        }
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                side_effect=[self.partida_a, self.carton_hibrido],
+            ),
+            patch(
+                "apps.bingos.views.validar_participacion_ganadora",
+                return_value=resultado,
+            ) as validar_hibrida,
+            patch("apps.bingos.views.validar_carton_ganador") as validar_historica,
+            patch(
+                "apps.bingos.views.programar_publicacion_partida"
+            ) as publicar,
+        ):
+            response = validar_carton(
+                request,
+                self.partida_a.pk,
+                self.carton_hibrido.pk,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        validar_hibrida.assert_called_once_with(
+            partida=self.partida_a,
+            carton=self.carton_hibrido,
+            indicevictoria=3,
+        )
+        validar_historica.assert_not_called()
+        publicar.assert_called_once_with(self.partida_a, "ganador_detectado")
+
+    def test_validacion_historica_conserva_publicacion_por_partida(self):
+        request = self._request_con_mensajes(
+            "/partidas/701/cartones/802/validar/"
+        )
+        resultado = {
+            "resultado": "ganador",
+            "partida": self.partida_a,
+            "carton": self.carton_historico,
+        }
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                side_effect=[self.partida_a, self.carton_historico],
+            ),
+            patch(
+                "apps.bingos.views.validar_carton_ganador",
+                return_value=resultado,
+            ) as validar_historica,
+            patch("apps.bingos.views.validar_participacion_ganadora") as validar_hibrida,
+            patch(
+                "apps.bingos.views.programar_publicacion_partida"
+            ) as publicar,
+        ):
+            response = validar_carton(
+                request,
+                self.partida_a.pk,
+                self.carton_historico.pk,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        validar_historica.assert_called_once_with(
+            self.partida_a,
+            self.carton_historico,
+        )
+        validar_hibrida.assert_not_called()
+        publicar.assert_called_once_with(self.partida_a, "ganador_detectado")
+
+    def test_payload_publico_no_expone_datos_privados(self):
+        self.partida_a.estadopartida = ESTADO_PARTIDA_FINALIZADA
+        self.partida_a.idjugadorganador = self.jugador
+        self.partida_a.idbingadores = json.dumps(
+            [
+                {
+                    "idjugador": self.jugador.pk,
+                    "aliasjugador": self.jugador.aliasjugador,
+                    "correo": self.jugador.correojugador,
+                    "matriznumeros": self.carton_hibrido.matriznumeros,
+                    "indicevictoria": 7,
+                    "estado_participacion": "Ganador",
+                }
+            ]
+        )
+        payload = construir_payload_publico_partida(
+            self.partida_a,
+            "desempate_finalizado",
+            ganador_publico="Nombre privado",
+        )
+        serializado = json.dumps(payload)
+
+        self.assertEqual(payload["partida"]["ganador"], "Confirmado")
+        for privado in (
+            "alias_privado_ws",
+            "privado-ws@example.com",
+            "Nombre privado",
+            "idjugador",
+            "aliasjugador",
+            "correo",
+            "matriznumeros",
+            "indicevictoria",
+            "estado_participacion",
+            "preciopagado",
+        ):
+            self.assertNotIn(privado, serializado)
+
+    def test_eventos_de_resultado_solicitan_recarga(self):
+        for evento in EVENTOS_REQUIEREN_RECARGA:
+            with self.subTest(evento=evento):
+                payload = construir_payload_publico_partida(
+                    self.partida_a,
+                    evento,
+                )
+                self.assertTrue(payload["requiere_recarga"])
+        payload_bola = construir_payload_publico_partida(
+            self.partida_a,
+            "bola_extraida",
+        )
+        self.assertFalse(payload_bola["requiere_recarga"])
+
+    def test_javascript_filtra_partida_antes_de_recargar_url_actual(self):
+        javascript = Path("static/js/realtime_bingo.js").read_text(
+            encoding="utf-8"
+        )
+        filtro = 'String(payload.partida.id) !== partidaId'
+        recarga = "recargarVistaActual();"
+
+        self.assertIn(filtro, javascript)
+        self.assertIn(recarga, javascript)
+        self.assertIn("window.location.reload();", javascript)
+        self.assertLess(javascript.index(filtro), javascript.index(recarga))
+        self.assertNotIn("window.location.href =", javascript)
+        self.assertNotIn("window.location.assign(", javascript)
+        self.assertNotIn("window.location.replace(", javascript)
+
+    def test_ruta_y_tipo_de_evento_principales_se_conservan(self):
+        from apps.bingos.routing import websocket_urlpatterns
+
+        ruta = next(
+            item
+            for item in websocket_urlpatterns
+            if getattr(item, "name", None) == "ws_partida_publica"
+        )
+        payload = construir_payload_publico_partida(
+            self.partida_a,
+            "bola_extraida",
+        )
+
+        self.assertIs(ruta.callback.consumer_class, PartidaPublicaConsumer)
+        self.assertEqual(payload["tipo"], "partida_actualizada")
 
 
 @override_settings(

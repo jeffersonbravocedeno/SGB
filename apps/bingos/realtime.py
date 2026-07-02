@@ -17,6 +17,14 @@ from .services import (
 
 logger = logging.getLogger(__name__)
 
+EVENTOS_REQUIEREN_RECARGA = frozenset(
+    {
+        "ganador_detectado",
+        "desempate_detectado",
+        "desempate_finalizado",
+    }
+)
+
 
 def nombre_grupo_partida(idpartidabingo):
     idpartidabingo = int(idpartidabingo)
@@ -34,15 +42,14 @@ def construir_payload_publico_partida(
     ultima_bola = bolas[-1] if bolas else None
     estado = normalizar_estado_partida(partida.estadopartida)
     finalizada = estado == ESTADO_PARTIDA_FINALIZADA
-
-    if finalizada and ganador_publico is None and partida.idjugadorganador_id:
-        jugador = partida._state.fields_cache.get("idjugadorganador")
-        if jugador is not None:
-            ganador_publico = jugador.aliasjugador or "Jugador ganador"
+    ganador_confirmado = finalizada and bool(
+        partida.idjugadorganador_id or ganador_publico
+    )
 
     return {
         "tipo": "partida_actualizada",
         "evento": str(evento),
+        "requiere_recarga": str(evento) in EVENTOS_REQUIEREN_RECARGA,
         "partida": {
             "id": partida.pk,
             "estado": estado,
@@ -61,7 +68,7 @@ def construir_payload_publico_partida(
                 if ultima_bola is not None
                 else None
             ),
-            "ganador": ganador_publico if finalizada else None,
+            "ganador": "Confirmado" if ganador_confirmado else None,
             "finalizada": finalizada,
             "resuelta_por_desempate": (
                 finalizada and bool(partida.haydesempate)

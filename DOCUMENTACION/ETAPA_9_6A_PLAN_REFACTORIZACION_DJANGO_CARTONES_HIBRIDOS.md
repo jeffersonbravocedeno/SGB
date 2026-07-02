@@ -1065,3 +1065,72 @@ No se modificaron WebSockets, JavaScript, CSS, administración, venta,
 formularios, consola, ganador, desempate, Mis cartones ni acceso público. No se
 modificó `.env`, no se ejecutaron migraciones ni se inició el servidor. La base
 real `bingo` no fue tocada.
+
+## 22. Etapa 9.6D.5 — Tiempo real por partida y participación
+
+El contrato de tiempo real conserva un único grupo público por partida, con el
+nombre `partida_<idpartidabingo>`, y la ruta
+`/ws/juego/partidas/<idpartidabingo>/`. No se crean grupos por Bingo, cartón,
+jugador ni participación. El consumidor comprueba que la partida exista,
+agrega el cliente exclusivamente a ese grupo e ignora comandos enviados por el
+cliente.
+
+Las publicaciones de bola, inicio, pausa, reanudación, finalización, ganador y
+desempate continúan usando la `Partidabingo` concreta operada por la vista o
+devuelta por el servicio. La validación híbrida publica la ronda validada y no
+obtiene el destino desde `Carton.idpartida` o `Carton.indicevictoria`. El flujo
+histórico mantiene el mismo grupo y los mismos eventos por partida.
+
+El cliente toma la ronda de `data-partida-id`, construye el WebSocket con ese
+ID y descarta defensivamente cualquier payload cuyo `partida.id` no coincida.
+Así, una actualización de la ronda B no modifica una pantalla conectada a la
+ronda A, aunque ambas compartan el mismo maestro.
+
+### 22.1 Selección híbrida y recarga segura
+
+Las actualizaciones ordinarias de bolas y estado continúan aplicándose sobre
+el DOM sin recargar. Los eventos `ganador_detectado`, `desempate_detectado` y
+`desempate_finalizado` incluyen ahora `requiere_recarga=true`, porque sus datos
+de participación deben volver a consultarse en el servidor.
+
+El JavaScript recarga mediante `window.location.reload()` únicamente después
+de validar el ID de la partida. La recarga conserva la ruta, el query string y
+el fragmento actuales; por tanto, un detalle privado o público abierto con
+`?partida=<idpartida>` mantiene la misma participación seleccionada. No se
+construyen redirecciones ni URLs alternativas.
+
+### 22.2 Privacidad del payload público
+
+El payload conserva su tipo `partida_actualizada`, evento, ID de partida,
+estado, mensajes públicos, bolas, última bola, conteos, finalización y bandera
+de desempate. Cuando existe un ganador final solo publica el valor genérico
+`Confirmado`; ya no transmite alias o nombre del jugador.
+
+Los eventos no incluyen precio, correo, alias, nombre, ID de jugador, matriz,
+código de otros cartones, candidatos de desempate ni campos internos de
+`CartonPartidaBingo`. La firma de publicación se mantiene compatible con los
+emisores existentes, pero un nombre recibido no se incorpora al payload.
+
+### 22.3 Pruebas y smoke sin servidor
+
+Se ejecutaron `TiempoRealParticipacionesHibridasTests` y las clases heredadas
+directamente relacionadas con consumidor, payload, emisores y templates. Las
+29 pruebas pasaron y Django informó
+`Skipping setup of unused database(s): default.`. También se validó la sintaxis
+de `static/js/realtime_bingo.js` con `node --check`.
+
+El smoke ejecutó siete controles con partidas, cartones y participaciones no
+persistidos, mocks de channel layer y vistas, y revisión del cliente. Comprobó
+grupos distintos para A y B, destino exclusivo, filtro antes de recargar,
+recarga de resultados, privacidad, validación híbrida y compatibilidad
+histórica. No se inició servidor, Redis, Daphne ni Uvicorn.
+
+Antes y después del smoke, PostgreSQL confirmó
+`current_database() = bingo_ensayo_hibridos` y
+`transaction_read_only = on`. Los conteos permanecieron en 12 cartones, 12
+participaciones, 12 participaciones originales y 0 no originales.
+
+No se modificaron consumidores, routing, vistas, templates, reportes, CSS,
+administración, venta, formularios, consola, ganador, desempate, Mis cartones,
+detalle privado ni acceso público. Tampoco se modificó `.env`, se ejecutaron
+migraciones o se inició un servidor. La base real `bingo` no fue tocada.
