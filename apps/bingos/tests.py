@@ -5179,10 +5179,22 @@ class ReportesAdministrativosTests(SimpleTestCase):
         )
         workbook = load_workbook(BytesIO(contenido))
         worksheet = workbook["Resumen de partidas"]
-        headers = [cell.value for cell in worksheet[1]]
+        headers = [cell.value for cell in worksheet[18]]
 
-        self.assertIn("ID de Bingo", headers)
+        self.assertEqual(worksheet["A1"].value, "Resumen del Bingo")
+        self.assertEqual(
+            worksheet["A3"].value,
+            "A. Resumen financiero del Bingo",
+        )
+        self.assertEqual(worksheet["A17"].value, "B. Resumen de rondas")
+        self.assertIn("Bingo", headers)
         self.assertNotIn("Recaudación total", headers)
+        self.assertIn("Cartones participantes en la ronda", headers)
+        self.assertNotIn(
+            "Cartones registrados directamente en la ronda",
+            headers,
+        )
+        self.assertIn("Participaciones por ronda", headers)
         self.assertIn("Balota mayor de desempate", headers)
         headers_lower = " ".join(str(header).lower() for header in headers)
         for prohibido in ("correo", "contraseña", "password", "hash", "idbingadores"):
@@ -5190,13 +5202,14 @@ class ReportesAdministrativosTests(SimpleTestCase):
 
         resumen = {
             worksheet.cell(row=row, column=1).value: worksheet.cell(row=row, column=2).value
-            for row in range(worksheet.max_row - 8, worksheet.max_row + 1)
+            for row in range(4, 13)
         }
-        self.assertEqual(resumen["Total de partidas"], 1)
-        self.assertEqual(resumen["Partidas finalizadas"], 1)
-        self.assertEqual(resumen["Total de cartones"], 3)
-        self.assertEqual(resumen["Recaudación registrada"], 10)
-        self.assertEqual(resumen["Total de partidas con desempate"], 1)
+        self.assertEqual(resumen["Nombre del Bingo"], self.bingo.titulobingo)
+        self.assertEqual(resumen["Total de rondas"], 1)
+        self.assertEqual(resumen["Rondas finalizadas"], 1)
+        self.assertEqual(resumen["Total de cartones maestros vendidos"], 3)
+        self.assertEqual(resumen["Total recaudado"], 10)
+        self.assertEqual(resumen["Rondas con desempate"], 1)
 
     def test_generar_reportes_no_modifica_objetos_ni_llama_save(self):
         estado = self.partida.estadopartida
@@ -5474,18 +5487,30 @@ class ReportesHibridosTests(SimpleTestCase):
         )
         workbook = load_workbook(BytesIO(contenido))
         inventario = workbook["Cartones del Bingo"]
-        codigos = [inventario.cell(row, 3).value for row in range(2, inventario.max_row + 1)]
+        codigos = [
+            inventario.cell(row, 2).value
+            for row in range(4, inventario.max_row + 1)
+        ]
 
         self.assertEqual(codigos.count(self.carton_hibrido.codigocarton), 1)
-        fila_hibrida = codigos.index(self.carton_hibrido.codigocarton) + 2
-        self.assertEqual(inventario.cell(fila_hibrida, 8).value, 2)
-        self.assertEqual(inventario.cell(fila_hibrida, 9).value, 1)
+        fila_hibrida = codigos.index(self.carton_hibrido.codigocarton) + 4
+        self.assertEqual(inventario.cell(fila_hibrida, 7).value, 2)
+        self.assertEqual(inventario.cell(fila_hibrida, 8).value, 1)
         resumen_partidas = workbook["Resumen de partidas"]
-        self.assertEqual(resumen_partidas.cell(2, 11).value, 1)
-        self.assertEqual(resumen_partidas.cell(3, 11).value, 1)
+        self.assertEqual(resumen_partidas.cell(19, 8).value, 1)
+        self.assertEqual(resumen_partidas.cell(20, 8).value, 1)
+        participaciones = workbook["Participaciones por ronda"]
+        codigos_participacion = [
+            participaciones.cell(row, 5).value
+            for row in range(4, participaciones.max_row + 1)
+        ]
+        self.assertEqual(
+            codigos_participacion.count(self.carton_hibrido.codigocarton),
+            2,
+        )
         # Verify no per-round monetary column exists
         headers_partidas = [
-            cell.value for cell in resumen_partidas[1]
+            cell.value for cell in resumen_partidas[18]
         ]
         self.assertNotIn("Recaudación total", headers_partidas)
 
@@ -6294,10 +6319,10 @@ class RecaudacionRegistradaDuplicacionTests(SimpleTestCase):
         worksheet = workbook["Resumen de partidas"]
         resumen = {
             worksheet.cell(row=row, column=1).value: worksheet.cell(row=row, column=2).value
-            for row in range(1, worksheet.max_row + 1)
+            for row in range(4, 13)
             if worksheet.cell(row=row, column=1).value is not None
         }
-        self.assertEqual(resumen["Recaudación registrada"], 15)
+        self.assertEqual(resumen["Total recaudado"], 15)
         self.assertNotIn("Recaudación total", resumen)
 
     def test_03_excel_ronda_no_contiene_total_recaudado(self):
@@ -6348,11 +6373,11 @@ class RecaudacionRegistradaDuplicacionTests(SimpleTestCase):
         )
         workbook = load_workbook(BytesIO(contenido))
         worksheet = workbook["Resumen de partidas"]
-        headers = [cell.value for cell in worksheet[1]]
+        headers = [cell.value for cell in worksheet[18]]
         self.assertNotIn("Recaudación total", headers)
 
-    def test_06_excel_resumen_muestra_recaudacion_registrada_una_vez(self):
-        """El Excel resumen muestra 'Recaudación registrada' una sola vez."""
+    def test_06_excel_resumen_muestra_total_recaudado_una_vez(self):
+        """El Excel resumen muestra el total recaudado una sola vez."""
         contenido = generar_excel_resumen_bingo(
             self.bingo,
             self.partidas,
@@ -6366,7 +6391,7 @@ class RecaudacionRegistradaDuplicacionTests(SimpleTestCase):
             for row in range(1, worksheet.max_row + 1)
         ]
         self.assertEqual(
-            etiquetas.count("Recaudación registrada"),
+            etiquetas.count("Total recaudado"),
             1,
             "Debe aparecer exactamente una vez.",
         )
@@ -6446,6 +6471,7 @@ class RecaudacionRegistradaDuplicacionTests(SimpleTestCase):
         workbook = load_workbook(BytesIO(contenido))
         self.assertIn("Resumen de partidas", workbook.sheetnames)
         self.assertIn("Cartones del Bingo", workbook.sheetnames)
+        self.assertIn("Participaciones por ronda", workbook.sheetnames)
 
     def test_nota_gastos_adicionales_en_resumen(self):
         """El Excel resumen incluye la nota sobre gastos."""
@@ -6482,8 +6508,96 @@ class RecaudacionRegistradaDuplicacionTests(SimpleTestCase):
         ]
         self.assertTrue(
             any(
-                "se calcula una sola vez por cartón maestro" in t
+                "se calcula por cartón maestro vendido" in t
+                and "no generan un cobro adicional" in t
                 for t in textos
             ),
             "No se encontró la nota sobre cálculo por cartón maestro.",
         )
+
+    def test_excel_resumen_tiene_secciones_y_formato_profesional(self):
+        contenido = generar_excel_resumen_bingo(
+            self.bingo,
+            self.partidas,
+            self.cartones,
+            self.participaciones,
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        resumen = workbook["Resumen de partidas"]
+        inventario = workbook["Cartones del Bingo"]
+        participaciones = workbook["Participaciones por ronda"]
+
+        self.assertEqual(resumen["A1"].value, "Resumen del Bingo")
+        self.assertTrue(resumen["A1"].font.bold)
+        self.assertEqual(resumen["A1"].font.sz, 18)
+        self.assertEqual(resumen.freeze_panes, "A19")
+        self.assertTrue(resumen.auto_filter.ref.startswith("A18:L"))
+        self.assertEqual(resumen["A18"].alignment.horizontal, "center")
+        self.assertEqual(resumen["B7"].number_format, '"$"#,##0.00')
+        self.assertGreater(resumen.column_dimensions["A"].width, 12)
+
+        self.assertEqual(
+            inventario["A1"].value,
+            "C. Cartones maestros vendidos",
+        )
+        self.assertEqual(inventario.freeze_panes, "A4")
+        self.assertTrue(inventario.auto_filter.ref.startswith("A3:J"))
+        self.assertEqual(
+            participaciones["A1"].value,
+            "D. Participaciones por ronda",
+        )
+        self.assertEqual(participaciones.freeze_panes, "A4")
+        self.assertTrue(participaciones.auto_filter.ref.startswith("A3:I"))
+
+        texto_visible = " ".join(
+            str(cell.value or "").lower()
+            for worksheet in workbook.worksheets
+            for row in worksheet.iter_rows()
+            for cell in row
+        )
+        for termino_interno in (
+            "híbrido",
+            "heredado",
+            "histórico",
+            "flujo antiguo",
+            "cartonpartidabingo",
+        ):
+            self.assertNotIn(termino_interno, texto_visible)
+
+    def test_seis_maestros_de_cinco_recaudan_treinta_sin_duplicarse(self):
+        cartones = [
+            self._carton_maestro(
+                600 + indice,
+                f"B90-C-{indice:02d}",
+                Decimal("5.00"),
+            )
+            for indice in range(1, 7)
+        ]
+        participaciones = []
+        pk = 10000
+        for carton in cartones:
+            for partida in self.partidas[:2]:
+                pk += 1
+                participaciones.append(
+                    self._participacion(pk, carton, partida)
+                )
+
+        contenido = generar_excel_resumen_bingo(
+            self.bingo,
+            self.partidas[:2],
+            cartones,
+            participaciones,
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        resumen = workbook["Resumen de partidas"]
+        detalle = workbook["Participaciones por ronda"]
+
+        self.assertEqual(resumen["B6"].value, 6)
+        self.assertEqual(resumen["B7"].value, 30)
+        self.assertEqual(resumen["B9"].value, 12)
+        codigos = [
+            detalle.cell(row=row, column=5).value
+            for row in range(4, detalle.max_row + 1)
+        ]
+        for carton in cartones:
+            self.assertEqual(codigos.count(carton.codigocarton), 2)

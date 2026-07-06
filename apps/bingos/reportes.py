@@ -5,7 +5,9 @@ from io import BytesIO
 
 from django.utils import timezone
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.cell.cell import MergedCell
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
@@ -539,28 +541,6 @@ def generar_excel_resumen_bingo(
         cartones,
         participaciones_hibridas,
     )
-    workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = "Resumen de partidas"
-
-    headers = [
-        "ID de Bingo",
-        "Título del Bingo",
-        "ID de partida",
-        "Ronda",
-        "Estado de partida",
-        "Fecha programada",
-        "Hora de inicio",
-        "Hora de finalización",
-        "Total de cartones",
-        "Cartones históricos",
-        "Participaciones híbridas",
-        "Cantidad de bolas extraídas",
-        "Ganador",
-        "Hubo desempate",
-        "Balota mayor de desempate",
-    ]
-    worksheet.append(headers)
 
     cartones_por_partida = defaultdict(list)
     for carton in cartones:
@@ -579,6 +559,7 @@ def generar_excel_resumen_bingo(
     finalizadas = 0
     en_curso = 0
     con_desempate = 0
+    filas_resumen_rondas = []
 
     for partida in partidas:
         cartones_historicos = cartones_por_partida.get(
@@ -599,18 +580,15 @@ def generar_excel_resumen_bingo(
         finalizadas += 1 if estado == ESTADO_PARTIDA_FINALIZADA else 0
         en_curso += 1 if estado == "En curso" else 0
         con_desempate += 1 if partida.haydesempate else 0
-        worksheet.append(
+        filas_resumen_rondas.append(
             [
-                bingo.idbingo,
                 bingo.titulobingo,
-                partida.idpartidabingo,
                 partida.nombreronda,
                 estado,
                 _fecha_para_excel(bingo.fechaprogramadabingo),
                 _fecha_para_excel(partida.horainicio),
                 _fecha_para_excel(partida.horafin),
                 len(filas_partida),
-                len(cartones_historicos),
                 len(participaciones_partida),
                 len(bolas),
                 _alias_ganador(partida) or "-",
@@ -619,41 +597,107 @@ def generar_excel_resumen_bingo(
             ]
         )
 
-    resumen_row = worksheet.max_row + 2
-    resumen = [
-        ("Total de partidas", len(partidas)),
-        ("Partidas finalizadas", finalizadas),
-        ("Partidas en curso", en_curso),
-        ("Total de cartones", total_cartones),
-        ("Recaudación registrada", float(recaudacion_registrada)),
-        ("Total de partidas con desempate", con_desempate),
-    ]
-    for offset, (label, value) in enumerate(resumen):
-        row = resumen_row + offset
-        worksheet.cell(row=row, column=1, value=label)
-        worksheet.cell(row=row, column=2, value=value)
-    worksheet.cell(row=resumen_row + 4, column=2).number_format = MONEDA_FORMAT
-
-    nota_row = worksheet.max_row + 2
-    notas = [
-        "La recaudación registrada se calcula una sola vez por cartón "
-        "maestro. Las participaciones por ronda no representan ventas "
-        "adicionales.",
-        "Gastos adicionales: no registrados en el sistema.",
-    ]
-    for offset, nota in enumerate(notas):
-        worksheet.cell(row=nota_row + offset, column=1, value=nota)
-
-    _aplicar_formato_basico_excel(worksheet)
-    _aplicar_formato_columnas(
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Resumen de partidas"
+    _aplicar_titulo_excel(
         worksheet,
-        date_columns={6, 7, 8},
+        row=1,
+        titulo="Resumen del Bingo",
+        ultima_columna=12,
+        principal=True,
+    )
+    _aplicar_titulo_excel(
+        worksheet,
+        row=3,
+        titulo="A. Resumen financiero del Bingo",
+        ultima_columna=12,
     )
 
+    resumen = [
+        ("Nombre del Bingo", bingo.titulobingo),
+        ("Fecha de generación", _fecha_para_excel(timezone.now())),
+        ("Total de cartones maestros vendidos", total_cartones),
+        ("Total recaudado", float(recaudacion_registrada)),
+        ("Total de rondas", len(partidas)),
+        ("Total de participaciones por ronda", len(participaciones_hibridas)),
+        ("Rondas finalizadas", finalizadas),
+        ("Rondas en curso", en_curso),
+        ("Rondas con desempate", con_desempate),
+    ]
+    for offset, (label, value) in enumerate(resumen, start=4):
+        row = offset
+        worksheet.cell(row=row, column=1, value=label)
+        worksheet.cell(row=row, column=2, value=value)
+        worksheet.cell(row=row, column=1).font = Font(bold=True)
+    worksheet.cell(row=5, column=2).number_format = FECHA_FORMAT
+    worksheet.cell(row=7, column=2).number_format = MONEDA_FORMAT
+
+    _aplicar_nota_excel(
+        worksheet,
+        row=14,
+        texto=(
+            "La recaudación se calcula por cartón maestro vendido; las "
+            "participaciones por ronda no generan un cobro adicional."
+        ),
+        ultima_columna=12,
+    )
+    _aplicar_nota_excel(
+        worksheet,
+        row=15,
+        texto="Gastos adicionales: no registrados en el sistema.",
+        ultima_columna=12,
+    )
+
+    _aplicar_titulo_excel(
+        worksheet,
+        row=17,
+        titulo="B. Resumen de rondas",
+        ultima_columna=12,
+    )
+    encabezado_rondas = 18
+    headers = [
+        "Bingo",
+        "Ronda",
+        "Estado de la ronda",
+        "Fecha programada del Bingo",
+        "Inicio",
+        "Finalización",
+        "Cartones participantes en la ronda",
+        "Participaciones por ronda",
+        "Bolas extraídas",
+        "Ganador",
+        "Hubo desempate",
+        "Balota mayor de desempate",
+    ]
+    worksheet.append(headers)
+    for fila in filas_resumen_rondas:
+        worksheet.append(fila)
+
+    _configurar_tabla_excel(
+        worksheet,
+        header_row=encabezado_rondas,
+        last_row=worksheet.max_row,
+        last_column=len(headers),
+        freeze_cell="A19",
+    )
+    _aplicar_formato_columnas(
+        worksheet,
+        date_columns={4, 5, 6},
+    )
+    worksheet.sheet_view.showGridLines = False
+
     inventario = workbook.create_sheet("Cartones del Bingo")
+    _aplicar_titulo_excel(
+        inventario,
+        row=1,
+        titulo="C. Cartones maestros vendidos",
+        ultima_columna=10,
+        principal=True,
+    )
+    inventario.append([])
     inventario.append(
         [
-            "Tipo de registro",
             "ID de cartón",
             "Código de cartón",
             "Jugador",
@@ -669,7 +713,6 @@ def generar_excel_resumen_bingo(
     for resumen in resumenes_maestros:
         inventario.append(
             [
-                resumen["tipo_etiqueta"],
                 resumen["idcarton"],
                 resumen["codigo_carton"],
                 _nombre_jugador(resumen["jugador"]),
@@ -682,12 +725,70 @@ def generar_excel_resumen_bingo(
                 resumen["estados_participacion"],
             ]
         )
-    _aplicar_formato_basico_excel(inventario)
+    _configurar_tabla_excel(
+        inventario,
+        header_row=3,
+        last_row=inventario.max_row,
+        last_column=10,
+        freeze_cell="A4",
+    )
     _aplicar_formato_columnas(
         inventario,
-        money_columns={7},
-        date_columns={6},
+        money_columns={6},
+        date_columns={5},
     )
+    inventario.sheet_view.showGridLines = False
+
+    participaciones = workbook.create_sheet("Participaciones por ronda")
+    _aplicar_titulo_excel(
+        participaciones,
+        row=1,
+        titulo="D. Participaciones por ronda",
+        ultima_columna=9,
+        principal=True,
+    )
+    participaciones.append([])
+    participaciones.append(
+        [
+            "Ronda",
+            "Estado de la ronda",
+            "Inicio",
+            "Finalización",
+            "Código del cartón",
+            "Jugador",
+            "Estado de la participación",
+            "Índice de victoria",
+            "Fecha de validación",
+        ]
+    )
+    for participacion in participaciones_hibridas:
+        partida = participacion.idpartida
+        carton = participacion.idcarton
+        participaciones.append(
+            [
+                partida.nombreronda,
+                estado_partida_mostrar(partida.estadopartida),
+                _fecha_para_excel(partida.horainicio),
+                _fecha_para_excel(partida.horafin),
+                carton.codigocarton,
+                _nombre_jugador(carton.idjugador),
+                participacion.estado_participacion,
+                participacion.indicevictoria,
+                _fecha_para_excel(participacion.fechavalidacion),
+            ]
+        )
+    _configurar_tabla_excel(
+        participaciones,
+        header_row=3,
+        last_row=participaciones.max_row,
+        last_column=9,
+        freeze_cell="A4",
+    )
+    _aplicar_formato_columnas(
+        participaciones,
+        date_columns={3, 4, 9},
+    )
+    participaciones.sheet_view.showGridLines = False
     return _workbook_bytes(workbook)
 
 
@@ -767,17 +868,88 @@ def _aplicar_formato_basico_excel(worksheet):
         cell.font = Font(bold=True)
 
 
+def _aplicar_titulo_excel(
+    worksheet,
+    row,
+    titulo,
+    ultima_columna,
+    principal=False,
+):
+    color = "1F4E78" if principal else "D9EAF7"
+    texto = "FFFFFF" if principal else "17365D"
+    fill = PatternFill(fill_type="solid", fgColor=color)
+    for column in range(1, ultima_columna + 1):
+        worksheet.cell(row=row, column=column).fill = fill
+    worksheet.merge_cells(
+        start_row=row,
+        start_column=1,
+        end_row=row,
+        end_column=ultima_columna,
+    )
+    cell = worksheet.cell(row=row, column=1, value=titulo)
+    cell.font = Font(
+        bold=True,
+        color=texto,
+        size=18 if principal else 13,
+    )
+    cell.alignment = Alignment(vertical="center")
+    worksheet.row_dimensions[row].height = 28 if principal else 22
+
+
+def _aplicar_nota_excel(worksheet, row, texto, ultima_columna):
+    fill = PatternFill(fill_type="solid", fgColor="EAF2F8")
+    for column in range(1, ultima_columna + 1):
+        worksheet.cell(row=row, column=column).fill = fill
+    worksheet.merge_cells(
+        start_row=row,
+        start_column=1,
+        end_row=row,
+        end_column=ultima_columna,
+    )
+    cell = worksheet.cell(row=row, column=1, value=texto)
+    cell.font = Font(italic=True, color="17365D")
+    cell.alignment = Alignment(wrap_text=True, vertical="center")
+    worksheet.row_dimensions[row].height = 30
+
+
+def _configurar_tabla_excel(
+    worksheet,
+    header_row,
+    last_row,
+    last_column,
+    freeze_cell,
+):
+    fill = PatternFill(fill_type="solid", fgColor="4472C4")
+    for column in range(1, last_column + 1):
+        cell = worksheet.cell(row=header_row, column=column)
+        cell.fill = fill
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+            wrap_text=True,
+        )
+    worksheet.row_dimensions[header_row].height = 32
+    worksheet.freeze_panes = freeze_cell
+    last_column_letter = get_column_letter(last_column)
+    worksheet.auto_filter.ref = (
+        f"A{header_row}:{last_column_letter}{max(last_row, header_row)}"
+    )
+
+
 def _aplicar_formato_columnas(worksheet, money_columns=None, date_columns=None):
     money_columns = money_columns or set()
     date_columns = date_columns or set()
     for column_cells in worksheet.columns:
-        column_letter = column_cells[0].column_letter
+        column_letter = get_column_letter(column_cells[0].column)
         max_length = max(
             len(str(cell.value)) if cell.value not in (None, "") else 0
             for cell in column_cells
         )
         worksheet.column_dimensions[column_letter].width = min(max(max_length + 2, 12), 42)
         for cell in column_cells[1:]:
+            if isinstance(cell, MergedCell):
+                continue
             if cell.column in money_columns:
                 cell.number_format = MONEDA_FORMAT
             if cell.column in date_columns:
