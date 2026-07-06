@@ -66,6 +66,7 @@ from .services import (
     mensaje_estado_carton_publico,
     normalizar_estado_partida,
     obtener_numeros_faltantes_carton,
+    obtener_partidas_elegibles_venta_carton,
     obtener_participaciones_hibridas_partida,
     parse_bolas_cantadas,
     parsear_candidatos_desempate,
@@ -636,7 +637,7 @@ def bingo_carton_nuevo(request, idbingo):
                 messages.success(
                     request,
                     "Se creó un cartón maestro para todo el Bingo y "
-                    f"{texto_participaciones}, una por cada ronda actual.",
+                    f"{texto_participaciones} en las rondas futuras elegibles.",
                 )
                 return redirect("bingos:detalle", idbingo=bingo.idbingo)
     else:
@@ -644,7 +645,10 @@ def bingo_carton_nuevo(request, idbingo):
             initial={"preciopagado": bingo.preciocarton}
         )
 
-    total_partidas = Partidabingo.objects.filter(idbingo=bingo).count()
+    partidas = list(Partidabingo.objects.filter(idbingo=bingo))
+    partidas_elegibles = obtener_partidas_elegibles_venta_carton(partidas)
+    total_partidas = len(partidas)
+    total_partidas_elegibles = len(partidas_elegibles)
     return render(
         request,
         "bingos/bingo_carton_generar.html",
@@ -652,6 +656,10 @@ def bingo_carton_nuevo(request, idbingo):
             "form": form,
             "bingo": bingo,
             "total_partidas": total_partidas,
+            "total_partidas_elegibles": total_partidas_elegibles,
+            "total_partidas_no_elegibles": (
+                total_partidas - total_partidas_elegibles
+            ),
             "titulo": "Vender cartón para todo el Bingo",
         },
     )

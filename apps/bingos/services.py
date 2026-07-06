@@ -335,32 +335,25 @@ def generar_codigo_carton_bingo(
     )
 
 
-def validar_venta_carton_para_bingo(bingo, partidas):
-    """Exige al menos una ronda y que todas sigan abiertas para venta."""
-    partidas = list(partidas)
-    if not partidas:
-        raise CartonAsignacionError(
-            "No se puede vender un cartón porque el Bingo no tiene partidas."
-        )
-
-    partidas_no_aptas = [
+def obtener_partidas_elegibles_venta_carton(partidas):
+    """Devuelve las rondas futuras que admiten una venta nueva."""
+    return [
         partida
         for partida in partidas
-        if not puede_asignar_cartones(partida)
+        if puede_asignar_cartones(partida)
     ]
-    if partidas_no_aptas:
-        estados = ", ".join(
-            f"{partida.nombreronda or partida.pk}: "
-            f"{str(partida.estadopartida or 'Sin estado').strip()}"
-            for partida in partidas_no_aptas
-        )
+
+
+def validar_venta_carton_para_bingo(bingo, partidas):
+    """Exige al menos una ronda futura elegible y devuelve solo esas rondas."""
+    partidas_elegibles = obtener_partidas_elegibles_venta_carton(partidas)
+    if not partidas_elegibles:
         raise CartonAsignacionError(
-            "No se puede vender un cartón porque todas las partidas del Bingo "
-            "deben estar Programada o En espera. Partidas no aptas: "
-            f"{estados}."
+            "No se puede vender un cartón porque ya no quedan rondas futuras "
+            "disponibles en estado Programada o En espera para este Bingo."
         )
 
-    return partidas
+    return partidas_elegibles
 
 
 def _crear_participacion_aplicacion(carton, partida, bingo, fecha_creacion):
@@ -481,7 +474,10 @@ def crear_carton_maestro_para_bingo(
             .filter(idbingo=bingo_bloqueado)
             .order_by("idpartidabingo")
         )
-        validar_venta_carton_para_bingo(bingo_bloqueado, partidas)
+        partidas_elegibles = validar_venta_carton_para_bingo(
+            bingo_bloqueado,
+            partidas,
+        )
 
         fecha_compra = fecha_compra or timezone.now()
         matriz = generar_matriz_carton_bingo()
@@ -504,7 +500,7 @@ def crear_carton_maestro_para_bingo(
         carton.full_clean(validate_unique=False, validate_constraints=False)
         carton.save(force_insert=True)
 
-        for partida in partidas:
+        for partida in partidas_elegibles:
             _crear_participacion_aplicacion(
                 carton=carton,
                 partida=partida,

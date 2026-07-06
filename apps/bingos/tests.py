@@ -96,6 +96,7 @@ from .services import (
     normalizar_estado_partida,
     normalizar_candidatos_desempate,
     normalizar_candidatos_desempate_participaciones,
+    obtener_partidas_elegibles_venta_carton,
     obtener_participaciones_hibridas_partida,
     obtener_participacion_carton_en_partida,
     obtener_balotas_disponibles_desempate,
@@ -490,13 +491,20 @@ class CartonMaestroBingoTests(SimpleTestCase):
             ),
         ]
 
-    def _crear_sin_base(self, partidas=None, error_participacion=None):
+    def _crear_sin_base(
+        self,
+        partidas=None,
+        error_participacion=None,
+        capturar_error=False,
+    ):
         partidas = self.partidas if partidas is None else partidas
 
         def asignar_pk(carton):
             carton.idcarton = 40
             return carton
 
+        carton = None
+        error = None
         with (
             patch(
                 "apps.bingos.services.transaction.atomic",
@@ -530,15 +538,21 @@ class CartonMaestroBingoTests(SimpleTestCase):
             lock_bingo.return_value.get.return_value = self.bingo
             consulta = lock_partidas.return_value.filter.return_value
             consulta.order_by.return_value = partidas
-            carton = crear_carton_maestro_para_bingo(
-                bingo=self.bingo,
-                jugador=self.jugador,
-                precio_pagado=Decimal("5.00"),
-                fecha_compra=self.fecha_compra,
-            )
+            try:
+                carton = crear_carton_maestro_para_bingo(
+                    bingo=self.bingo,
+                    jugador=self.jugador,
+                    precio_pagado=Decimal("5.00"),
+                    fecha_compra=self.fecha_compra,
+                )
+            except Exception as exc:
+                if not capturar_error:
+                    raise
+                error = exc
 
         return {
             "carton": carton,
+            "error": error,
             "atomic": atomic_mock,
             "lock_bingo": lock_bingo,
             "lock_partidas": lock_partidas,
@@ -603,6 +617,7 @@ class CartonMaestroBingoTests(SimpleTestCase):
             self.assertEqual(valores["fechacreacion"], self.fecha_compra)
             self.assertIsNone(valores["fechavalidacion"])
             self.assertNotIn("idcartonpartidabingo", valores)
+            self.assertNotIn("preciopagado", valores)
 
         self.assertEqual(partidas_creadas, self.partidas)
 
@@ -619,38 +634,162 @@ class CartonMaestroBingoTests(SimpleTestCase):
     def test_rechaza_bingo_sin_partidas(self):
         with self.assertRaisesMessage(
             CartonAsignacionError,
-            "el Bingo no tiene partidas",
+            "ya no quedan rondas futuras disponibles",
         ):
             validar_venta_carton_para_bingo(self.bingo, [])
 
-    def test_rechaza_si_una_partida_no_admite_venta(self):
-        estados_bloqueados = (
-            ESTADO_PARTIDA_EN_CURSO,
-            ESTADO_PARTIDA_PAUSADA,
-            ESTADO_PARTIDA_DESEMPATE,
-            ESTADO_PARTIDA_FINALIZADA,
-            ESTADO_PARTIDA_CANCELADA,
+    def test_venta_tardia_crea_solo_participaciones_elegibles_y_precio_unico(self):
+        partidas_no_elegibles = [
+            Partidabingo(
+                idpartidabingo=18,
+                idbingo=self.bingo,
+                nombreronda="Ronda finalizada",
+                estadopartida=ESTADO_PARTIDA_FINALIZADA,
+            ),
+            Partidabingo(
+                idpartidabingo=19,
+                idbingo=self.bingo,
+                nombreronda="Ronda en curso",
+                estadopartida=ESTADO_PARTIDA_EN_CURSO,
+            ),
+            Partidabingo(
+                idpartidabingo=20,
+                idbingo=self.bingo,
+                nombreronda="Ronda cancelada",
+                estadopartida=ESTADO_PARTIDA_CANCELADA,
+            ),
+        ]
+        resultado = self._crear_sin_base(
+            [*partidas_no_elegibles, *self.partidas]
         )
-        for estado in estados_bloqueados:
-            with self.subTest(estado=estado):
-                partida = Partidabingo(
-                    idpartidabingo=30,
-                    nombreronda="Bloqueada",
-                    estadopartida=estado,
-                )
-                with self.assertRaisesMessage(
-                    CartonAsignacionError,
-                    "todas las partidas del Bingo deben estar Programada o En espera",
-                ):
-                    validar_venta_carton_para_bingo(
-                        self.bingo,
-                        [self.partidas[0], partida],
-                    )
+
+        carton = resultado["carton"]
+        partidas_creadas = [
+            llamada.kwargs["idpartida"]
+            for llamada in resultado["crear_participacion"].call_args_list
+        ]
+        self.assertEqual(partidas_creadas, self.partidas)
+        self.assertEqual(carton.preciopagado, Decimal("5.00"))
+        for llamada in resultado["crear_participacion"].call_args_list:
+            self.assertNotIn("preciopagado", llamada.kwargs)
+
+    def test_ronda_en_espera_es_elegible_aunque_haya_una_finalizada(self):
+        finalizada = Partidabingo(
+            idpartidabingo=20,
+            idbingo=self.bingo,
+            estadopartida=ESTADO_PARTIDA_FINALIZADA,
+        )
+
+        self.assertEqual(
+            obtener_partidas_elegibles_venta_carton(
+                [finalizada, self.partidas[1]]
+            ),
+            [self.partidas[1]],
+        )
+
+    def test_sin_rondas_elegibles_no_crea_maestro_ni_participaciones(self):
+        partidas = [
+            Partidabingo(
+                idpartidabingo=pk,
+                idbingo=self.bingo,
+                nombreronda=f"Ronda {pk}",
+                estadopartida=estado,
+            )
+            for pk, estado in (
+                (18, ESTADO_PARTIDA_FINALIZADA),
+                (19, ESTADO_PARTIDA_EN_CURSO),
+                (20, ESTADO_PARTIDA_CANCELADA),
+            )
+        ]
+
+        resultado = self._crear_sin_base(
+            partidas,
+            capturar_error=True,
+        )
+
+        self.assertIsInstance(resultado["error"], CartonAsignacionError)
+        self.assertIn(
+            "ya no quedan rondas futuras disponibles",
+            str(resultado["error"]),
+        )
+        self.assertIsNone(resultado["carton"])
+        resultado["assign_pk"].assert_not_called()
+        resultado["codigo"].assert_not_called()
+        resultado["matriz"].assert_not_called()
+        resultado["full_clean"].assert_not_called()
+        resultado["save"].assert_not_called()
+        resultado["crear_participacion"].assert_not_called()
 
     def test_acepta_programada_y_en_espera(self):
         self.assertEqual(
             validar_venta_carton_para_bingo(self.bingo, self.partidas),
             self.partidas,
+        )
+
+    def test_ronda_nueva_incorpora_carton_vendido_tarde(self):
+        finalizada = Partidabingo(
+            idpartidabingo=20,
+            idbingo=self.bingo,
+            estadopartida=ESTADO_PARTIDA_FINALIZADA,
+        )
+        carton = self._crear_sin_base(
+            [finalizada, self.partidas[0]]
+        )["carton"]
+        nueva_ronda = Partidabingo(
+            idbingo=self.bingo,
+            nombreronda="Ronda creada después",
+            estadopartida=ESTADO_PARTIDA_PROGRAMADA,
+        )
+
+        def asignar_pk(partida):
+            partida.idpartidabingo = 30
+            return partida
+
+        with (
+            patch(
+                "apps.bingos.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            patch(
+                "apps.bingos.services.Bingo.objects.select_for_update"
+            ) as lock_bingo,
+            patch(
+                "apps.bingos.services.Carton.objects.select_for_update"
+            ) as lock_cartones,
+            patch(
+                "apps.bingos.services.CartonPartidaBingo.objects.select_for_update"
+            ) as lock_participaciones,
+            patch(
+                "apps.bingos.services.assign_next_integer_pk",
+                side_effect=asignar_pk,
+            ),
+            patch.object(Partidabingo, "save"),
+            patch(
+                "apps.bingos.services.CartonPartidaBingo.objects.create"
+            ) as crear_participacion,
+        ):
+            lock_bingo.return_value.get.return_value = self.bingo
+            consulta_cartones = lock_cartones.return_value.filter.return_value
+            consulta_cartones.order_by.return_value = [carton]
+            consulta_participaciones = (
+                lock_participaciones.return_value.filter.return_value
+            )
+            consulta_participaciones.values_list.return_value = ()
+
+            crear_ronda_con_participaciones(
+                self.bingo,
+                nueva_ronda,
+                fecha_creacion=self.fecha_compra,
+            )
+
+        crear_participacion.assert_called_once()
+        self.assertIs(
+            crear_participacion.call_args.kwargs["idcarton"],
+            carton,
+        )
+        self.assertIs(
+            crear_participacion.call_args.kwargs["idpartida"],
+            nueva_ronda,
         )
 
     def test_error_de_participacion_se_propaga_para_rollback_atomico(self):
@@ -1184,8 +1323,30 @@ class VentaCartonBingoInterfazTests(SimpleTestCase):
         with self.assertRaises(PermissionDenied):
             bingo_carton_nuevo(request_no_admin, self.bingo.pk)
 
-    def test_get_muestra_formulario_y_nombre_del_bingo(self):
+    def test_get_informa_rondas_incluidas_y_excluidas(self):
         request = self._request()
+        partidas = [
+            Partidabingo(
+                idpartidabingo=21,
+                idbingo=self.bingo,
+                estadopartida=ESTADO_PARTIDA_FINALIZADA,
+            ),
+            Partidabingo(
+                idpartidabingo=22,
+                idbingo=self.bingo,
+                estadopartida=ESTADO_PARTIDA_EN_CURSO,
+            ),
+            Partidabingo(
+                idpartidabingo=23,
+                idbingo=self.bingo,
+                estadopartida=ESTADO_PARTIDA_PROGRAMADA,
+            ),
+            Partidabingo(
+                idpartidabingo=24,
+                idbingo=self.bingo,
+                estadopartida=ESTADO_PARTIDA_EN_ESPERA,
+            ),
+        ]
         with (
             patch(
                 "apps.bingos.views.get_object_or_404",
@@ -1199,13 +1360,44 @@ class VentaCartonBingoInterfazTests(SimpleTestCase):
                 return_value=Jugador.objects.none(),
             ),
         ):
-            partidas_filter.return_value.count.return_value = 3
+            partidas_filter.return_value = partidas
             response = bingo_carton_nuevo(request, self.bingo.pk)
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Vender cartón para todo el Bingo")
         self.assertContains(response, self.bingo.titulobingo)
-        self.assertContains(response, "3 partidas actuales")
+        self.assertContains(response, "participará en 2 rondas futuras")
+        self.assertContains(response, "Las 2 rondas que ya están en curso")
+        self.assertContains(response, "Rondas futuras incluidas")
+        self.assertContains(response, "Rondas no incluidas")
+
+    def test_get_sin_elegibles_informa_que_no_quedan_rondas_futuras(self):
+        request = self._request()
+        partidas = [
+            Partidabingo(
+                idpartidabingo=21,
+                idbingo=self.bingo,
+                estadopartida=ESTADO_PARTIDA_FINALIZADA,
+            )
+        ]
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter",
+                return_value=partidas,
+            ),
+            patch(
+                "apps.bingos.forms.Jugador.objects.order_by",
+                return_value=Jugador.objects.none(),
+            ),
+        ):
+            response = bingo_carton_nuevo(request, self.bingo.pk)
+
+        self.assertContains(response, "No quedan rondas futuras disponibles")
+        self.assertContains(response, "disabled")
 
     def test_post_valido_llama_servicio_redirige_y_muestra_resumen(self):
         request = self._request(
@@ -1255,7 +1447,7 @@ class VentaCartonBingoInterfazTests(SimpleTestCase):
             any(
                 "cartón maestro" in mensaje
                 and "3 participaciones" in mensaje
-                and "cada ronda" in mensaje
+                and "rondas futuras elegibles" in mensaje
                 for mensaje in mensajes
             )
         )
@@ -1266,7 +1458,7 @@ class VentaCartonBingoInterfazTests(SimpleTestCase):
             data={"idjugador": "4", "preciopagado": "5.00"},
         )
         form = self._form_valido(request.POST)
-        error = "Todas las partidas deben estar Programada o En espera."
+        error = "No quedan rondas futuras disponibles."
         with (
             patch(
                 "apps.bingos.views.get_object_or_404",
@@ -1294,7 +1486,7 @@ class VentaCartonBingoInterfazTests(SimpleTestCase):
                 return_value=HttpResponse(status=200),
             ),
         ):
-            partidas_filter.return_value.count.return_value = 3
+            partidas_filter.return_value = []
             response = bingo_carton_nuevo(request, self.bingo.pk)
 
         self.assertEqual(response.status_code, 200)

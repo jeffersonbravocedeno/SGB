@@ -13,9 +13,18 @@
     <a class="btn btn-outline-light" href="{% url 'bingos:detalle' bingo.idbingo %}">Volver</a>
 </section>
 
+{% if total_partidas_elegibles %}
 <div class="alert alert-info" role="note">
-    Se creará un solo cartón maestro, con un único código, matriz y precio. El cartón tendrá una participación en cada una de las {{ total_partidas }} partida{{ total_partidas|pluralize:"s" }} actual{{ total_partidas|pluralize:"es" }} del Bingo y se cobrará una sola vez.
+    <strong>El nuevo cartón participará en {{ total_partidas_elegibles }} ronda{{ total_partidas_elegibles|pluralize:"s" }} futura{{ total_partidas_elegibles|pluralize:"s" }}.</strong>
+    Se creará un solo cartón, con un único código, matriz y precio, y se cobrará una sola vez.
+    {% if total_partidas_no_elegibles %}<div class="mt-2">Las {{ total_partidas_no_elegibles }} ronda{{ total_partidas_no_elegibles|pluralize:"s" }} que ya están en curso, finalizadas, canceladas o no disponibles para venta no se incluirán.</div>{% endif %}
 </div>
+{% else %}
+<div class="alert alert-warning" role="alert">
+    <strong>No quedan rondas futuras disponibles.</strong>
+    Solo se puede vender un cartón cuando existe al menos una ronda Programada o En espera.
+</div>
+{% endif %}
 
 <form class="content-panel" method="post" novalidate>
     {% csrf_token %}
@@ -36,6 +45,16 @@
                 <dd>{{ total_partidas }}</dd>
             </div>
             <div>
+                <dt>Rondas futuras incluidas</dt>
+                <dd>{{ total_partidas_elegibles }}</dd>
+            </div>
+            {% if total_partidas_no_elegibles %}
+            <div>
+                <dt>Rondas no incluidas</dt>
+                <dd>{{ total_partidas_no_elegibles }}</dd>
+            </div>
+            {% endif %}
+            <div>
                 <dt>Precio de referencia</dt>
                 <dd>${{ bingo.preciocarton|floatformat:2 }}</dd>
             </div>
@@ -55,7 +74,7 @@
 
     <div class="form-actions">
         <a class="btn btn-outline-secondary" href="{% url 'bingos:detalle' bingo.idbingo %}">Cancelar</a>
-        <button class="btn btn-primary" type="submit">Vender cartón para todo el Bingo</button>
+        <button class="btn btn-primary" type="submit"{% if not total_partidas_elegibles %} disabled{% endif %}>Vender cartón para todo el Bingo</button>
     </div>
 </form>
 {% endblock %}
