@@ -1,378 +1,530 @@
-# Contrato de esquema PostgreSQL para cartones híbridos de SIAB
+# Contrato de Esquema PostgreSQL para Cartones Híbridos
 
-Fecha: 2026-07-05  
-Fase: 0.6 — confirmación física de PostgreSQL  
-Estado: **BLOQUEADA POR CONFIGURACIÓN ACTIVA NO SEGURA PARA ESTA FASE**  
-Fuentes: `docs/AUDITORIA_TECNICA_SIAB.md` y
-`docs/PLAN_CORRECCION_HIBRIDA_SIAB.md`
+Fecha de inspección: 2026-07-05
 
-## Alcance y principio de evidencia
+Fase: 0.6B — inspección física en base de ensayo
 
-El objetivo de esta fase era inspeccionar exclusivamente una base de ensayo
-autorizada. Antes de abrir cualquier conexión se revisaron localmente
-`config/settings.py` y solo la variable `DB_NAME` de la configuración activa,
-sin mostrar el contenido de `.env`, usuario, contraseña, host completo ni
-cadena de conexión.
-
-La configuración activa resultó apuntar a `bingo`, identificada por el Prompt
-Maestro como la base principal real. La regla de seguridad ordena detenerse en
-ese punto. En consecuencia:
-
-- no se abrió una conexión PostgreSQL;
-- no se ejecutó `psql` ni un cursor Django;
-- no se consultaron `information_schema`, `pg_catalog`, `pg_indexes` ni
-  `pg_constraint`;
-- no se ejecutaron conteos ni verificaciones de relaciones;
-- no se sustituyó `DB_NAME` temporalmente;
-- no se cambió `.env`, `settings.py` ni otra configuración;
-- no se creó ni verificó la existencia de una base de ensayo;
-- no se ejecutó ningún script SQL.
-
-Este documento separa estrictamente las expectativas del código de los hechos
-físicos. Todo campo marcado como “no confirmado” requiere una inspección futura
-segura; no es un resultado negativo ni positivo sobre PostgreSQL.
+Estado: completada en modo de solo lectura
 
 ## 1. Resultado de seguridad de conexión
 
-### 1.1 Resultado
-
 | Control | Resultado |
 |---|---|
-| Motor configurado | `django.db.backends.postgresql` |
-| Nombre de base en la configuración activa | `bingo` |
-| ¿Es la base de ensayo autorizada? | No |
-| ¿Es la base principal real prohibida en esta fase? | Sí |
-| ¿Se abrió conexión? | No |
-| ¿Se ejecutaron consultas SQL? | No |
-| Resultado de la fase física | Bloqueada antes de conectar |
+| Settings usados | `config.settings_ensayo_lectura` |
+| Motor detectado | `django.db.backends.postgresql` |
+| Base configurada y confirmada por PostgreSQL | `bingo_ensayo_hibridos` |
+| Base real `bingo` | No fue usada, consultada ni modificada |
+| Usuario configurado y usuario de sesión | `siab_auditor` |
+| Perfil de privilegios observado | 28 tablas de `public` con `SELECT`; no se observaron otros privilegios de tabla ni privilegios delegables |
+| Esquema actual | `public` |
+| `transaction_read_only` | `on` |
+| `default_transaction_read_only` | `on` |
+| Check inicial | Correcto: `System check identified no issues (0 silenced)` |
+| PostgreSQL alterado | No |
 
-La base inspeccionada es **ninguna**. El nombre `bingo` solo se obtuvo leyendo
-la clave local de configuración; no se consultó la base con ese nombre.
+Antes de abrir el primer cursor se cargó el settings activo y se verificó, sin
+mostrar secretos, que el nombre era exactamente `bingo_ensayo_hibridos`, el
+motor era PostgreSQL, el usuario era `siab_auditor` y la opción
+`default_transaction_read_only=on` estaba presente. El perfil no expuso una
+contraseña en `DATABASES`.
 
-### 1.2 Método de validación de seguridad
+El primer SELECT de la sesión confirmó nuevamente el nombre de la base, el
+usuario y ambos indicadores de solo lectura. No se leyó ningún archivo `.env`,
+archivo de contraseñas, token o cadena de conexión.
 
-1. Se confirmó estáticamente en `config/settings.py` que Django usa el backend
-   PostgreSQL y obtiene el nombre desde `DB_NAME`.
-2. Se leyó exclusivamente el valor de la clave `DB_NAME` mediante un filtro
-   local que no imprime ninguna otra variable.
-3. Al obtener `DB_NAME=bingo`, se aplicó la condición de bloqueo del encargo.
-4. No se intentó descubrir bases mediante `pg_database`, porque eso requeriría
-   conectarse al destino prohibido o a otra base no confirmada.
+Se ejecutaron **22 SELECT de auditoría**:
 
-No fue posible validar `current_database()` ni
-`transaction_read_only`, porque ambas comprobaciones requieren una conexión y
-la configuración no identifica una base segura.
+- 1 preflight de base, usuario, esquema y modo de transacción;
+- 1 descubrimiento de tablas;
+- 7 consultas de columnas, identidad, constraints, índices y privilegios;
+- 13 consultas de conteos agregados y distribuciones de estado.
 
-### 1.3 Dato exacto necesario para continuar
+Un primer intento de conexión desde el entorno restringido terminó antes de
+abrir la sesión. La inspección continuó únicamente después de autorizar el
+acceso al PostgreSQL de ensayo. No se ejecutaron DDL, DML, migraciones, scripts
+SQL ni pruebas contra PostgreSQL.
 
-El usuario debe preparar, fuera de este cambio documental, un perfil o sesión
-de entorno cuya configuración activa resuelva inequívocamente a una base de
-ensayo existente. Para continuar se necesita:
+## 2. Tablas físicas encontradas
 
-1. el nombre exacto de la base autorizada, esperado por ejemplo como
-   `bingo_ensayo_hibridos`;
-2. confirmación de que el perfil activo de Django ya muestra ese nombre en
-   `DB_NAME` antes de conectar, sin que el agente edite `.env`;
-3. confirmación de que la base existe y es una copia de ensayo, no un alias ni
-   redirección hacia `bingo`;
-4. un rol PostgreSQL preconfigurado con permisos de solo lectura sobre
-   catálogos y tablas necesarias, sin permisos DDL/DML;
-5. autorización para ejecutar los SELECT de diagnóstico de esta fase mediante
-   ese perfil.
+PostgreSQL contiene 28 tablas en `public`. De ellas, **13 son relevantes** para
+el alcance funcional solicitado.
 
-No deben enviarse contraseñas ni cadenas de conexión en el chat. Es suficiente
-activar el perfil seguro en el entorno y comunicar su nombre/base efectiva.
-La inspección futura deberá comenzar verificando
-`current_database() = 'bingo_ensayo_hibridos'` y
-`transaction_read_only = 'on'`; si alguna condición falla, volverá a detenerse.
-
-## 2. Tablas reales encontradas
-
-### 2.1 Resultado físico
-
-No se confirmó ninguna tabla física en esta fase, porque no hubo conexión a
-PostgreSQL. No es correcto afirmar que una tabla existe o no existe basándose
-solo en los modelos Django o en documentos de fases anteriores.
-
-### 2.2 Mapeo esperado desde Django, no confirmado físicamente
-
-Esta tabla sirve únicamente como lista de búsqueda para una próxima inspección.
-Los nombres `db_table` son expectativas del código, no “tablas encontradas”.
-
-| Concepto solicitado | Modelo Django | `db_table` esperado por el código | Esquema real | Estado físico |
-|---|---|---|---|---|
-| Bingo | `Bingo` | `bingo` | No confirmado | No inspeccionado |
-| Ronda/partida | `Partidabingo` | `partidabingo` | No confirmado | No inspeccionado |
-| Cartón | `Carton` | `carton` | No confirmado | No inspeccionado |
-| Participación por ronda | `CartonPartidaBingo` | `carton_partida_bingo` | No confirmado | No inspeccionado |
-| Jugador | `Jugador` | `jugador` | No confirmado | No inspeccionado |
-| Socio | `Socio` | `socio` | No confirmado | No inspeccionado |
-| Pago de préstamo | `Pago` | `pago` | No confirmado | No inspeccionado |
-| Préstamo | `Prestamo` | `prestamo` | No confirmado | No inspeccionado |
-| Ahorro | `Ahorro` | `ahorro` | No confirmado | No inspeccionado |
-| Aporte semanal | `Aportesemanal` | `aportesemanal` | No confirmado | No inspeccionado |
-
-La solicitud menciona nombres como `partida_bingo` y `aporte_semanal`, pero el
-código espera `partidabingo` y `aportesemanal`. Solo PostgreSQL puede confirmar
-el nombre real y el esquema —por ejemplo `public`—. No se asumió ninguna de
-estas variantes.
-
-## 3. Contrato físico actual de cartones híbridos
-
-### 3.1 Respuestas obligatorias
-
-| Pregunta | Respuesta física de esta fase | Expectativa del código |
-|---|---|---|
-| ¿Existe `carton.idbingo`? | No confirmado | Sí, FK obligatoria en `Carton` |
-| ¿Existe `carton.idpartida`? | No confirmado | Sí, FK histórica opcional |
-| ¿`carton.idpartida` acepta `NULL`? | No confirmado | El modelo lo permite para maestros nuevos |
-| ¿Existe `carton_partida_bingo` o equivalente? | No confirmado | El ORM espera exactamente `carton_partida_bingo` |
-| ¿La participación referencia cartón? | No confirmado | `idcarton` hacia `Carton` |
-| ¿La participación referencia ronda? | No confirmado | `idpartida` hacia `Partidabingo` |
-| ¿Existe `UNIQUE(idcarton,idpartida)`? | No confirmado | Declarado como `unique_together` y esperado físicamente |
-| ¿Hay índice para cartones por Bingo? | No confirmado | Recomendado `carton(idbingo)` |
-| ¿Hay índice para participaciones por ronda? | No confirmado | Recomendado `carton_partida_bingo(idpartida)` |
-| ¿Hay índice para participaciones por cartón? | No confirmado | Puede cubrirlo el UNIQUE con prefijo `idcarton` |
-
-### 3.2 Claves primarias esperadas, no confirmadas
-
-| Tabla esperada | PK esperada por Django | Tipo físico esperado |
-|---|---|---|
-| `bingo` | `idbingo` | `integer` manual según documentación previa |
-| `partidabingo` | `idpartidabingo` | `integer` manual según documentación previa |
-| `carton` | `idcarton` | `integer` manual según documentación previa |
-| `carton_partida_bingo` | `idcartonpartidabingo` | `integer` autogenerado compatible con `AutoField`/IDENTITY |
-
-La palabra “esperada” es esencial: no se inspeccionó `pg_constraint`, defaults,
-secuencias ni atributos IDENTITY.
-
-### 3.3 FK, UNIQUE, CHECK e índices
-
-No se confirmó el nombre, definición, validación ni existencia de ninguna PK,
-FK, UNIQUE, CHECK o índice. La auditoría y el plan registran como contrato
-deseado:
-
-- FK `carton.idbingo → bingo.idbingo`;
-- FK histórica `carton.idpartida → partidabingo.idpartidabingo`;
-- FK de participación hacia cartón y ronda;
-- FK compuestas que obliguen a compartir el mismo Bingo;
-- UNIQUE de cartón y ronda;
-- CHECK de estados, índice de victoria y origen;
-- índices por Bingo, ronda y estado.
-
-Estas son recomendaciones pendientes de contraste, no hallazgos físicos de la
-Fase 0.6.
-
-## 4. Diagnóstico de integridad
-
-### 4.1 Consultas de datos
-
-No se ejecutó ningún SELECT de conteo o relación. Por tanto, los siguientes
-resultados permanecen no evaluados:
-
-| Diagnóstico solicitado | Resultado |
-|---|---|
-| Cantidad de Bingos | No evaluado |
-| Cantidad de rondas | No evaluado |
-| Cantidad de cartones | No evaluado |
-| Cantidad de participaciones | No evaluado |
-| Cartones con `idbingo` nulo | No evaluado |
-| Participaciones sin cartón válido | No evaluado |
-| Participaciones sin ronda válida | No evaluado |
-| Duplicados `(idcarton,idpartida)` | No evaluado |
-| Cartones maestros sin participaciones | No evaluado |
-| Rondas sin participaciones para maestros existentes | No evaluado |
-
-### 4.2 Riesgos reales confirmados en esta fase
-
-El único riesgo confirmado directamente es operativo: la configuración activa
-apunta a la base real, por lo que ejecutar el diagnóstico previsto habría
-violado el aislamiento exigido.
-
-Permanecen como riesgos previamente documentados, pero no comprobados
-físicamente ahora:
-
-- posible ausencia de `carton.idbingo` o `carton_partida_bingo`;
-- ausencia de UNIQUE y FK compuestas;
-- maestros sin participación en rondas posteriores;
-- duplicados o huérfanos;
-- divergencia entre el esquema de ensayo documentado y la base activa.
-
-No se inventan cantidades a partir de la documentación histórica. Los conteos
-de otras fases no sustituyen una inspección actual autorizada.
-
-## 5. Comparación con la regla de negocio SIAB
-
-| Regla de negocio | Soporte en código | Soporte físico confirmado | Conclusión de esta fase |
+| Esquema | Tabla física | Propósito físico inferido | Relación con SIAB / modelo Django |
 |---|---|---|---|
-| Un cartón maestro pertenece a un Bingo | `Carton.idbingo` y servicio de venta | No confirmado | Contrato ORM listo; PostgreSQL pendiente de inspección |
-| Un cartón participa en varias rondas | `CartonPartidaBingo` | No confirmado | Diseño presente; capacidad física no demostrada |
-| El mismo cartón gana varias rondas | Estado/índice por participación | No confirmado | Lógica disponible; constraints y datos no comprobados |
-| No hay dos participaciones en la misma ronda | `unique_together` y validaciones | No confirmado | Falta demostrar UNIQUE físico |
-| El valor se registra una vez por cartón y Bingo | `preciopagado` vive en `Carton` | No confirmado | Diseño lógico correcto; estados económicos aún requieren decisión |
-| La liquidación no suma desde participaciones | Resumen general deduplica; reportes por ronda aún presentan subtotales riesgosos | No depende de una columna de participación | Pendiente de código en reportes |
+| `public` | `bingo` | Evento principal, precio base y premio mayor | `apps.bingos.models.Bingo`; correspondencia identificada |
+| `public` | `partidabingo` | Ronda de un Bingo, premio y ganador | `apps.bingos.models.Partidabingo`; correspondencia identificada |
+| `public` | `carton` | Cartón vendido/maestro, jugador y precio pagado | `apps.bingos.models.Carton`; correspondencia identificada |
+| `public` | `carton_partida_bingo` | Participación y resultado de un cartón en una ronda | `apps.bingos.models.CartonPartidaBingo`; correspondencia identificada |
+| `public` | `jugador` | Cuenta de jugador, opcionalmente ligada a socio | `apps.jugadores.models.Jugador`; correspondencia identificada |
+| `public` | `socio` | Socio de la cooperativa | `apps.socios.models.Socio`; correspondencia identificada |
+| `public` | `pago` | Pago de una `deuda`, no de un cartón | Usa el mismo `db_table` que `apps.finanzas.models.Pago`, pero las columnas y FK físicas **no coinciden** con ese modelo |
+| `public` | `prestamo` | Préstamo de un socio | `apps.finanzas.models.Prestamo`; correspondencia identificada |
+| `public` | `ahorro` | Ahorro de un socio asociado a un Bingo | `apps.finanzas.models.Ahorro`; correspondencia identificada |
+| `public` | `aportesemanal` | Aporte semanal, regalo y ronda opcional | `apps.finanzas.models.Aportesemanal`; correspondencia identificada |
+| `public` | `metodopago` | Catálogo de métodos de pago | `apps.configuracion.models.Metodopago`; no está referenciado por la tabla física `pago` actual |
+| `public` | `regalo` | Regalo de aportes semanales | `apps.configuracion.models.Regalo`; no es una tabla específica de premios de Bingo |
+| `public` | `sesionjuego` | Sesión técnica de jugador y ronda | `apps.bingos.models.Sesionjuego`; correspondencia identificada |
 
-El esquema por sí solo no garantiza la liquidación correcta. Aunque una
-participación no tenga precio, una consulta puede repetir
-`Carton.preciopagado` al unirla con varias rondas. La regla debe mantenerse en
-servicios y reportes además de la integridad física.
+No existe una tabla física específica llamada `premio` o `gasto`. Los premios
+del Bingo están representados por columnas de `bingo` y `partidabingo`.
 
-## 6. Brechas detectadas
+La divergencia de `pago` es concreta: PostgreSQL expone `id_pago`, `id_deuda`,
+`fecha_pago`, `monto_pagado`, `metodo_pago` y `observacion`, con FK a `deuda`.
+El modelo Django espera `idpago`, `idprestamo`, `idmetodopago`, `montopagado`,
+`numeroreferencia`, fechas, comprobante y `estadopago`. Por tanto, esa tabla no
+debe interpretarse como soporte de pagos de cartones.
 
-| Área | Clasificación | Justificación |
+## 3. Estructura de Bingo, rondas, cartones y participaciones
+
+Todos los objetos de esta sección pertenecen al esquema `public`.
+
+### 3.1 `bingo`
+
+| Columna | Tipo | NULL | Default | Clave / regla |
+|---|---|---:|---|---|
+| `idbingo` | `integer` | No | Sin default | PK; entero asignado por la aplicación |
+| `titulobingo` | `varchar(150)` | No | Sin default | — |
+| `fechaprogramadabingo` | `timestamp without time zone` | No | Sin default | — |
+| `tipobingo` | `varchar(20)` | No | Sin default | — |
+| `lugarbingo` | `varchar(255)` | Sí | Sin default | — |
+| `urlsesionbingo` | `varchar(255)` | Sí | Sin default | — |
+| `preciocarton` | `numeric(10,2)` | No | Sin default | Sin CHECK monetario |
+| `premiomayor` | `numeric(10,2)` | No | Sin default | Sin CHECK monetario |
+| `descripcionpremiomayor` | `varchar(100)` | No | Sin default | — |
+| `estadobingo` | `varchar(20)` | No | Sin default | CHECK: `Programado`, `En Curso`, `Finalizado`, `Cancelado` |
+| `rutaimagenpremiomayor` | `varchar(300)` | Sí | Sin default | — |
+| `urlvideopromocional` | `varchar(300)` | Sí | Sin default | — |
+| `descripcionpremios` | `varchar(500)` | Sí | Sin default | — |
+
+Constraints: PK `bingo_pkey` y CHECK `chk_bingo_estadobingo`.
+
+Índices: `bingo_pkey (idbingo)`.
+
+### 3.2 `partidabingo`
+
+| Columna | Tipo | NULL | Default | Clave / regla |
+|---|---|---:|---|---|
+| `idpartidabingo` | `integer` | No | Sin default | PK; entero asignado por la aplicación |
+| `idbingo` | `integer` | No | Sin default | FK a `bingo(idbingo)` |
+| `idjugadorganador` | `integer` | Sí | Sin default | FK a `jugador(idjugador)` |
+| `nombreronda` | `varchar(100)` | No | Sin default | — |
+| `valorefectivo` | `numeric(10,2)` | No | Sin default | Premio efectivo; sin CHECK monetario |
+| `premiomaterial` | `varchar(150)` | No | Sin default | Descripción de premio material |
+| `estadopartida` | `varchar(20)` | No | Sin default | CHECK de siete estados admitidos |
+| `bolascantadas` | `text` | No | Sin default | — |
+| `ultimabola` | `integer` | No | Sin default | — |
+| `haydesempate` | `boolean` | Sí | Sin default | — |
+| `idbingadores` | `text` | Sí | Sin default | Dato de compatibilidad/desempate |
+| `bolamayordesempate` | `integer` | Sí | Sin default | — |
+| `horainicio` | `timestamp without time zone` | No | Sin default | — |
+| `horafin` | `timestamp without time zone` | Sí | Sin default | — |
+
+Constraints:
+
+- PK `partidabingo_pkey`;
+- FK `fk_partidabingo_bingo` y `fk_partidabingo_jugador`;
+- UNIQUE `uq_partidabingo_idpartida_idbingo`
+  `(idpartidabingo, idbingo)`, necesario como destino de la FK compuesta de
+  participaciones;
+- CHECK `chk_partidabingo_estadopartida` para `Programada`, `En espera`,
+  `En curso`, `Pausada`, `Desempate`, `Finalizada` y `Cancelada`.
+
+Índices:
+
+- PK por `idpartidabingo`;
+- `idx_partidabingo_idbingo (idbingo)`;
+- índice UNIQUE por `(idpartidabingo, idbingo)`.
+
+### 3.3 `carton`
+
+| Columna | Tipo | NULL | Default | Clave / regla |
+|---|---|---:|---|---|
+| `idcarton` | `integer` | No | Sin default | PK; entero asignado por la aplicación |
+| `idjugador` | `integer` | Sí | Sin default | FK a `jugador(idjugador)` |
+| `idpartida` | `integer` | Sí | Sin default | FK opcional a `partidabingo(idpartidabingo)` |
+| `codigocarton` | `varchar(30)` | No | Sin default | UNIQUE global |
+| `matriznumeros` | `text` | No | Sin default | — |
+| `indicevictoria` | `integer` | Sí | `0` | Resultado histórico/compatibilidad |
+| `preciopagado` | `numeric(10,2)` | Sí | Sin default | CHECK `>= 0`; no confirma cobro |
+| `fechacompra` | `timestamp without time zone` | Sí | Sin default | — |
+| `estadocarton` | `varchar(20)` | No | Sin default | Sin CHECK de estados |
+| `idbingo` | `integer` | No | Sin default | FK a `bingo(idbingo)` |
+
+Constraints:
+
+- PK `carton_pkey`;
+- FK `fk_carton_bingo`, `fk_carton_jugador` y
+  `fk_carton_partidabingo`;
+- UNIQUE `uq_carton_codigocarton (codigocarton)`;
+- UNIQUE `uq_carton_idcarton_idbingo (idcarton, idbingo)`, necesario como
+  destino de la FK compuesta de participaciones;
+- CHECK `chk_carton_preciopagado (preciopagado >= 0)`.
+
+Índices:
+
+- PK por `idcarton`;
+- `idx_carton_idbingo (idbingo)`;
+- `idx_carton_idjugador (idjugador)`;
+- índices UNIQUE por `codigocarton` y `(idcarton, idbingo)`.
+
+No existe índice específico por `idpartida`. Esto no afecta al maestro híbrido,
+pero sí puede afectar consultas del flujo histórico si ese flujo se conserva.
+
+### 3.4 `carton_partida_bingo`
+
+| Columna | Tipo | NULL | Default | Clave / regla |
+|---|---|---:|---|---|
+| `idcartonpartidabingo` | `integer` | No | IDENTITY `BY DEFAULT` | PK |
+| `idcarton` | `integer` | No | Sin default | Parte de FK compuesta a cartón |
+| `idpartida` | `integer` | No | Sin default | Parte de FK compuesta a ronda |
+| `idbingo` | `integer` | No | Sin default | Obliga a que cartón y ronda pertenezcan al mismo Bingo |
+| `estado_participacion` | `varchar(20)` | No | Sin default | CHECK de estado |
+| `indicevictoria` | `integer` | Sí | Sin default | CHECK: NULL o mayor que cero |
+| `es_asignacion_original` | `boolean` | No | `false` | Coherente con `origen_asignacion` por CHECK |
+| `origen_asignacion` | `varchar(24)` | No | Sin default | CHECK de origen |
+| `motivoestado` | `varchar(255)` | Sí | Sin default | — |
+| `fechacreacion` | `timestamp without time zone` | No | `CURRENT_TIMESTAMP` | — |
+| `fechavalidacion` | `timestamp without time zone` | Sí | Sin default | — |
+
+Constraints:
+
+- PK `carton_partida_bingo_pkey`;
+- UNIQUE `uq_cpb_carton_partida (idcarton, idpartida)`;
+- FK compuesta `fk_cpb_carton_bingo (idcarton, idbingo) →
+  carton(idcarton, idbingo)`;
+- FK compuesta `fk_cpb_partida_bingo (idpartida, idbingo) →
+  partidabingo(idpartidabingo, idbingo)`;
+- CHECK `chk_cpb_estado`: `Pendiente`, `En juego`, `Cerrado`, `Ganador` o
+  `Anulado`;
+- CHECK `chk_cpb_indice`: índice NULL o positivo;
+- CHECK `chk_cpb_origen`: `Historica original` o `Aplicacion`;
+- CHECK `chk_cpb_origen_original`: coherencia entre el booleano y el origen.
+
+Todas las constraints estaban validadas y ninguna era diferible.
+
+Índices:
+
+- PK por `idcartonpartidabingo`;
+- UNIQUE por `(idcarton, idpartida)`; su prefijo también sirve para búsquedas
+  por cartón;
+- `idx_cpb_idpartida (idpartida)`;
+- `idx_cpb_idbingo (idbingo)`;
+- `idx_cpb_partida_estado (idpartida, estado_participacion)`.
+
+### 3.5 Suficiencia de índices solicitados
+
+| Consulta | Evidencia | Resultado |
 |---|---|---|
-| Motor PostgreSQL configurado | lista | Confirmado estáticamente, sin conexión |
-| Conexión aislada a ensayo | requiere decisión del usuario | La configuración activa apunta a `bingo` |
-| Nombres y esquemas físicos | requiere decisión del usuario | No pueden consultarse hasta activar un perfil seguro |
-| `Carton.idbingo` en ORM | parcialmente lista | Existe en código; soporte físico no confirmado |
-| `Carton.idpartida` nullable | parcialmente lista | El modelo lo permite; nulabilidad física no confirmada |
-| Tabla de participaciones en ORM | parcialmente lista | Modelo presente; tabla física no confirmada |
-| UNIQUE cartón-ronda | parcialmente lista | Contrato ORM presente; constraint físico no confirmado |
-| FK de mismo Bingo | parcialmente lista | Validación de servicio y propuesta existentes; catálogo no inspeccionado |
-| Índices híbridos | requiere decisión del usuario | Primero debe comprobarse si ya existen equivalentes |
-| Venta única por Bingo | pendiente de código | Persisten rutas heredadas que escriben por ronda |
-| Participaciones para rondas nuevas | pendiente de código | `partida_nueva()` no sincroniza maestros existentes |
-| Desempate por participación | pendiente de código | Servicios existen, rutas todavía usan flujo legado |
-| Recaudación única en reportes | pendiente de código | Los subtotales por ronda pueden repetir el precio |
-| Cambios físicos concretos | requiere decisión del usuario | No se puede clasificar como pendiente de SQL sin inspección |
-| SQL de expansión o reparación | pendiente de SQL PostgreSQL solo si el diagnóstico demuestra faltantes | No se crea ni ejecuta en esta fase |
-| Tratamiento de cartones históricos | requiere decisión del usuario | No deben ampliarse ni transformarse automáticamente |
+| Cartones por Bingo | `idx_carton_idbingo` | Cubierta |
+| Participaciones por cartón | UNIQUE con prefijo `idcarton` | Cubierta |
+| Participaciones por ronda | `idx_cpb_idpartida` | Cubierta |
+| Cartones por jugador | `idx_carton_idjugador` | Cubierta |
+| Resultados de una ronda | `idx_cpb_partida_estado` | Cubierta para filtrar ronda/estado |
+| Rondas por Bingo | `idx_partidabingo_idbingo` | Cubierta |
 
-No se clasifica como “pendiente de SQL PostgreSQL” ninguna estructura
-específica hasta comprobar que realmente falta. Hacerlo antes podría duplicar
-constraints o alterar un esquema ya compatible.
+## 4. Contrato físico actual de cartones híbridos
 
-## 7. Recomendaciones técnicas
+| Pregunta | Categoría | Evidencia física |
+|---|---|---|
+| ¿Cartón pertenece directamente a Bingo? | **Confirmado.** | `carton.idbingo` es NOT NULL y FK a `bingo` |
+| ¿Cartón puede referenciar una partida? | **Confirmado.** | Existe `carton.idpartida` con FK a `partidabingo` |
+| ¿La referencia a partida admite NULL? | **Confirmado.** | `carton.idpartida` es nullable; los 3 cartones inspeccionados la tienen NULL |
+| ¿El uso de `idpartida` parece histórico? | **Parcialmente confirmado.** | El ORM lo documenta como compatibilidad y no se usa en los 3 cartones de ensayo; la columna sigue físicamente activa |
+| ¿Existe participación por ronda? | **Confirmado.** | Existe `carton_partida_bingo` con FK coherentes a cartón, ronda y Bingo |
+| ¿Puede un cartón tener varias participaciones? | **Confirmado.** | La unicidad es por cartón+ronda; los 3 cartones tienen participación en 3 rondas |
+| ¿Se impiden participaciones duplicadas? | **Confirmado.** | UNIQUE físico `(idcarton,idpartida)` y 0 duplicados observados |
+| ¿Puede un mismo cartón ganar varias rondas? | **Confirmado.** | El estado e índice viven en cada participación; no existe unicidad global por cartón. No había ganadores en los datos de ensayo |
+| ¿Puede registrarse el valor una sola vez por Bingo? | **Parcialmente confirmado.** | `preciopagado` vive en `carton` y no en participaciones, pero admite NULL y no existe confirmación de pago |
+| ¿La estructura evita por sí sola duplicar recaudación en reportes? | **Requiere corrección.** | Un JOIN a participaciones repite el precio del maestro una vez por ronda; 3 cartones presentan ese riesgo |
 
-### 7.1 Prioridad 0: desbloquear una conexión segura
+El esquema híbrido central está **confirmado físicamente**. Las FK compuestas
+son especialmente importantes: impiden registrar una participación con un
+cartón y una ronda de Bingos diferentes.
 
-1. Activar un perfil de Django que resuelva a
-   `bingo_ensayo_hibridos` sin editar el repositorio durante la inspección.
-2. Usar un rol de solo lectura.
-3. Verificar como primeras consultas `current_database()` y
-   `transaction_read_only`.
-4. Abortar si el nombre no coincide exactamente o si la sesión admite
-   escritura.
-5. Registrar las consultas y resultados sin credenciales.
+La estructura de participación registra estado, índice de victoria, origen,
+motivo y fechas. No registra una cantidad de aciertos, valor de participación,
+premio monetario propio, pago ni gasto. “Ganador” se representa mediante
+`estado_participacion='Ganador'`, no mediante un booleano separado.
 
-### 7.2 Inspección futura de solo lectura
+## 5. Diagnóstico de integridad de datos
 
-Una vez desbloqueada, la inspección debe consultar en este orden:
+Solo se obtuvieron conteos agregados. No se mostraron socios, jugadores,
+cuentas, pagos, códigos de cartón, matrices ni otros datos personales.
 
-1. `information_schema.tables` para descubrir nombres y esquemas reales;
-2. `information_schema.columns` para tipos, nulabilidad y defaults;
-3. `pg_constraint` y `pg_get_constraintdef()` para PK, FK, UNIQUE y CHECK;
-4. `pg_indexes`/`pg_catalog` para índices e IDENTITY;
-5. SELECT de conteos y relaciones usando solo nombres previamente descubiertos;
-6. comparación con `apps/bingos/models.py` y el contrato del plan.
+| Diagnóstico | Resultado |
+|---|---:|
+| Bingos | 1 |
+| Rondas/partidas | 3 |
+| Cartones | 3 |
+| Participaciones | 9 |
+| Cartones con Bingo nulo | 0 |
+| Cartones sin jugador | 0 |
+| Cartones maestros (`idpartida IS NULL`) | 3 |
+| Cartones históricos (`idpartida IS NOT NULL`) | 0 |
+| Participaciones sin cartón válido | 0 |
+| Participaciones sin ronda válida | 0 |
+| Participaciones sin Bingo válido | 0 |
+| Pares cartón+ronda duplicados | 0 |
+| Filas duplicadas excedentes | 0 |
+| Cartones maestros sin participaciones | 0 |
+| Rondas incompletas | 0 |
+| Participaciones faltantes en rondas | 0 |
+| Cartones ligados a ronda sin Bingo | 0 |
+| Cartones cuya ronda pertenece a otro Bingo | 0 |
+| Cartones con varias participaciones | 3 |
+| Máximo de rondas por cartón | 3 |
+| Cartones con riesgo de doble conteo de precio al hacer JOIN | 3 |
+| Apariciones adicionales del precio en ese JOIN | 6 |
+| Participaciones ganadoras | 0 |
+| Cartones ganadores en más de una ronda | 0 |
+| Ganadores duplicados para el mismo cartón+ronda | 0 |
 
-### 7.3 Restricciones condicionalmente recomendadas
+Participaciones por ronda:
 
-Solo si se demuestra que faltan:
+| ID de ronda | Participaciones | Maestros válidos esperados | Faltantes |
+|---:|---:|---:|---:|
+| 1 | 3 | 3 | 0 |
+| 2 | 3 | 3 | 0 |
+| 3 | 3 | 3 | 0 |
 
-- `UNIQUE(idcarton,idpartida)` en la tabla real de participaciones;
-- FK `carton.idbingo → bingo.idbingo`;
-- FK compuesta `(idcarton,idbingo)` hacia el maestro;
-- FK compuesta `(idpartida,idbingo)` hacia la ronda;
-- CHECK de estado de participación;
-- CHECK de índice positivo o nulo;
-- CHECK de origen/asignación original.
+Para este diagnóstico se definió “maestro válido” de forma explícita como un
+cartón con `idpartida IS NULL`, jugador asignado y
+`estadocarton='Vendido'`. Los 3 cartones cumplen esa condición. Esta definición
+debe convertirse en política formal antes de automatizar un backfill.
 
-Antes de validar cualquier constraint deben ejecutarse diagnósticos de
-duplicados, nulos, huérfanos y relaciones entre Bingos distintos en ensayo.
+El riesgo de recaudación no representa 6 ventas duplicadas en los datos. Es un
+riesgo de consulta: unir los 3 maestros con sus 9 participaciones produce 6
+apariciones de precio adicionales respecto de contar una vez cada maestro.
 
-### 7.4 Índices condicionalmente recomendados
+### Soporte físico para reportes y liquidación
 
-Solo si no hay equivalentes efectivos:
+| Concepto | Soporte físico | Evaluación |
+|---|---|---|
+| Valor de lista del cartón | `bingo.preciocarton` | Disponible |
+| Valor pagado por el cartón | `carton.preciopagado` | Disponible, pero nullable y sin confirmación de pago |
+| Valor de participación | No existe | No soportado como concepto separado |
+| Premio por ronda | `partidabingo.valorefectivo`, `premiomaterial` | Disponible como premio programado |
+| Premio mayor | `bingo.premiomayor`, descripción | Disponible como premio programado |
+| Estado de pago de cartón | No existe | No soportado |
+| Método/transacción de venta | No existe relación desde cartón | No soportado |
+| Ganador | `partidabingo.idjugadorganador` y estado `Ganador` por participación | Disponible |
+| Gasto | No existe tabla/columna relevante | No soportado |
 
-- `carton(idbingo)`;
-- participación `(idpartida)`;
-- participación `(idbingo)`;
-- participación `(idpartida, estado_participacion)`;
-- búsqueda por cartón cubierta por
-  `UNIQUE(idcarton,idpartida)` o un índice equivalente.
+Consecuencias:
 
-### 7.5 Posibles scripts y reversión
+- los cartones pueden contarse una sola vez consultando `carton` por Bingo;
+- la suma de `carton.preciopagado` por Bingo produce recaudación **registrada**,
+  pero no prueba recaudación real cobrada;
+- los premios programados por ronda pueden calcularse, pero no consta si
+  fueron efectivamente pagados;
+- la utilidad bruta solo puede estimarse bajo una política externa que defina
+  qué precios y premios cuentan;
+- la utilidad neta no puede calcularse correctamente porque no existen gastos
+  de Bingo ni estados de cobro/pago suficientes.
 
-No se crea ningún script ahora. Si la inspección futura demuestra brechas, el
-artefacto deberá ubicarse en `sql/migraciones/` y contener:
+La tabla `pago` física pertenece a deudas y no corrige estas carencias.
 
-- guardas de `current_database()` y esquema;
-- preflight sin escritura;
-- comentarios de tablas, columnas y restricciones afectadas;
-- bloqueo y timeout explícitos para una futura ventana autorizada;
-- reparación/backfill separado de la creación de constraints;
-- validaciones postcambio;
-- reversión documentada y probada primero en ensayo.
+## 6. Comparación contra la regla de negocio de SIAB
 
-La reversión preferida será volver al código anterior manteniendo estructuras
-aditivas. Un DROP de tabla o columna no será un rollback rutinario, porque
-podría eliminar participaciones y resultados. Cualquier reversión física
-requerirá respaldo, prueba de reconstrucción y autorización independiente.
-
-### 7.6 Prioridades
-
-| Prioridad | Acción |
+| Regla | Estado frente a la evidencia |
 |---:|---|
-| 0 | Activar y confirmar la base de ensayo con rol de solo lectura |
-| 1 | Completar el inventario físico y diagnóstico de integridad |
-| 2 | Decidir si realmente hace falta SQL |
-| 3 | Agregar pruebas de contrato sin cambiar comportamiento |
-| 4 | Normalizar creación de cartones y rutas heredadas |
-| 5 | Sincronizar rondas, conectar desempate y corregir reportes |
+| 1. Un cartón maestro pertenece a un Bingo | **Confirmado.** FK NOT NULL `carton.idbingo`; los 3 maestros son coherentes |
+| 2. Un cartón participa en todas las rondas del Bingo | **Parcialmente confirmado.** Los datos actuales cumplen 3 de 3, pero el flujo `partida_nueva` no crea participaciones para maestros existentes |
+| 3. Un mismo cartón puede ganar más de una ronda | **Confirmado estructuralmente.** El resultado es por participación; todavía no hay ganadores para demostrar un caso real |
+| 4. Un cartón no puede tener dos participaciones en la misma ronda | **Confirmado.** UNIQUE físico y 0 duplicados |
+| 5. El valor pagado se registra una sola vez por cartón y Bingo | **Parcialmente confirmado.** La columna está solo en el maestro, pero es nullable y no tiene estado de cobro |
+| 6. La liquidación no puede sumar el precio desde participaciones por ronda | **Pendiente de código.** PostgreSQL no puede impedir una consulta que multiplique el precio; existen 3 cartones expuestos a ese error |
+| 7. Una nueva ronda genera participaciones para cartones válidos existentes | **Pendiente de código.** `partida_nueva` guarda la ronda sin sincronización; el servicio inverso sí crea participaciones al vender un maestro |
 
-## 8. Siguiente cambio de código recomendado
+El reporte global de Bingo ya dispone de una suma final por maestros, pero sus
+filas de recaudación por ronda vuelven a incluir el precio del mismo cartón en
+cada participación. Es válido como vista de cobertura por ronda, pero no debe
+sumarse para liquidar el Bingo.
 
-No debe realizarse ningún cambio funcional mientras el contrato físico siga
-bloqueado. Después de confirmar satisfactoriamente el esquema de ensayo, el
-primer cambio de repositorio recomendado es agregar pruebas de contrato en
-`apps/bingos/tests.py` para:
+## 7. Brechas detectadas
 
-- maestro con tres rondas;
-- cuarta ronda posterior;
-- unicidad cartón-ronda;
-- misma tarjeta ganadora en rondas distintas;
-- desempate por participación;
-- recaudación deduplicada.
+| Brecha | Clasificación | Evidencia / efecto |
+|---|---|---|
+| PK, FK compuestas y UNIQUE del núcleo híbrido | **Lista.** | Existen y están validadas |
+| Índices requeridos por Bingo, cartón, ronda y resultado | **Lista.** | Todos los accesos solicitados están cubiertos |
+| Datos híbridos actuales | **Lista.** | Cobertura completa, sin huérfanos ni duplicados |
+| Sincronizar maestros al crear una ronda | **Pendiente de código.** | `partida_nueva` no genera participaciones |
+| Flujo heredado de venta por partida | **Pendiente de código.** | Sigue expuesto y no representa la regla “un cartón para todo el Bingo” |
+| Recaudación por ronda frente a recaudación del Bingo | **Pendiente de código.** | El precio se repite por participación al agrupar por ronda |
+| Confirmación de pago de una venta | **Requiere decisión del usuario.** | `preciopagado` no equivale a pago confirmado |
+| Política formal de estados de cartón | **Requiere decisión del usuario.** | `estadocarton` no tiene CHECK; “Vendido” fue la regla operativa usada |
+| CHECK monetarios adicionales | **Pendiente de SQL PostgreSQL.** | Precios/premios carecen de varias reglas; solo deben añadirse tras decidir la política y auditar históricos |
+| Índice de `carton.idpartida` | **Requiere decisión del usuario.** | Solo sería necesario si se mantienen consultas históricas por ronda |
+| Backfill de participaciones en ensayo | **Lista.** | No hace falta para los 3 maestros actuales |
+| Backfill fuera de ensayo | **Pendiente de datos históricos.** | Esta fase no inspeccionó `bingo` y no permite extrapolar resultados |
+| Modelo Django `Pago` frente a tabla física `pago` | **Requiere decisión del usuario.** | El contrato ORM y PostgreSQL no coinciden |
+| Ventas, métodos y estado de cobro de cartones | **Requiere decisión del usuario.** | No existe entidad física de venta/pago de cartón |
+| Gastos y utilidad neta | **Requiere decisión del usuario.** | No existe soporte físico de gastos de Bingo |
 
-Estas pruebas fijan el comportamiento esperado sin modificar producción.
+## 8. Recomendaciones técnicas
 
-El primer cambio funcional posterior debe reforzar
-`crear_carton_maestro_para_bingo()` en `apps/bingos/services.py` como única
-fuente autorizada para cartones nuevos, con validación de jugador, precio,
-Bingo y rondas en el servidor. Después se convertirán las rutas heredadas en
-compatibilidad sin escritura y se implementará la creación atómica de ronda
-con participaciones.
+### UNIQUE y claves foráneas
 
-## 9. Consultas y comandos ejecutados
+No se recomienda crear una nueva UNIQUE o FK para el núcleo híbrido: ya están
+presentes las reglas correctas.
 
-### 9.1 Consultas SQL
+- conservar `UNIQUE(idcarton,idpartida)`;
+- conservar las FK compuestas cartón+Bingo y ronda+Bingo;
+- conservar las UNIQUE auxiliares `(idcarton,idbingo)` y
+  `(idpartidabingo,idbingo)` que soportan esas FK;
+- no agregar una FK redundante de `carton_partida_bingo.idbingo` mientras las
+  dos FK compuestas permanezcan activas y validadas.
 
-Ninguna. No se ejecutaron siquiera SELECT de catálogo o conteos, porque la
-configuración activa no era segura para esta fase.
+Después de decidir la política y revisar datos históricos, evaluar:
 
-### 9.2 Comandos locales de solo lectura
+- CHECK de estados permitidos para `carton.estadocarton`;
+- endurecer `carton.preciopagado` de `>= 0` a `> 0` para ventas, sin romper
+  cartones históricos que legítimamente puedan ser gratuitos;
+- CHECK no negativo para `bingo.preciocarton`, `bingo.premiomayor` y
+  `partidabingo.valorefectivo`;
+- reglas de coherencia temporal y de ganador en el servidor, cuando no puedan
+  expresarse como CHECK de una sola fila.
 
-- búsqueda de `ENGINE`, `DB_NAME`, host y puerto declarados en
-  `config/settings.py` mediante `rg`;
-- filtro local que imprimió únicamente `DB_NAME` desde la configuración activa;
-- búsquedas en los dos documentos fuente con `rg`;
-- `.venv/bin/python manage.py check`: correcto, con resultado
-  `System check identified no issues (0 silenced)`; no se pasó `--database`,
-  no se abrió cursor ni se ejecutó SQL;
-- `git status --short`.
+### Índices
 
-No se mostró ni almacenó contraseña, usuario, cadena de conexión o contenido
-completo de `.env`.
+Los índices requeridos por esta fase son suficientes. Solo considerar
+`carton(idpartida)` si el usuario decide conservar rutas/reportes históricos
+que filtran directamente por esa columna. No se recomienda duplicar el índice
+por cartón en participaciones, porque ya lo cubre el prefijo de la UNIQUE.
 
-No se ejecutaron pruebas, porque esta fase solo añadió documentación y la
-configuración no permitió habilitar de forma segura pruebas contra PostgreSQL.
+### Validaciones de servidor y servicios atómicos
 
-## 10. Cambios realizados en la Fase 0.6
+- crear una única operación atómica para registrar una ronda y generar una
+  participación por cada maestro válido del mismo Bingo;
+- bloquear el Bingo y los maestros relevantes antes de crear la ronda y sus
+  participaciones, con orden estable;
+- mantener atómica la venta del maestro más sus participaciones actuales;
+- tratar `IntegrityError` de la UNIQUE como conflicto, no como éxito silencioso;
+- validar en servidor el estado válido del cartón, jugador, precio, Bingo y
+  ronda; no confiar en valores enviados por formularios o JavaScript;
+- retirar o redirigir el POST heredado por partida antes de declarar el flujo
+  híbrido como único;
+- calcular recaudación desde maestros deduplicados por `idcarton`, nunca desde
+  filas de participación;
+- no reutilizar `pago`, porque físicamente pertenece a `deuda`.
 
-- Archivo creado: `docs/CONTRATO_ESQUEMA_POSTGRESQL_HIBRIDO.md`.
-- Código funcional modificado: ninguno.
-- Modelos, migraciones, rutas, servicios y plantillas modificados: ninguno.
-- Scripts SQL creados o ejecutados: ninguno.
-- PostgreSQL consultado o modificado: no.
-- Base real `bingo`: no conectada, no consultada y no alterada.
+### Posibles scripts SQL futuros
+
+No se creó ni ejecutó ningún script. Solo después de decisiones expresas
+podrían prepararse, por separado:
+
+1. auditoría/backfill de participaciones históricas;
+2. CHECK de estado y montos;
+3. índice histórico `carton(idpartida)`, si sigue siendo necesario;
+4. reconciliación del contrato de `pago` o una entidad nueva de venta/cobro de
+   cartones.
+
+Cada script futuro debe tener preflight de base/esquema, conteos previos,
+transacción, verificación posterior y reversión probada primero en ensayo.
+
+### Estrategia de reversión
+
+- el cambio de código de creación de ronda debe poder revertirse sin borrar
+  participaciones que ya contengan resultados;
+- una reversión funcional debe desactivar la nueva ruta y conservar los datos;
+- constraints nuevas deben aplicarse solo tras limpiar datos y, cuando sea
+  viable, validarse de forma separada;
+- ningún rollback rutinario debe eliminar maestros, participaciones o
+  resultados;
+- cualquier backfill necesita tabla de control o criterio determinista para
+  distinguir filas creadas por el proceso.
+
+### Orden recomendado de corrección
+
+1. fijar con pruebas el contrato de creación de una ronda con maestros previos;
+2. implementar el servicio atómico ronda+participaciones;
+3. conectar `partida_nueva` exclusivamente a ese servicio;
+4. retirar o redirigir la venta heredada por partida;
+5. blindar reportes/liquidación para sumar una vez por maestro;
+6. decidir estados, precios y confirmación de pagos;
+7. resolver la divergencia de `pago`;
+8. evaluar SQL adicional y backfill solo con autorización separada.
+
+## 9. Primer cambio de código recomendado
+
+El siguiente cambio real debe ser agregar pruebas de contrato y un servicio
+atómico de **creación de ronda con sincronización de participaciones**.
+
+La evidencia es directa:
+
+- el esquema físico ya soporta y protege las participaciones correctas;
+- los 3 maestros actuales tienen cobertura completa en las 3 rondas;
+- `crear_carton_maestro_para_bingo()` ya cubre el caso “nuevo maestro frente a
+  rondas existentes”;
+- `partida_nueva` no cubre el caso inverso “nueva ronda frente a maestros
+  existentes”.
+
+El servicio debe crear la ronda y, dentro de la misma transacción, insertar una
+participación para cada maestro válido del Bingo. Si cualquier inserción falla,
+deben revertirse tanto la ronda como sus participaciones. La definición de
+“válido” debe fijarse primero en pruebas; la usada por esta auditoría fue
+`idpartida IS NULL`, jugador presente y estado `Vendido`.
+
+No se recomienda empezar por SQL: las constraints centrales ya existen y el
+faltante inmediato está en el flujo de aplicación.
+
+## 10. Decisiones pendientes del usuario
+
+### Aplicar SQL
+
+- autorizar o no CHECK nuevos de estado y montos;
+- decidir si se mantiene `carton.idpartida` y, en consecuencia, si necesita
+  índice;
+- decidir cómo reconciliar la tabla `pago` con el modelo Django;
+- autorizar cada script y cada ejecución por separado. Esta fase no autoriza
+  cambios en `bingo`.
+
+### Backfill de participaciones
+
+- en `bingo_ensayo_hibridos` no hace falta backfill para los 3 maestros
+  actuales;
+- decidir si un futuro diagnóstico histórico debe incluir anulados,
+  disponibles, gratuitos o cartones sin jugador;
+- decidir si el backfill abarca todas las rondas o solo rondas no finalizadas.
+
+### Comportamiento de cartones históricos
+
+- mantenerlos ligados a una sola ronda, convertirlos en maestros o dejarlos
+  solo para consulta;
+- definir si `indicevictoria` histórico se conserva indefinidamente;
+- prohibir ampliar cartones históricos a otras rondas sin una decisión expresa.
+
+### Retirar o redirigir rutas antiguas
+
+- decidir si la venta por partida se elimina, se deja solo en lectura o se
+  redirige a la venta por Bingo;
+- decidir la compatibilidad de formularios y enlaces históricos.
+
+### Restricciones nuevas
+
+- catálogo permitido de `estadocarton`;
+- tratamiento de precio cero, precio NULL y cartones gratuitos;
+- reglas para montos de premio y coherencia de ganador.
+
+### Política de estados
+
+- qué estados hacen a un maestro elegible para una ronda nueva;
+- cuándo una participación pasa a `En juego`, `Cerrado`, `Ganador` o `Anulado`;
+- qué ocurre al cancelar una ronda o un Bingo.
+
+### Política de precios
+
+- si `preciopagado` debe igualar `bingo.preciocarton` o admite descuento;
+- qué fecha fija el precio y cómo se manejan devoluciones;
+- si la recaudación incluye cartones pendientes o solo cobros confirmados.
+
+### Módulos de ventas y pagos
+
+- crear o no una entidad específica de venta/cobro de cartón;
+- relación con `metodopago`, comprobante y confirmación administrativa;
+- tratamiento contable de premios pagados y gastos;
+- definición de utilidad bruta y neta antes de implementar liquidación.
+
+Al cierre de la fase no se modificaron modelos, migraciones, servicios, vistas,
+formularios, rutas, plantillas, settings, scripts SQL ni PostgreSQL. El único
+archivo actualizado fue este contrato.
