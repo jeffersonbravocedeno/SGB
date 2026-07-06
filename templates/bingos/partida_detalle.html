@@ -15,11 +15,6 @@
         <a class="btn btn-outline-secondary" href="{% url 'bingos:consola_operador' partida.idpartidabingo %}">Consola</a>
         <a class="btn btn-outline-secondary" href="{% url 'bingos:partida_reporte_pdf' partida.idpartidabingo %}">Descargar reporte PDF</a>
         <a class="btn btn-outline-secondary" href="{% url 'bingos:partida_cartones_excel' partida.idpartidabingo %}">Exportar cartones</a>
-        {% if puede_asignar_cartones %}
-        <a class="btn btn-outline-secondary" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">Generar cartón</a>
-        {% else %}
-        <span class="btn btn-outline-secondary disabled" aria-disabled="true" title="Solo disponible en Programada o En espera">Generar cartón</span>
-        {% endif %}
         <a class="btn btn-primary" href="{% url 'bingos:partida_editar' partida.idpartidabingo %}">Editar</a>
     </div>
 </section>
@@ -70,27 +65,39 @@
         <div class="col-lg-8">
             <div class="d-flex justify-content-between align-items-center mb-3">
                 <h2 class="section-subtitle mb-0">Cartones de la partida</h2>
-                {% if puede_asignar_cartones %}
-                <a class="btn btn-primary btn-sm" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">+ Generar cartón</a>
-                {% else %}
-                <span class="btn btn-outline-secondary btn-sm disabled" aria-disabled="true" title="Solo disponible en Programada o En espera">Generación bloqueada</span>
-                {% endif %}
+                <a class="btn btn-primary btn-sm" href="{% url 'bingos:detalle' partida.idbingo_id %}">Administrar cartones del Bingo</a>
             </div>
             <div class="table-responsive">
                 <table class="table modern-table align-middle">
-                    <thead><tr><th>Código</th><th>Jugador</th><th>Precio</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
+                    <thead><tr><th>Código</th><th>Tipo</th><th>Jugador</th><th>Precio</th><th>Estado / resultado</th><th class="text-end">Acciones</th></tr></thead>
                     <tbody>
+                        {% if cartones or participaciones_hibridas %}
+                        {% for participacion in participaciones_hibridas %}
+                        <tr>
+                            <td>{{ participacion.idcarton.codigocarton }}</td>
+                            <td><span class="badge text-bg-primary">Cartón del Bingo</span></td>
+                            <td>{{ participacion.idcarton.idjugador|default:"Sin jugador" }}</td>
+                            <td>${{ participacion.idcarton.preciopagado|floatformat:2 }}</td>
+                            <td>
+                                <span class="badge rounded-pill {{ participacion.estado_participacion|estado_class }}">{{ participacion.estado_participacion }}</span>
+                                {% if participacion.indicevictoria or participacion.indicevictoria == 0 %}<div class="small text-muted">Índice de victoria: {{ participacion.indicevictoria }}</div>{% endif %}
+                            </td>
+                            <td class="text-end"><span class="small text-muted">Administrado desde el Bingo</span></td>
+                        </tr>
+                        {% endfor %}
                         {% for carton in cartones %}
                         <tr>
                             <td>{{ carton.codigocarton }}</td>
+                            <td><span class="badge text-bg-secondary">Cartón heredado por ronda</span></td>
                             <td>{{ carton.idjugador|default:"Sin jugador" }}</td>
                             <td>${{ carton.preciopagado|floatformat:2 }}</td>
                             <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
                             <td class="text-end"><a class="btn btn-outline-secondary btn-sm" href="{% url 'bingos:partida_carton_editar' partida.idpartidabingo carton.idcarton %}">Editar</a></td>
                         </tr>
-                        {% empty %}
-                        <tr><td colspan="5" class="text-muted">No hay cartones registrados para esta partida.</td></tr>
                         {% endfor %}
+                        {% else %}
+                        <tr><td colspan="6" class="text-muted">No hay cartones registrados para esta partida.</td></tr>
+                        {% endif %}
                     </tbody>
                 </table>
             </div>

@@ -4,7 +4,7 @@ from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, IntegrityError, connection, transaction
 from django.http import Http404, HttpResponse
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -559,12 +559,34 @@ def bingo_nuevo(request):
 @admin_required
 def bingo_detalle(request, idbingo):
     bingo = get_object_or_404(Bingo, idbingo=idbingo)
-    partidas = Partidabingo.objects.filter(idbingo=bingo).select_related("idjugadorganador").order_by("horainicio")
-    cartones = Carton.objects.filter(idpartida__idbingo=bingo).select_related("idjugador", "idpartida").order_by("codigocarton")[:50]
+    partidas = (
+        Partidabingo.objects.filter(idbingo=bingo)
+        .select_related("idjugadorganador")
+        .order_by("horainicio")
+    )
+    cartones_queryset = (
+        Carton.objects.filter(idbingo=bingo)
+        .select_related(
+            "idbingo",
+            "idjugador",
+            "idpartida",
+            "idpartida__idbingo",
+        )
+        .annotate(
+            total_participaciones=Count("participaciones", distinct=True)
+        )
+        .order_by("codigocarton")
+    )
+    cartones = paginate(request, cartones_queryset)
     return render(
         request,
         "bingos/detalle.html",
-        {"bingo": bingo, "partidas": partidas, "cartones": cartones},
+        {
+            "bingo": bingo,
+            "partidas": partidas,
+            "cartones": cartones,
+            "page_obj": cartones,
+        },
     )
 
 
@@ -782,7 +804,14 @@ def partida_detalle(request, idpartidabingo):
         Partidabingo.objects.select_related("idbingo", "idjugadorganador"),
         idpartidabingo=idpartidabingo,
     )
-    cartones = Carton.objects.filter(idpartida=partida).select_related("idjugador").order_by("codigocarton")
+    cartones = (
+        Carton.objects.filter(idpartida=partida)
+        .select_related("idbingo", "idjugador", "idpartida")
+        .order_by("codigocarton")
+    )
+    participaciones_hibridas = obtener_participaciones_hibridas_partida(
+        partida
+    )
     carton_generado = None
     matriz_carton_generado = None
     carton_generado_id = request.GET.get("carton_generado", "").strip()
@@ -805,6 +834,7 @@ def partida_detalle(request, idpartidabingo):
         {
             "partida": partida,
             "cartones": cartones,
+            "participaciones_hibridas": participaciones_hibridas,
             "bolas_cantadas": parse_bolas_cantadas(partida.bolascantadas),
             "puede_asignar_cartones": puede_asignar_cartones(partida),
             "carton_generado": carton_generado,
@@ -1352,14 +1382,31 @@ def _attachment_response(content, content_type, filename):
 @admin_required
 def cartones_lista(request):
     busqueda = request.GET.get("q", "").strip()
-    cartones = Carton.objects.select_related("idjugador", "idpartida", "idpartida__idbingo").order_by("-fechacompra", "codigocarton")
+    cartones = Carton.objects.select_related(
+        "idbingo",
+        "idjugador",
+        "idpartida",
+        "idpartida__idbingo",
+    )
     if busqueda:
         cartones = cartones.filter(
             Q(codigocarton__icontains=busqueda)
             | Q(estadocarton__icontains=busqueda)
             | Q(idjugador__aliasjugador__icontains=busqueda)
         )
-    return render(request, "bingos/cartones_lista.html", {"page_obj": paginate(request, cartones), "busqueda": busqueda, "total": cartones.count()})
+    cartones = cartones.annotate(
+        total_participaciones=Count("participaciones", distinct=True)
+    ).order_by("-fechacompra", "codigocarton")
+    page_obj = paginate(request, cartones)
+    return render(
+        request,
+        "bingos/cartones_lista.html",
+        {
+            "page_obj": page_obj,
+            "busqueda": busqueda,
+            "total": page_obj.paginator.count,
+        },
+    )
 
 
 @admin_required

@@ -129,13 +129,16 @@ from .views import (
     _seleccionar_participacion_hibrida,
     acceder_carton_publico,
     bingo_carton_nuevo,
+    bingo_detalle,
     carton_publico,
+    cartones_lista,
     consola_operador,
     confirmar_desempate,
     desempate_operador,
     bingo_resumen_excel,
     partida_cartones_excel,
     partida_carton_nuevo,
+    partida_detalle,
     partida_reporte_pdf,
     partidas_lista,
     mi_carton_detalle,
@@ -5369,8 +5372,228 @@ class _CartonesConsultaQuerySet(list):
     def filter(self, *args, **kwargs):
         return self
 
+    def annotate(self, *args, **kwargs):
+        return self
+
+    def count(self):
+        return len(self)
+
     def first(self):
         return self[0] if self else None
+
+
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class VisibilidadCartonesHibridosAdminTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.jugador = Jugador(
+            idjugador=41,
+            aliasjugador="jugador_admin",
+        )
+        self.bingo = Bingo(
+            idbingo=70,
+            titulobingo="Bingo administrativo",
+            fechaprogramadabingo=timezone.now(),
+            tipobingo="Presencial",
+            preciocarton=Decimal("5.00"),
+            premiomayor=Decimal("100.00"),
+            descripcionpremiomayor="Premio mayor",
+            estadobingo="Programado",
+        )
+        self.partida = self._partida(701, "Ronda principal")
+        self.otra_partida = self._partida(702, "Ronda final")
+        self.carton_maestro = Carton(
+            idcarton=801,
+            idjugador=self.jugador,
+            idbingo=self.bingo,
+            idpartida=None,
+            codigocarton="B70-C-MAESTRO",
+            matriznumeros=serializar_matriz_carton_bingo(
+                matriz_carton_prueba()
+            ),
+            preciopagado=Decimal("5.00"),
+            fechacompra=timezone.now(),
+            estadocarton="Vendido",
+        )
+        self.carton_maestro.total_participaciones = 2
+        self.carton_heredado = Carton(
+            idcarton=802,
+            idjugador=self.jugador,
+            idbingo=self.bingo,
+            idpartida=self.partida,
+            codigocarton="P701-C-HEREDADO",
+            matriznumeros=self.carton_maestro.matriznumeros,
+            preciopagado=Decimal("5.00"),
+            fechacompra=timezone.now(),
+            estadocarton="Vendido",
+        )
+        self.carton_heredado.total_participaciones = 0
+        self.participacion = CartonPartidaBingo(
+            idcartonpartidabingo=901,
+            idcarton=self.carton_maestro,
+            idpartida=self.partida,
+            idbingo=self.bingo,
+            estado_participacion=CartonPartidaBingo.ESTADO_GANADOR,
+            indicevictoria=24,
+            es_asignacion_original=False,
+            origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
+            fechacreacion=timezone.now(),
+            fechavalidacion=timezone.now(),
+        )
+
+    def _partida(self, pk, nombre):
+        return Partidabingo(
+            idpartidabingo=pk,
+            idbingo=self.bingo,
+            nombreronda=nombre,
+            valorefectivo=Decimal("25.00"),
+            premiomaterial="",
+            estadopartida=ESTADO_PARTIDA_PROGRAMADA,
+            bolascantadas="[]",
+            ultimabola=0,
+            haydesempate=False,
+            horainicio=timezone.now(),
+        )
+
+    def _request(self, path):
+        request = self.factory.get(path)
+        request.user = User(username="admin", is_staff=True)
+        request.session = {}
+        return request
+
+    def test_detalle_ronda_muestra_participacion_hibrida_sin_vacio(self):
+        cartones = _CartonesConsultaQuerySet()
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.partida,
+            ),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=cartones,
+            ) as filtrar_cartones,
+            patch(
+                "apps.bingos.views.obtener_participaciones_hibridas_partida",
+                return_value=[self.participacion],
+            ) as consultar_participaciones,
+            patch.object(Carton, "save") as guardar_carton,
+            patch.object(CartonPartidaBingo, "save") as guardar_participacion,
+        ):
+            response = partida_detalle(
+                self._request("/partidas/701/"),
+                self.partida.pk,
+            )
+
+        self.assertContains(response, self.carton_maestro.codigocarton, count=1)
+        self.assertContains(response, "Cartón del Bingo")
+        self.assertContains(response, CartonPartidaBingo.ESTADO_GANADOR)
+        self.assertContains(response, "Índice de victoria: 24")
+        self.assertNotContains(
+            response,
+            "No hay cartones registrados para esta partida.",
+        )
+        filtrar_cartones.assert_called_once_with(idpartida=self.partida)
+        consultar_participaciones.assert_called_once_with(self.partida)
+        guardar_carton.assert_not_called()
+        guardar_participacion.assert_not_called()
+
+    def test_detalle_ronda_conserva_carton_heredado(self):
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.partida,
+            ),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=_CartonesConsultaQuerySet(
+                    [self.carton_heredado]
+                ),
+            ),
+            patch(
+                "apps.bingos.views.obtener_participaciones_hibridas_partida",
+                return_value=[],
+            ),
+            patch.object(Carton, "save") as guardar_carton,
+            patch.object(CartonPartidaBingo, "save") as guardar_participacion,
+        ):
+            response = partida_detalle(
+                self._request("/partidas/701/"),
+                self.partida.pk,
+            )
+
+        self.assertContains(response, self.carton_heredado.codigocarton)
+        self.assertContains(response, "Cartón heredado por ronda")
+        self.assertNotContains(
+            response,
+            "No hay cartones registrados para esta partida.",
+        )
+        guardar_carton.assert_not_called()
+        guardar_participacion.assert_not_called()
+
+    def test_detalle_bingo_muestra_maestro_una_sola_vez(self):
+        cartones = _CartonesConsultaQuerySet([self.carton_maestro])
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter",
+                return_value=_CartonesConsultaQuerySet(
+                    [self.partida, self.otra_partida]
+                ),
+            ),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=cartones,
+            ) as filtrar_cartones,
+            patch.object(Carton, "save") as guardar_carton,
+            patch.object(CartonPartidaBingo, "save") as guardar_participacion,
+        ):
+            response = bingo_detalle(
+                self._request("/bingos/70/"),
+                self.bingo.pk,
+            )
+
+        self.assertContains(response, self.carton_maestro.codigocarton, count=1)
+        self.assertContains(response, "Cartón del Bingo")
+        self.assertContains(response, "2 rondas")
+        filtrar_cartones.assert_called_once_with(idbingo=self.bingo)
+        guardar_carton.assert_not_called()
+        guardar_participacion.assert_not_called()
+
+    def test_listado_global_describe_maestro_y_carton_heredado(self):
+        cartones = _CartonesConsultaQuerySet(
+            [self.carton_maestro, self.carton_heredado]
+        )
+        with (
+            patch(
+                "apps.bingos.views.Carton.objects.select_related",
+                return_value=cartones,
+            ),
+            patch.object(Carton, "save") as guardar_carton,
+            patch.object(CartonPartidaBingo, "save") as guardar_participacion,
+        ):
+            response = cartones_lista(self._request("/cartones/"))
+
+        self.assertContains(response, self.carton_maestro.codigocarton)
+        self.assertContains(response, self.bingo.titulobingo, count=2)
+        self.assertContains(response, "Cartón del Bingo")
+        self.assertContains(response, "2 rondas")
+        self.assertContains(response, self.carton_heredado.codigocarton)
+        self.assertContains(response, "Cartón heredado por ronda")
+        self.assertContains(response, self.partida.nombreronda)
+        guardar_carton.assert_not_called()
+        guardar_participacion.assert_not_called()
 
 
 @override_settings(

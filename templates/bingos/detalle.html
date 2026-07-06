@@ -70,25 +70,37 @@
                 </table>
             </div>
 
-            <h2 class="section-subtitle">Cartones relacionados</h2>
+            <div class="section-heading">
+                <div>
+                    <h2 class="section-subtitle">Cartones relacionados</h2>
+                    <p>{{ cartones.paginator.count }} {% if cartones.paginator.count == 1 %}cartón{% else %}cartones{% endif %} · página {{ cartones.number }} de {{ cartones.paginator.num_pages }}</p>
+                </div>
+            </div>
             <div class="table-responsive">
                 <table class="table modern-table align-middle">
-                    <thead><tr><th>Código</th><th>Jugador</th><th>Partida</th><th>Precio</th><th>Estado</th></tr></thead>
+                    <thead><tr><th>Código</th><th>Jugador</th><th>Tipo</th><th>Ronda / participaciones</th><th>Precio</th><th>Estado</th></tr></thead>
                     <tbody>
                         {% for carton in cartones %}
                         <tr>
                             <td>{{ carton.codigocarton }}</td>
                             <td>{{ carton.idjugador|default:"Sin jugador" }}</td>
-                            <td>{{ carton.idpartida }}</td>
+                            {% if carton.idpartida_id %}
+                            <td><span class="badge text-bg-secondary">Cartón heredado por ronda</span></td>
+                            <td>{{ carton.idpartida.nombreronda }}</td>
+                            {% else %}
+                            <td><span class="badge text-bg-primary">Cartón del Bingo</span></td>
+                            <td>{{ carton.total_participaciones }} ronda{{ carton.total_participaciones|pluralize:"s" }}</td>
+                            {% endif %}
                             <td>${{ carton.preciopagado|floatformat:2 }}</td>
                             <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
                         </tr>
                         {% empty %}
-                        <tr><td colspan="5" class="text-muted">No hay cartones relacionados.</td></tr>
+                        <tr><td colspan="6" class="text-muted">No hay cartones relacionados.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
+            {% include "includes/pagination.html" %}
         </div>
     </div>
 </section>
