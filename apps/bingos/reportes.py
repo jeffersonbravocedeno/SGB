@@ -408,6 +408,34 @@ def generar_pdf_reporte_partida(
     return buffer.getvalue()
 
 
+def calcular_recaudacion_registrada(cartones_o_resumenes):
+    """Calcula la recaudación registrada desde cartones maestros únicos.
+
+    Deduplica explícitamente por idcarton o pk, ignora precios NULL y no
+    recorre participaciones para sumar dinero. Mantiene la política
+    histórica actual de elegibilidad sin filtrar retroactivamente por
+    estado de venta, confirmación o pago.
+
+    Devuelve un Decimal coherente con el código actual.
+    """
+    vistos = set()
+    total = Decimal("0.00")
+    for item in (cartones_o_resumenes or []):
+        if isinstance(item, dict):
+            pk = item.get("idcarton") or item.get("pk")
+            precio = item.get("precio_pagado")
+        else:
+            pk = getattr(item, "idcarton", None) or getattr(item, "pk", None)
+            precio = getattr(item, "preciopagado", None)
+        if pk is None or pk in vistos:
+            continue
+        vistos.add(pk)
+        if precio in (None, ""):
+            continue
+        total += Decimal(str(precio))
+    return total
+
+
 def generar_excel_cartones_partida(
     partida,
     cartones,
@@ -435,7 +463,7 @@ def generar_excel_cartones_partida(
         "Estado del cartón",
         "Estado de participación",
         "Fecha de compra",
-        "Precio pagado",
+        "Importe registrado del cartón",
         "Índice de victoria",
         "Fecha de validación",
         "Ganador de la ronda",
@@ -445,11 +473,9 @@ def generar_excel_cartones_partida(
     ]
     worksheet.append(headers)
 
-    total_recaudado = Decimal("0.00")
     estados = Counter()
     for fila in filas:
         precio = _decimal(fila["precio_pagado"])
-        total_recaudado += precio
         estados[_estado_normalizado(fila["estado_carton"])] += 1
         worksheet.append(
             [
@@ -473,7 +499,6 @@ def generar_excel_cartones_partida(
     resumen_row = worksheet.max_row + 2
     resumen = [
         ("Total de cartones", len(filas)),
-        ("Total recaudado", float(total_recaudado)),
         ("Cartones vendidos", estados.get("vendido", 0)),
         ("Cartones anulados", _cantidad_estados(estados, {"anulado", "anulada", "cancelado", "cancelada"})),
         ("Cartones disponibles", estados.get("disponible", 0)),
@@ -482,7 +507,14 @@ def generar_excel_cartones_partida(
         row = resumen_row + offset
         worksheet.cell(row=row, column=1, value=label)
         worksheet.cell(row=row, column=2, value=value)
-    worksheet.cell(row=resumen_row + 1, column=2).number_format = MONEDA_FORMAT
+
+    nota_row = worksheet.max_row + 2
+    worksheet.cell(
+        row=nota_row,
+        column=1,
+        value="Este reporte es operativo por ronda y no representa "
+              "la liquidación general del Bingo.",
+    )
 
     _aplicar_formato_basico_excel(worksheet)
     _aplicar_formato_columnas(
@@ -523,7 +555,6 @@ def generar_excel_resumen_bingo(
         "Total de cartones",
         "Cartones históricos",
         "Participaciones híbridas",
-        "Recaudación total",
         "Cantidad de bolas extraídas",
         "Ganador",
         "Hubo desempate",
@@ -542,9 +573,8 @@ def generar_excel_resumen_bingo(
         )
 
     total_cartones = len(resumenes_maestros)
-    total_recaudado = sum(
-        (_decimal(resumen["precio_pagado"]) for resumen in resumenes_maestros),
-        Decimal("0.00"),
+    recaudacion_registrada = calcular_recaudacion_registrada(
+        resumenes_maestros,
     )
     finalizadas = 0
     en_curso = 0
@@ -564,10 +594,6 @@ def generar_excel_resumen_bingo(
             cartones_historicos,
             participaciones_partida,
         )
-        recaudacion = sum(
-            (_decimal(fila["precio_pagado"]) for fila in filas_partida),
-            Decimal("0.00"),
-        )
         bolas = parsear_bolas_cantadas(partida.bolascantadas)
         estado = estado_partida_mostrar(partida.estadopartida)
         finalizadas += 1 if estado == ESTADO_PARTIDA_FINALIZADA else 0
@@ -586,7 +612,6 @@ def generar_excel_resumen_bingo(
                 len(filas_partida),
                 len(cartones_historicos),
                 len(participaciones_partida),
-                float(recaudacion),
                 len(bolas),
                 _alias_ganador(partida) or "-",
                 _si_no(partida.haydesempate),
@@ -600,7 +625,7 @@ def generar_excel_resumen_bingo(
         ("Partidas finalizadas", finalizadas),
         ("Partidas en curso", en_curso),
         ("Total de cartones", total_cartones),
-        ("Recaudación total", float(total_recaudado)),
+        ("Recaudación registrada", float(recaudacion_registrada)),
         ("Total de partidas con desempate", con_desempate),
     ]
     for offset, (label, value) in enumerate(resumen):
@@ -609,10 +634,19 @@ def generar_excel_resumen_bingo(
         worksheet.cell(row=row, column=2, value=value)
     worksheet.cell(row=resumen_row + 4, column=2).number_format = MONEDA_FORMAT
 
+    nota_row = worksheet.max_row + 2
+    notas = [
+        "La recaudación registrada se calcula una sola vez por cartón "
+        "maestro. Las participaciones por ronda no representan ventas "
+        "adicionales.",
+        "Gastos adicionales: no registrados en el sistema.",
+    ]
+    for offset, nota in enumerate(notas):
+        worksheet.cell(row=nota_row + offset, column=1, value=nota)
+
     _aplicar_formato_basico_excel(worksheet)
     _aplicar_formato_columnas(
         worksheet,
-        money_columns={12},
         date_columns={6, 7, 8},
     )
 

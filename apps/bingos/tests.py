@@ -44,6 +44,7 @@ from .reportes import (
     TIPO_HIBRIDO,
     TIPO_HISTORICO,
     XLSX_CONTENT_TYPE,
+    calcular_recaudacion_registrada,
     construir_datos_reporte_partida,
     construir_filas_reporte_partida,
     construir_resumenes_cartones_bingo,
@@ -4920,7 +4921,7 @@ class ReportesAdministrativosTests(SimpleTestCase):
                 "Estado del cartón",
                 "Estado de participación",
                 "Fecha de compra",
-                "Precio pagado",
+                "Importe registrado del cartón",
                 "Índice de victoria",
                 "Fecha de validación",
                 "Ganador de la ronda",
@@ -4935,10 +4936,10 @@ class ReportesAdministrativosTests(SimpleTestCase):
 
         resumen = {
             worksheet.cell(row=row, column=1).value: worksheet.cell(row=row, column=2).value
-            for row in range(worksheet.max_row - 4, worksheet.max_row + 1)
+            for row in range(worksheet.max_row - 5, worksheet.max_row + 1)
         }
         self.assertEqual(resumen["Total de cartones"], 3)
-        self.assertEqual(resumen["Total recaudado"], 10)
+        self.assertNotIn("Total recaudado", resumen)
         self.assertEqual(resumen["Cartones vendidos"], 2)
         self.assertEqual(resumen["Cartones disponibles"], 1)
 
@@ -4953,7 +4954,7 @@ class ReportesAdministrativosTests(SimpleTestCase):
         headers = [cell.value for cell in worksheet[1]]
 
         self.assertIn("ID de Bingo", headers)
-        self.assertIn("Recaudación total", headers)
+        self.assertNotIn("Recaudación total", headers)
         self.assertIn("Balota mayor de desempate", headers)
         headers_lower = " ".join(str(header).lower() for header in headers)
         for prohibido in ("correo", "contraseña", "password", "hash", "idbingadores"):
@@ -4961,12 +4962,12 @@ class ReportesAdministrativosTests(SimpleTestCase):
 
         resumen = {
             worksheet.cell(row=row, column=1).value: worksheet.cell(row=row, column=2).value
-            for row in range(worksheet.max_row - 5, worksheet.max_row + 1)
+            for row in range(worksheet.max_row - 8, worksheet.max_row + 1)
         }
         self.assertEqual(resumen["Total de partidas"], 1)
         self.assertEqual(resumen["Partidas finalizadas"], 1)
         self.assertEqual(resumen["Total de cartones"], 3)
-        self.assertEqual(resumen["Recaudación total"], 10)
+        self.assertEqual(resumen["Recaudación registrada"], 10)
         self.assertEqual(resumen["Total de partidas con desempate"], 1)
 
     def test_generar_reportes_no_modifica_objetos_ni_llama_save(self):
@@ -5254,6 +5255,11 @@ class ReportesHibridosTests(SimpleTestCase):
         resumen_partidas = workbook["Resumen de partidas"]
         self.assertEqual(resumen_partidas.cell(2, 11).value, 1)
         self.assertEqual(resumen_partidas.cell(3, 11).value, 1)
+        # Verify no per-round monetary column exists
+        headers_partidas = [
+            cell.value for cell in resumen_partidas[1]
+        ]
+        self.assertNotIn("Recaudación total", headers_partidas)
 
     def test_vista_devuelve_400_para_participacion_inconsistente(self):
         inconsistente = self._participacion(
@@ -5724,4 +5730,312 @@ class CartonesPrivadosPublicosHibridosTests(SimpleTestCase):
         self.assertIs(
             resolve(f"/juego/cartones/{self.carton.codigocarton}/").func,
             carton_publico,
+        )
+
+
+class RecaudacionRegistradaDuplicacionTests(SimpleTestCase):
+    """Pruebas obligatorias de la Fase 2B: recaudación sin duplicación."""
+
+    def setUp(self):
+        self.bingo = Bingo(
+            idbingo=90,
+            titulobingo="Bingo recaudación",
+            fechaprogramadabingo=timezone.now(),
+            tipobingo="Virtual",
+            preciocarton=Decimal("5.00"),
+            premiomayor=Decimal("50.00"),
+            descripcionpremiomayor="Premio",
+            estadobingo="Programado",
+        )
+        self.otro_bingo = Bingo(
+            idbingo=91,
+            titulobingo="Otro Bingo",
+            fechaprogramadabingo=timezone.now(),
+            tipobingo="Virtual",
+            preciocarton=Decimal("8.00"),
+            premiomayor=Decimal("80.00"),
+            descripcionpremiomayor="Premio",
+            estadobingo="Programado",
+        )
+        self.jugador = Jugador(idjugador=50, aliasjugador="jugador_recaud")
+        ahora = timezone.now()
+        self.partidas = [
+            self._partida(901, self.bingo, ESTADO_PARTIDA_FINALIZADA, ahora),
+            self._partida(902, self.bingo, ESTADO_PARTIDA_EN_CURSO, ahora),
+            self._partida(903, self.bingo, ESTADO_PARTIDA_PROGRAMADA, ahora),
+        ]
+        # Tres cartones maestros de $5 cada uno
+        self.cartones = [
+            self._carton_maestro(501, "B90-C-A01", Decimal("5.00")),
+            self._carton_maestro(502, "B90-C-A02", Decimal("5.00")),
+            self._carton_maestro(503, "B90-C-A03", Decimal("5.00")),
+        ]
+        # Cada cartón participa en las 3 rondas: 9 participaciones
+        self.participaciones = []
+        pk_counter = 9000
+        for carton in self.cartones:
+            for partida in self.partidas:
+                pk_counter += 1
+                self.participaciones.append(
+                    self._participacion(pk_counter, carton, partida)
+                )
+
+    def _partida(self, pk, bingo, estado, ahora):
+        return Partidabingo(
+            idpartidabingo=pk,
+            idbingo=bingo,
+            nombreronda=f"Ronda {pk}",
+            valorefectivo=Decimal("25.00"),
+            premiomaterial="Premio",
+            estadopartida=estado,
+            bolascantadas=serializar_bolas_cantadas([1, 16, 31]),
+            ultimabola=31,
+            haydesempate=False,
+            horainicio=ahora,
+            horafin=ahora if estado == ESTADO_PARTIDA_FINALIZADA else None,
+        )
+
+    def _carton_maestro(self, pk, codigo, precio):
+        return Carton(
+            idcarton=pk,
+            idjugador=self.jugador,
+            idbingo=self.bingo,
+            idpartida=None,
+            codigocarton=codigo,
+            matriznumeros=serializar_matriz_carton_bingo(matriz_carton_prueba()),
+            indicevictoria=None,
+            preciopagado=precio,
+            fechacompra=timezone.now(),
+            estadocarton="Vendido",
+        )
+
+    def _participacion(self, pk, carton, partida, estado=None):
+        return CartonPartidaBingo(
+            idcartonpartidabingo=pk,
+            idcarton=carton,
+            idpartida=partida,
+            idbingo=partida.idbingo,
+            estado_participacion=(
+                estado or CartonPartidaBingo.ESTADO_PENDIENTE
+            ),
+            indicevictoria=None,
+            es_asignacion_original=False,
+            origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
+            fechacreacion=timezone.now(),
+            fechavalidacion=None,
+        )
+
+    def test_01_un_carton_de_5_con_tres_participaciones_aporta_5(self):
+        """Un cartón maestro de $5 con tres participaciones aporta $5."""
+        carton = self.cartones[0]
+        total = calcular_recaudacion_registrada([carton])
+        self.assertEqual(total, Decimal("5.00"))
+
+    def test_02_tres_cartones_de_5_con_tres_rondas_producen_15_no_45(self):
+        """Tres cartones maestros de $5 con tres rondas producen $15."""
+        total = calcular_recaudacion_registrada(self.cartones)
+        self.assertEqual(total, Decimal("15.00"))
+        # Verificar en el Excel resumen
+        contenido = generar_excel_resumen_bingo(
+            self.bingo,
+            self.partidas,
+            self.cartones,
+            self.participaciones,
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        worksheet = workbook["Resumen de partidas"]
+        resumen = {
+            worksheet.cell(row=row, column=1).value: worksheet.cell(row=row, column=2).value
+            for row in range(1, worksheet.max_row + 1)
+            if worksheet.cell(row=row, column=1).value is not None
+        }
+        self.assertEqual(resumen["Recaudación registrada"], 15)
+        self.assertNotIn("Recaudación total", resumen)
+
+    def test_03_excel_ronda_no_contiene_total_recaudado(self):
+        """El Excel de ronda no contiene 'Total recaudado'."""
+        contenido = generar_excel_cartones_partida(
+            self.partidas[0],
+            [],
+            self.participaciones[:3],
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        worksheet = workbook["Cartones"]
+        todas_celdas = [
+            worksheet.cell(row=row, column=col).value
+            for row in range(1, worksheet.max_row + 1)
+            for col in range(1, worksheet.max_column + 1)
+        ]
+        self.assertNotIn("Total recaudado", todas_celdas)
+
+    def test_04_excel_ronda_contiene_nota_operativa(self):
+        """El Excel de ronda contiene la nota operativa."""
+        contenido = generar_excel_cartones_partida(
+            self.partidas[0],
+            [],
+            self.participaciones[:3],
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        worksheet = workbook["Cartones"]
+        textos = [
+            str(worksheet.cell(row=row, column=1).value or "")
+            for row in range(1, worksheet.max_row + 1)
+        ]
+        nota_encontrada = any(
+            "no representa la liquidación general del Bingo" in texto
+            for texto in textos
+        )
+        self.assertTrue(
+            nota_encontrada,
+            "No se encontró la nota operativa en el Excel de ronda.",
+        )
+
+    def test_05_excel_resumen_sin_columna_monetaria_repetida_por_ronda(self):
+        """El Excel resumen no muestra columna monetaria repetida por ronda."""
+        contenido = generar_excel_resumen_bingo(
+            self.bingo,
+            self.partidas,
+            self.cartones,
+            self.participaciones,
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        worksheet = workbook["Resumen de partidas"]
+        headers = [cell.value for cell in worksheet[1]]
+        self.assertNotIn("Recaudación total", headers)
+
+    def test_06_excel_resumen_muestra_recaudacion_registrada_una_vez(self):
+        """El Excel resumen muestra 'Recaudación registrada' una sola vez."""
+        contenido = generar_excel_resumen_bingo(
+            self.bingo,
+            self.partidas,
+            self.cartones,
+            self.participaciones,
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        worksheet = workbook["Resumen de partidas"]
+        etiquetas = [
+            worksheet.cell(row=row, column=1).value
+            for row in range(1, worksheet.max_row + 1)
+        ]
+        self.assertEqual(
+            etiquetas.count("Recaudación registrada"),
+            1,
+            "Debe aparecer exactamente una vez.",
+        )
+
+    def test_07_carton_de_otro_bingo_no_afecta_total(self):
+        """Un cartón de otro Bingo no afecta el total."""
+        carton_otro = Carton(
+            idcarton=599,
+            idjugador=self.jugador,
+            idbingo=self.otro_bingo,
+            idpartida=None,
+            codigocarton="B91-C-OTRO",
+            matriznumeros=serializar_matriz_carton_bingo(
+                matriz_carton_prueba()
+            ),
+            preciopagado=Decimal("100.00"),
+            estadocarton="Vendido",
+        )
+        total = calcular_recaudacion_registrada(
+            self.cartones + [carton_otro]
+        )
+        self.assertEqual(total, Decimal("115.00"))
+        # Pero el resumen del Bingo 90 solo debería tener los del Bingo 90
+        resumenes = construir_resumenes_cartones_bingo(
+            self.bingo,
+            self.cartones,
+            self.participaciones,
+        )
+        total_bingo = calcular_recaudacion_registrada(resumenes)
+        self.assertEqual(total_bingo, Decimal("15.00"))
+
+    def test_08_precio_null_no_rompe_calculo_ni_incrementa_total(self):
+        """Un precio NULL no rompe el cálculo ni incrementa el total."""
+        carton_sin_precio = self._carton_maestro(504, "B90-C-NULL", None)
+        todos = self.cartones + [carton_sin_precio]
+        total = calcular_recaudacion_registrada(todos)
+        self.assertEqual(total, Decimal("15.00"))
+
+    def test_09_varias_participaciones_no_multiplican_importe(self):
+        """Varias participaciones del mismo cartón no multiplican su importe."""
+        # Pasar el mismo cartón como resumen dict múltiples veces
+        resumenes_con_duplicados = [
+            {"idcarton": 501, "precio_pagado": Decimal("5.00")},
+            {"idcarton": 501, "precio_pagado": Decimal("5.00")},
+            {"idcarton": 501, "precio_pagado": Decimal("5.00")},
+        ]
+        total = calcular_recaudacion_registrada(resumenes_con_duplicados)
+        self.assertEqual(total, Decimal("5.00"))
+
+    def test_10_reportes_existentes_sin_riesgo_continuan_funcionando(self):
+        """Los reportes existentes sin riesgo continúan funcionando."""
+        # PDF no calcula recaudación, should still work
+        partida = self.partidas[0]
+        pdf = generar_pdf_reporte_partida(
+            partida,
+            [],
+            self.participaciones[:3],
+        )
+        self.assertTrue(pdf.startswith(b"%PDF"))
+
+        # Excel de ronda still works
+        excel = generar_excel_cartones_partida(
+            partida,
+            [],
+            self.participaciones[:3],
+        )
+        workbook = load_workbook(BytesIO(excel))
+        self.assertIn("Cartones", workbook.sheetnames)
+
+        # Excel resumen still works
+        contenido = generar_excel_resumen_bingo(
+            self.bingo,
+            self.partidas,
+            self.cartones,
+            self.participaciones,
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        self.assertIn("Resumen de partidas", workbook.sheetnames)
+        self.assertIn("Cartones del Bingo", workbook.sheetnames)
+
+    def test_nota_gastos_adicionales_en_resumen(self):
+        """El Excel resumen incluye la nota sobre gastos."""
+        contenido = generar_excel_resumen_bingo(
+            self.bingo,
+            self.partidas,
+            self.cartones,
+            self.participaciones,
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        worksheet = workbook["Resumen de partidas"]
+        textos = [
+            str(worksheet.cell(row=row, column=1).value or "")
+            for row in range(1, worksheet.max_row + 1)
+        ]
+        self.assertTrue(
+            any("Gastos adicionales: no registrados" in t for t in textos),
+            "No se encontró la nota de gastos.",
+        )
+
+    def test_nota_recaudacion_por_carton_maestro_en_resumen(self):
+        """El Excel resumen incluye la nota de recaudación por cartón maestro."""
+        contenido = generar_excel_resumen_bingo(
+            self.bingo,
+            self.partidas,
+            self.cartones,
+            self.participaciones,
+        )
+        workbook = load_workbook(BytesIO(contenido))
+        worksheet = workbook["Resumen de partidas"]
+        textos = [
+            str(worksheet.cell(row=row, column=1).value or "")
+            for row in range(1, worksheet.max_row + 1)
+        ]
+        self.assertTrue(
+            any(
+                "se calcula una sola vez por cartón maestro" in t
+                for t in textos
+            ),
+            "No se encontró la nota sobre cálculo por cartón maestro.",
         )
