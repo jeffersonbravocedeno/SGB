@@ -23,7 +23,7 @@
 
 {% if request.user.is_staff or request.user.is_superuser %}
 <div class="alert alert-info" role="note">
-    <strong>Venta híbrida recomendada:</strong> se crea un solo cartón, con un único código, matriz y precio, que participa en todas las partidas actuales de este Bingo. No se crea ni se cobra un cartón diferente por cada ronda.
+    <strong>Venta híbrida:</strong> se crea un solo cartón, con un único código, matriz y precio. El cartón participa únicamente en las rondas elegibles al momento de la venta. No se crea ni se cobra un cartón diferente por cada ronda.
 </div>
 {% endif %}
 
