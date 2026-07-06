@@ -20,6 +20,7 @@ from .forms import (
     BingoForm,
     CartonForm,
     CartonPartidaForm,
+    CompraCartonJugadorForm,
     GenerarAsignarCartonForm,
     GenerarCartonBingoForm,
     PartidaBingoForm,
@@ -89,6 +90,12 @@ from .services import (
 
 logger = logging.getLogger(__name__)
 
+ESTADOS_BINGO_SIN_COMPRA = {"Finalizado", "Cancelado"}
+
+
+def _estado_bingo_bloquea_compra(bingo):
+    return str(getattr(bingo, "estadobingo", "") or "").strip() in ESTADOS_BINGO_SIN_COMPRA
+
 
 @require_GET
 def sala_juego_publica(request):
@@ -96,15 +103,20 @@ def sala_juego_publica(request):
         Partidabingo.objects.select_related("idbingo")
         .order_by("-horainicio", "idpartidabingo")
     )
+    bingos_con_compra_mostrada = set()
+    partidas_publicas = []
+    for partida in partidas:
+        resumen = preparar_resumen_partida_publica(partida)
+        idbingo = getattr(partida, "idbingo_id", None)
+        mostrar_compra_carton = idbingo not in bingos_con_compra_mostrada
+        if mostrar_compra_carton and idbingo is not None:
+            bingos_con_compra_mostrada.add(idbingo)
+        resumen["mostrar_compra_carton"] = mostrar_compra_carton
+        partidas_publicas.append(resumen)
     return render(
         request,
         "bingos/sala_juego_publica.html",
-        {
-            "partidas_publicas": [
-                preparar_resumen_partida_publica(partida)
-                for partida in partidas
-            ]
-        },
+        {"partidas_publicas": partidas_publicas},
     )
 
 
@@ -661,6 +673,87 @@ def bingo_carton_nuevo(request, idbingo):
                 total_partidas - total_partidas_elegibles
             ),
             "titulo": "Vender cartón para todo el Bingo",
+        },
+    )
+
+
+@jugador_required
+@require_http_methods(["GET", "POST"])
+def comprar_carton_bingo(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    partidas = list(Partidabingo.objects.filter(idbingo=bingo))
+    partidas_elegibles = obtener_partidas_elegibles_venta_carton(partidas)
+    partidas_no_elegibles = [
+        partida
+        for partida in partidas
+        if partida not in partidas_elegibles
+    ]
+    bingo_no_comprable = _estado_bingo_bloquea_compra(bingo)
+    compra_disponible = bool(partidas_elegibles) and not bingo_no_comprable
+
+    form = CompraCartonJugadorForm(
+        request.POST if request.method == "POST" else None
+    )
+    if request.method == "POST":
+        if bingo_no_comprable:
+            form.add_error(
+                None,
+                "No se puede comprar un cartón porque el Bingo está finalizado o cancelado.",
+            )
+        elif not partidas_elegibles:
+            form.add_error(
+                None,
+                "No se puede comprar un cartón porque ya no quedan rondas futuras disponibles.",
+            )
+        elif form.is_valid():
+            try:
+                carton = crear_carton_maestro_para_bingo(
+                    bingo=bingo,
+                    jugador=request.jugador,
+                    precio_pagado=bingo.preciocarton,
+                    fecha_compra=None,
+                )
+            except CartonAsignacionError as exc:
+                form.add_error(None, str(exc))
+            except (IntegrityError, ValidationError):
+                logger.exception(
+                    "No fue posible validar o guardar la compra directa del Bingo %s",
+                    bingo.idbingo,
+                )
+                form.add_error(
+                    None,
+                    "No fue posible comprar el cartón. No se creó ningún registro.",
+                )
+            except DatabaseError:
+                logger.exception(
+                    "No fue posible guardar la compra directa del Bingo %s",
+                    bingo.idbingo,
+                )
+                form.add_error(
+                    None,
+                    "No fue posible completar la compra. No se creó ningún registro.",
+                )
+            else:
+                messages.success(
+                    request,
+                    f"Compra completada. Tu cartón es {carton.codigocarton}.",
+                )
+                return redirect("bingos:mis_cartones")
+
+    return render(
+        request,
+        "bingos/compra_carton_jugador.html",
+        {
+            "form": form,
+            "bingo": bingo,
+            "partidas": partidas,
+            "partidas_elegibles": partidas_elegibles,
+            "partidas_no_elegibles": partidas_no_elegibles,
+            "total_partidas": len(partidas),
+            "total_partidas_elegibles": len(partidas_elegibles),
+            "total_partidas_no_elegibles": len(partidas_no_elegibles),
+            "bingo_no_comprable": bingo_no_comprable,
+            "compra_disponible": compra_disponible,
         },
     )
 

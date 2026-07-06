@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Comprar cartón{% endblock %}
+
+{% block content %}
+<section class="page-header public-page-header">
+    <div>
+        <p class="page-kicker">Compra directa</p>
+        <h1>Comprar cartón</h1>
+        <p>{{ bingo.titulobingo }}</p>
+    </div>
+    <a class="btn btn-outline-light" href="{% url 'bingos:sala_juego_publica' %}">Volver sin comprar</a>
+</section>
+
+{% if bingo_no_comprable %}
+<div class="alert alert-warning" role="alert">
+    <strong>Este Bingo no admite compras.</strong>
+    Solo se puede comprar mientras el Bingo no esté finalizado ni cancelado.
+</div>
+{% elif total_partidas_elegibles %}
+<div class="alert alert-info" role="note">
+    <strong>El cartón participa únicamente en las rondas elegibles al momento de la compra.</strong>
+    Se crea un solo cartón, con un único código, matriz y precio. No se cobra un cartón diferente por cada ronda.
+</div>
+{% else %}
+<div class="alert alert-warning" role="alert">
+    <strong>No quedan rondas futuras disponibles.</strong>
+    Solo se puede comprar cuando existe al menos una ronda Programada o En espera.
+</div>
+{% endif %}
+
+<form class="content-panel" method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Bingo seleccionado</h2>
+            <p>La compra se asignará automáticamente a tu cuenta de jugador.</p>
+        </div>
+        <dl class="detail-grid">
+            <div>
+                <dt>Bingo</dt>
+                <dd>{{ bingo.titulobingo }}</dd>
+            </div>
+            <div>
+                <dt>Estado</dt>
+                <dd><span class="badge rounded-pill {{ bingo.estadobingo|estado_class }}">{{ bingo.estadobingo }}</span></dd>
+            </div>
+            <div>
+                <dt>Precio oficial del cartón</dt>
+                <dd>${{ bingo.preciocarton|floatformat:2 }}</dd>
+            </div>
+            <div>
+                <dt>Rondas actuales</dt>
+                <dd>{{ total_partidas }}</dd>
+            </div>
+            <div>
+                <dt>Rondas donde participará</dt>
+                <dd>{{ total_partidas_elegibles }}</dd>
+            </div>
+            {% if total_partidas_no_elegibles %}
+            <div>
+                <dt>Rondas no incluidas</dt>
+                <dd>{{ total_partidas_no_elegibles }}</dd>
+            </div>
+            {% endif %}
+        </dl>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Rondas donde participará</h2>
+            <p>Solo se incluyen rondas Programadas o En espera.</p>
+        </div>
+        {% if partidas_elegibles %}
+        <div class="table-responsive">
+            <table class="table table-hover align-middle modern-table">
+                <thead>
+                    <tr>
+                        <th>Ronda</th>
+                        <th>Estado</th>
+                        <th>Inicio</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for partida in partidas_elegibles %}
+                    <tr>
+                        <td>{{ partida.nombreronda }}</td>
+                        <td><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></td>
+                        <td>{{ partida.horainicio|date:"d/m/Y H:i"|default_dash }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <strong>No hay rondas elegibles.</strong>
+            <span>Las compras están disponibles solo si quedan rondas Programadas o En espera.</span>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if partidas_no_elegibles %}
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Rondas que ya no se incluyen</h2>
+            <p>Las rondas En curso, Pausadas, Finalizadas, Canceladas o en Desempate no reciben participación retroactiva.</p>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle modern-table">
+                <thead>
+                    <tr>
+                        <th>Ronda</th>
+                        <th>Estado</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for partida in partidas_no_elegibles %}
+                    <tr>
+                        <td>{{ partida.nombreronda }}</td>
+                        <td><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Confirmación</h2>
+            <p>El jugador, el precio, el código, la matriz y las participaciones se asignan automáticamente.</p>
+        </div>
+        {% include "includes/field.html" with field=form.confirmar_compra %}
+    </div>
+
+    <div class="form-actions">
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:sala_juego_publica' %}">Volver sin comprar</a>
+        <button class="btn btn-primary" type="submit"{% if not compra_disponible %} disabled{% endif %}>Confirmar compra de cartón</button>
+    </div>
+</form>
+{% endblock %}

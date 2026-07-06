@@ -26,6 +26,7 @@ from apps.jugadores.models import Jugador
 
 from .forms import (
     AccesoCartonPublicoForm,
+    CompraCartonJugadorForm,
     GenerarAsignarCartonForm,
     GenerarCartonBingoForm,
     PartidaBingoForm,
@@ -133,6 +134,7 @@ from .views import (
     bingo_detalle,
     carton_publico,
     cartones_lista,
+    comprar_carton_bingo,
     consola_operador,
     confirmar_desempate,
     desempate_operador,
@@ -672,6 +674,27 @@ class CartonMaestroBingoTests(SimpleTestCase):
         self.assertEqual(carton.preciopagado, Decimal("5.00"))
         for llamada in resultado["crear_participacion"].call_args_list:
             self.assertNotIn("preciopagado", llamada.kwargs)
+
+    def test_venta_tardia_excluye_pausada_y_desempate(self):
+        pausada = Partidabingo(
+            idpartidabingo=25,
+            idbingo=self.bingo,
+            nombreronda="Ronda pausada",
+            estadopartida=ESTADO_PARTIDA_PAUSADA,
+        )
+        desempate = Partidabingo(
+            idpartidabingo=26,
+            idbingo=self.bingo,
+            nombreronda="Ronda desempate",
+            estadopartida=ESTADO_PARTIDA_DESEMPATE,
+        )
+
+        self.assertEqual(
+            obtener_partidas_elegibles_venta_carton(
+                [pausada, desempate, *self.partidas]
+            ),
+            self.partidas,
+        )
 
     def test_ronda_en_espera_es_elegible_aunque_haya_una_finalizada(self):
         finalizada = Partidabingo(
@@ -1524,6 +1547,487 @@ class VentaCartonBingoInterfazTests(SimpleTestCase):
         self.assertIn("Vender cartón para todo el Bingo", html)
         self.assertIn(url, html)
         self.assertIn("se cobra", html)
+
+
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class CompraDirectaCartonJugadorTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.jugador = Jugador(
+            idjugador=4,
+            aliasjugador="jugador4",
+            estadocuentajugador="Activo",
+        )
+        self.otro_jugador = Jugador(
+            idjugador=99,
+            aliasjugador="otro",
+            estadocuentajugador="Activo",
+        )
+        self.bingo = Bingo(
+            idbingo=7,
+            titulobingo="Bingo compra directa",
+            preciocarton=Decimal("8.50"),
+            estadobingo="Programado",
+        )
+        self.partidas = [
+            self._partida(21, ESTADO_PARTIDA_PROGRAMADA),
+            self._partida(22, ESTADO_PARTIDA_EN_ESPERA),
+            self._partida(23, ESTADO_PARTIDA_EN_CURSO),
+        ]
+
+    def _partida(self, pk, estado):
+        return Partidabingo(
+            idpartidabingo=pk,
+            idbingo=self.bingo,
+            nombreronda=f"Ronda {pk}",
+            estadopartida=estado,
+            horainicio=timezone.now() + timedelta(minutes=pk),
+        )
+
+    def _request(self, method="get", data=None, usuario=None):
+        path = reverse(
+            "bingos:comprar_carton_bingo",
+            kwargs={"idbingo": self.bingo.pk},
+        )
+        request = getattr(self.factory, method)(path, data or {})
+        request.user = usuario or User(
+            username=self.jugador.aliasjugador,
+            is_staff=False,
+            is_superuser=False,
+        )
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def _autorizar_jugador(self):
+        return patch(
+            "apps.jugadores.services.obtener_jugador_autenticado",
+            return_value=self.jugador,
+        )
+
+    def test_jugador_puede_abrir_la_compra(self):
+        request = self._request()
+
+        with (
+            self._autorizar_jugador(),
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter",
+                return_value=self.partidas,
+            ),
+        ):
+            response = comprar_carton_bingo(request, self.bingo.pk)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Comprar cartón")
+        self.assertContains(response, self.bingo.titulobingo)
+        self.assertContains(response, "$8,50")
+        self.assertContains(response, "Rondas donde participará")
+        self.assertContains(
+            response,
+            "El cartón participa únicamente en las rondas elegibles",
+        )
+
+    def test_anonimo_es_redirigido_al_login(self):
+        request = self._request(usuario=AnonymousUser())
+
+        with patch("apps.bingos.views.get_object_or_404") as obtener_mock:
+            response = comprar_carton_bingo(request, self.bingo.pk)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response["Location"])
+        obtener_mock.assert_not_called()
+
+    def test_usuario_sin_perfil_jugador_no_puede_comprar(self):
+        request = self._request(usuario=User(username="sin-perfil"))
+
+        with self.assertRaises(PermissionDenied):
+            comprar_carton_bingo(request, self.bingo.pk)
+
+    def test_formulario_no_expone_jugador_precio_ni_pago(self):
+        form = CompraCartonJugadorForm()
+
+        self.assertEqual(list(form.fields), ["confirmar_compra"])
+        self.assertNotIn("idjugador", form.fields)
+        self.assertNotIn("preciopagado", form.fields)
+        self.assertNotIn("idmetodopago", form.fields)
+        self.assertNotIn("comprobantepago", form.fields)
+        self.assertNotIn("numeroreferencia", form.fields)
+
+    def test_post_usa_jugador_autenticado_y_precio_oficial_aunque_manipulen_datos(self):
+        request = self._request(
+            method="post",
+            data={
+                "confirmar_compra": "on",
+                "idjugador": str(self.otro_jugador.pk),
+                "preciopagado": "0.01",
+            },
+        )
+        carton = Carton(
+            idcarton=40,
+            idbingo=self.bingo,
+            idjugador=self.jugador,
+            idpartida=None,
+            codigocarton="B7-C-DIRECTA",
+            preciopagado=self.bingo.preciocarton,
+            estadocarton="Vendido",
+        )
+
+        with (
+            self._autorizar_jugador(),
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter",
+                return_value=self.partidas,
+            ),
+            patch(
+                "apps.bingos.views.crear_carton_maestro_para_bingo",
+                return_value=carton,
+            ) as crear_mock,
+        ):
+            response = comprar_carton_bingo(request, self.bingo.pk)
+
+        crear_mock.assert_called_once_with(
+            bingo=self.bingo,
+            jugador=self.jugador,
+            precio_pagado=self.bingo.preciocarton,
+            fecha_compra=None,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("bingos:mis_cartones"))
+        mensajes = [mensaje.message for mensaje in get_messages(request)]
+        self.assertIn("Compra completada. Tu cartón es B7-C-DIRECTA.", mensajes)
+
+    def test_no_crea_carton_sin_rondas_elegibles(self):
+        request = self._request(
+            method="post",
+            data={"confirmar_compra": "on"},
+        )
+        partidas = [
+            self._partida(31, ESTADO_PARTIDA_FINALIZADA),
+            self._partida(32, ESTADO_PARTIDA_EN_CURSO),
+        ]
+
+        with (
+            self._autorizar_jugador(),
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter",
+                return_value=partidas,
+            ),
+            patch(
+                "apps.bingos.views.crear_carton_maestro_para_bingo"
+            ) as crear_mock,
+        ):
+            response = comprar_carton_bingo(request, self.bingo.pk)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "ya no quedan rondas futuras disponibles")
+        crear_mock.assert_not_called()
+
+    def test_no_permite_comprar_en_bingo_finalizado_o_cancelado(self):
+        for estado in ("Finalizado", "Cancelado"):
+            with self.subTest(estado=estado):
+                bingo = Bingo(
+                    idbingo=7,
+                    titulobingo="Bingo cerrado",
+                    preciocarton=Decimal("8.50"),
+                    estadobingo=estado,
+                )
+                request = self._request(
+                    method="post",
+                    data={"confirmar_compra": "on"},
+                )
+
+                with (
+                    self._autorizar_jugador(),
+                    patch(
+                        "apps.bingos.views.get_object_or_404",
+                        return_value=bingo,
+                    ),
+                    patch(
+                        "apps.bingos.views.Partidabingo.objects.filter",
+                        return_value=self.partidas,
+                    ),
+                    patch(
+                        "apps.bingos.views.crear_carton_maestro_para_bingo"
+                    ) as crear_mock,
+                ):
+                    response = comprar_carton_bingo(request, bingo.pk)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, "Bingo no admite compras")
+                crear_mock.assert_not_called()
+
+    def test_jugador_puede_comprar_varios_cartones_del_mismo_bingo(self):
+        cartones = [
+            Carton(
+                idcarton=40,
+                idbingo=self.bingo,
+                idjugador=self.jugador,
+                codigocarton="B7-C-UNO",
+            ),
+            Carton(
+                idcarton=41,
+                idbingo=self.bingo,
+                idjugador=self.jugador,
+                codigocarton="B7-C-DOS",
+            ),
+        ]
+
+        with (
+            self._autorizar_jugador(),
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter",
+                return_value=self.partidas,
+            ),
+            patch(
+                "apps.bingos.views.crear_carton_maestro_para_bingo",
+                side_effect=cartones,
+            ) as crear_mock,
+        ):
+            primera = comprar_carton_bingo(
+                self._request(method="post", data={"confirmar_compra": "on"}),
+                self.bingo.pk,
+            )
+            segunda = comprar_carton_bingo(
+                self._request(method="post", data={"confirmar_compra": "on"}),
+                self.bingo.pk,
+            )
+
+        self.assertEqual(primera.status_code, 302)
+        self.assertEqual(segunda.status_code, 302)
+        self.assertEqual(crear_mock.call_count, 2)
+
+    def test_carton_comprado_aparece_en_mis_cartones(self):
+        carton = Carton(
+            idcarton=40,
+            idbingo=self.bingo,
+            idjugador=self.jugador,
+            idpartida=None,
+            codigocarton="B7-C-DIRECTA",
+            matriznumeros=serializar_matriz_carton_bingo(
+                matriz_carton_prueba()
+            ),
+            estadocarton="Vendido",
+        )
+        carton.participaciones_hibridas_cargadas = [
+            CartonPartidaBingo(
+                idcartonpartidabingo=50,
+                idcarton=carton,
+                idpartida=self.partidas[0],
+                idbingo=self.bingo,
+                estado_participacion=CartonPartidaBingo.ESTADO_PENDIENTE,
+            )
+        ]
+        capturado = {}
+
+        def fake_render(_request, _template, contexto):
+            capturado.update(contexto)
+            return HttpResponse(status=200)
+
+        with (
+            self._autorizar_jugador(),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=_CartonesConsultaQuerySet([carton]),
+            ),
+            patch("apps.bingos.views.render", side_effect=fake_render),
+        ):
+            response = mis_cartones(self._request())
+
+        self.assertEqual(response.status_code, 200)
+        resumenes = capturado["cartones_resumen"]
+        self.assertEqual(len(resumenes), 1)
+        self.assertEqual(resumenes[0]["carton"].codigocarton, "B7-C-DIRECTA")
+
+    def test_sala_publica_marca_compra_solo_una_vez_por_bingo(self):
+        bingo_otro = Bingo(
+            idbingo=8,
+            titulobingo="Bingo alterno",
+            premiomayor=Decimal("750.00"),
+        )
+        partidas = [
+            partida_publica_prueba(pk=20),
+            partida_publica_prueba(pk=21),
+            partida_publica_prueba(pk=22),
+        ]
+        partidas[1].idbingo = partidas[0].idbingo
+        partidas[2].idbingo = bingo_otro
+
+        class ConsultaGrupos:
+            def filter(self, **_kwargs):
+                resultado = Mock()
+                resultado.exists.return_value = True
+                return resultado
+
+        usuario_jugador = Mock()
+        usuario_jugador.is_authenticated = True
+        usuario_jugador.pk = 5
+        usuario_jugador.is_staff = False
+        usuario_jugador.is_superuser = False
+        usuario_jugador.groups = ConsultaGrupos()
+        request = self.factory.get("/juego/")
+        request.user = usuario_jugador
+
+        capturado = {}
+
+        def fake_render(_request, _template, contexto):
+            capturado.update(contexto)
+            return HttpResponse("Sala pública")
+
+        consulta = Mock()
+        consulta.order_by.return_value = partidas
+
+        with (
+            patch(
+                "apps.bingos.views.Partidabingo.objects.select_related",
+                return_value=consulta,
+            ),
+            patch("apps.bingos.views.render", side_effect=fake_render),
+        ):
+            response = sala_juego_publica(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["mostrar_compra_carton"] for item in capturado["partidas_publicas"]],
+            [True, False, True],
+        )
+        self.assertEqual(
+            capturado["partidas_publicas"][0]["partida"].idbingo_id,
+            self.bingo.pk,
+        )
+        self.assertEqual(
+            capturado["partidas_publicas"][2]["partida"].idbingo_id,
+            bingo_otro.pk,
+        )
+
+    def test_sala_publica_muestra_texto_y_enlace_solo_para_jugador(self):
+        class ConsultaGrupos:
+            def filter(self, **_kwargs):
+                resultado = Mock()
+                resultado.exists.return_value = True
+                return resultado
+
+        usuario_jugador = Mock()
+        usuario_jugador.is_authenticated = True
+        usuario_jugador.pk = 5
+        usuario_jugador.is_staff = False
+        usuario_jugador.is_superuser = False
+        usuario_jugador.groups = ConsultaGrupos()
+        request_jugador = self.factory.get("/juego/")
+        request_jugador.user = usuario_jugador
+
+        partidas_publicas = [
+            {
+                **preparar_resumen_partida_publica(self.partidas[0]),
+                "mostrar_compra_carton": True,
+            },
+            {
+                **preparar_resumen_partida_publica(self.partidas[1]),
+                "mostrar_compra_carton": False,
+            },
+        ]
+
+        html_jugador = render_to_string(
+            "bingos/sala_juego_publica.html",
+            {"partidas_publicas": partidas_publicas},
+            request=request_jugador,
+        )
+        request_visitante = self.factory.get("/juego/")
+        request_visitante.user = AnonymousUser()
+        html_visitante = render_to_string(
+            "bingos/sala_juego_publica.html",
+            {"partidas_publicas": partidas_publicas},
+            request=request_visitante,
+        )
+        usuario_staff = Mock(
+            is_authenticated=True,
+            pk=6,
+            is_staff=True,
+            is_superuser=False,
+            groups=ConsultaGrupos(),
+        )
+        request_staff = self.factory.get("/juego/")
+        request_staff.user = usuario_staff
+        html_staff = render_to_string(
+            "bingos/sala_juego_publica.html",
+            {"partidas_publicas": partidas_publicas},
+            request=request_staff,
+        )
+        usuario_superuser = Mock(
+            is_authenticated=True,
+            pk=7,
+            is_staff=False,
+            is_superuser=True,
+            groups=ConsultaGrupos(),
+        )
+        request_superuser = self.factory.get("/juego/")
+        request_superuser.user = usuario_superuser
+        html_superuser = render_to_string(
+            "bingos/sala_juego_publica.html",
+            {"partidas_publicas": partidas_publicas},
+            request=request_superuser,
+        )
+
+        self.assertIn("Comprar cartón para este Bingo", html_jugador)
+        self.assertIn(
+            reverse("bingos:comprar_carton_bingo", kwargs={"idbingo": self.bingo.pk}),
+            html_jugador,
+        )
+        self.assertEqual(
+            html_jugador.count(
+                reverse(
+                    "bingos:comprar_carton_bingo",
+                    kwargs={"idbingo": self.bingo.pk},
+                )
+            ),
+            1,
+        )
+        self.assertEqual(
+            html_jugador.count("Comprar cartón para este Bingo"),
+            1,
+        )
+        self.assertNotIn("Comprar cartón para este Bingo", html_visitante)
+        self.assertNotIn("Comprar cartón para este Bingo", html_staff)
+        self.assertNotIn("Comprar cartón para este Bingo", html_superuser)
+
+    def test_venta_administrativa_actual_sigue_disponible(self):
+        self.assertEqual(
+            resolve(
+                reverse(
+                    "bingos:bingo_carton_nuevo",
+                    kwargs={"idbingo": self.bingo.pk},
+                )
+            ).url_name,
+            "bingo_carton_nuevo",
+        )
+        self.assertEqual(
+            list(GenerarCartonBingoForm().fields),
+            ["idjugador", "preciopagado"],
+        )
 
 
 class FormatoBolasBingoTests(SimpleTestCase):

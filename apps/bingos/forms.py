@@ -266,6 +266,16 @@ class GenerarCartonBingoForm(FriendlyModelForm):
         return precio
 
 
+class CompraCartonJugadorForm(forms.Form):
+    confirmar_compra = forms.BooleanField(
+        label="Confirmo la compra de este cartón para el Bingo.",
+        required=True,
+        error_messages={
+            "required": "Confirme la compra para continuar.",
+        },
+    )
+
+
 class CartonPartidaForm(CartonForm):
     class Meta(CartonForm.Meta):
         fields = (

@@ -40,6 +40,11 @@ urlpatterns = [
         views.bingo_carton_nuevo,
         name="bingo_carton_nuevo",
     ),
+    path(
+        "bingos/<int:idbingo>/comprar-carton/",
+        views.comprar_carton_bingo,
+        name="comprar_carton_bingo",
+    ),
     path("bingos/<int:idbingo>/", views.bingo_detalle, name="detalle"),
     path("bingos/<int:idbingo>/editar/", views.bingo_editar, name="editar"),
     path("bingos/<int:idbingo>/partidas/nueva/", views.partida_nueva, name="partida_nueva"),
