@@ -51,12 +51,14 @@ from .services import (
     ESTADOS_PARTIDA_VALORES,
     EstadoPartidaError,
     MatrizCartonInvalidaError,
+    RondaCreacionError,
     ValidacionCartonError,
     acciones_disponibles_consola,
     confirmar_y_finalizar_desempate,
     construir_matriz_marcada_carton,
     contar_numeros_marcados_carton,
     crear_carton_maestro_para_bingo,
+    crear_ronda_con_participaciones,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
     extraer_siguiente_bola,
@@ -727,16 +729,36 @@ def partida_nueva(request, idbingo):
     if request.method == "POST":
         form = PartidaBingoForm(request.POST)
         if form.is_valid():
-            def before_save(partida):
-                partida.idbingo = bingo
-
             try:
-                partida = save_new_model_form(form, before_save=before_save)
+                resultado = crear_ronda_con_participaciones(
+                    bingo=bingo,
+                    partida=form.save(commit=False),
+                )
+            except RondaCreacionError as exc:
+                form.add_error(None, str(exc))
             except IntegrityError as exc:
                 form.add_integrity_error(exc)
+            except DatabaseError:
+                logger.exception(
+                    "No fue posible crear la ronda para el Bingo %s",
+                    bingo.idbingo,
+                )
+                form.add_error(
+                    None,
+                    "No fue posible crear la ronda. "
+                    "No se guardaron cambios parciales.",
+                )
             else:
-                messages.success(request, "Partida registrada correctamente.")
-                return redirect("bingos:partida_detalle", idpartidabingo=partida.idpartidabingo)
+                partida = resultado["partida"]
+                messages.success(
+                    request,
+                    "La ronda fue creada correctamente y se registraron las "
+                    "participaciones de los cartones activos del Bingo.",
+                )
+                return redirect(
+                    "bingos:partida_detalle",
+                    idpartidabingo=partida.idpartidabingo,
+                )
     else:
         form = PartidaBingoForm(
             initial={
@@ -747,7 +769,11 @@ def partida_nueva(request, idbingo):
                 "horainicio": timezone.now(),
             }
         )
-    return render(request, "bingos/partida_formulario.html", {"form": form, "bingo": bingo, "titulo": "Nueva partida"})
+    return render(
+        request,
+        "bingos/partida_formulario.html",
+        {"form": form, "bingo": bingo, "titulo": "Nueva ronda"},
+    )
 
 
 @admin_required

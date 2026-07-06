@@ -94,6 +94,10 @@ class CartonAsignacionError(ValueError):
     pass
 
 
+class RondaCreacionError(ValueError):
+    pass
+
+
 class BolaBingoError(ValueError):
     pass
 
@@ -264,6 +268,13 @@ def validar_asignacion_cartones(partida):
     )
 
 
+def _carton_vendido_y_asignado(carton):
+    return (
+        carton.idjugador_id is not None
+        and str(carton.estadocarton or "").strip().lower() == "vendido"
+    )
+
+
 def generar_codigo_carton(
     idpartida,
     existe_codigo=None,
@@ -352,6 +363,94 @@ def validar_venta_carton_para_bingo(bingo, partidas):
     return partidas
 
 
+def _crear_participacion_aplicacion(carton, partida, bingo, fecha_creacion):
+    return CartonPartidaBingo.objects.create(
+        idcarton=carton,
+        idpartida=partida,
+        idbingo=bingo,
+        estado_participacion=CartonPartidaBingo.ESTADO_PENDIENTE,
+        indicevictoria=None,
+        es_asignacion_original=False,
+        origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
+        motivoestado=None,
+        fechacreacion=fecha_creacion,
+        fechavalidacion=None,
+    )
+
+
+def _carton_maestro_valido_para_bingo(carton, bingo):
+    return (
+        carton.idbingo_id == bingo.pk
+        and carton.idpartida_id is None
+        and _carton_vendido_y_asignado(carton)
+    )
+
+
+def crear_ronda_con_participaciones(bingo, partida, fecha_creacion=None):
+    """Crea una ronda y sincroniza sus participaciones en una transacción."""
+    if bingo is None or getattr(bingo, "pk", None) is None:
+        raise RondaCreacionError("El Bingo es obligatorio para crear la ronda.")
+    if not isinstance(partida, Partidabingo):
+        raise RondaCreacionError("Los datos de la ronda no son válidos.")
+    if getattr(partida, "pk", None) is not None:
+        raise RondaCreacionError("La ronda indicada ya fue registrada.")
+
+    with transaction.atomic():
+        bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+
+        partida.idbingo = bingo_bloqueado
+        assign_next_integer_pk(partida)
+        partida.save(force_insert=True)
+
+        maestros_bloqueados = list(
+            Carton.objects.select_for_update(of=("self",))
+            .filter(
+                idbingo=bingo_bloqueado,
+                idpartida__isnull=True,
+            )
+            .order_by("idcarton")
+        )
+        maestros_validos = [
+            carton
+            for carton in maestros_bloqueados
+            if _carton_maestro_valido_para_bingo(
+                carton,
+                bingo_bloqueado,
+            )
+        ]
+
+        ids_maestros = [carton.pk for carton in maestros_validos]
+        ids_con_participacion = set()
+        if ids_maestros:
+            ids_con_participacion = set(
+                CartonPartidaBingo.objects.select_for_update()
+                .filter(
+                    idpartida=partida,
+                    idcarton_id__in=ids_maestros,
+                )
+                .values_list("idcarton_id", flat=True)
+            )
+
+        fecha_creacion = fecha_creacion or timezone.now()
+        participaciones_creadas = []
+        for carton in maestros_validos:
+            if carton.pk in ids_con_participacion:
+                continue
+            participaciones_creadas.append(
+                _crear_participacion_aplicacion(
+                    carton=carton,
+                    partida=partida,
+                    bingo=bingo_bloqueado,
+                    fecha_creacion=fecha_creacion,
+                )
+            )
+
+    return {
+        "partida": partida,
+        "participaciones_creadas": participaciones_creadas,
+    }
+
+
 def crear_carton_maestro_para_bingo(
     bingo,
     jugador,
@@ -406,17 +505,11 @@ def crear_carton_maestro_para_bingo(
         carton.save(force_insert=True)
 
         for partida in partidas:
-            CartonPartidaBingo.objects.create(
-                idcarton=carton,
-                idpartida=partida,
-                idbingo=bingo_bloqueado,
-                estado_participacion=CartonPartidaBingo.ESTADO_PENDIENTE,
-                indicevictoria=None,
-                es_asignacion_original=False,
-                origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
-                motivoestado=None,
-                fechacreacion=fecha_compra,
-                fechavalidacion=None,
+            _crear_participacion_aplicacion(
+                carton=carton,
+                partida=partida,
+                bingo=bingo_bloqueado,
+                fecha_creacion=fecha_compra,
             )
 
     return carton
@@ -801,13 +894,6 @@ def validar_estado_validacion_carton(partida):
 
 def _carton_pertenece_a_partida(carton, partida):
     return carton.idpartida_id == partida.pk
-
-
-def _carton_vendido_y_asignado(carton):
-    return (
-        carton.idjugador_id is not None
-        and str(carton.estadocarton or "").strip().lower() == "vendido"
-    )
 
 
 def evaluar_carton_en_partida(carton, partida):

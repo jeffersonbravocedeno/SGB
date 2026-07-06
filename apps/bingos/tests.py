@@ -5,7 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, call, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
 from channels.layers import get_channel_layer
 from channels.testing import WebsocketCommunicator
@@ -15,7 +15,7 @@ from django.contrib.auth.models import AnonymousUser, User
 from django.contrib.messages import get_messages
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.exceptions import PermissionDenied
-from django.db import DatabaseError
+from django.db import DatabaseError, IntegrityError
 from django.http import Http404, HttpResponse
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase, override_settings
@@ -70,6 +70,7 @@ from .services import (
     DesempateIncompletoError,
     EstadoPartidaError,
     MatrizCartonInvalidaError,
+    RondaCreacionError,
     ValidacionCartonError,
     acciones_disponibles_consola,
     aplicar_accion_consola,
@@ -79,6 +80,7 @@ from .services import (
     confirmar_y_finalizar_desempate_participaciones,
     construir_candidato_desempate_participacion,
     crear_carton_maestro_para_bingo,
+    crear_ronda_con_participaciones,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
     estado_partida_mostrar,
@@ -137,6 +139,7 @@ from .views import (
     partidas_lista,
     mi_carton_detalle,
     mis_cartones,
+    partida_nueva,
     sacar_bola,
     sala_juego_publica,
     sortear_desempate,
@@ -651,6 +654,292 @@ class CartonMaestroBingoTests(SimpleTestCase):
             self._crear_sin_base(
                 error_participacion=RuntimeError("fallo de participacion")
             )
+
+
+class SincronizacionRondaParticipacionesTests(SimpleTestCase):
+    def setUp(self):
+        self.bingo = Bingo(idbingo=7, titulobingo="Bingo híbrido")
+        self.otro_bingo = Bingo(idbingo=8, titulobingo="Otro Bingo")
+        self.jugador = Jugador(idjugador=4)
+        self.fecha_creacion = timezone.now()
+        self.partida = Partidabingo(
+            idbingo=self.bingo,
+            nombreronda="Ronda 4",
+            estadopartida=ESTADO_PARTIDA_PROGRAMADA,
+            valorefectivo=Decimal("25.00"),
+        )
+
+    def _carton(
+        self,
+        pk,
+        *,
+        bingo=None,
+        partida=None,
+        estado="Vendido",
+        jugador=None,
+        precio="5.00",
+    ):
+        return Carton(
+            idcarton=pk,
+            idbingo=bingo or self.bingo,
+            idpartida=partida,
+            idjugador=self.jugador if jugador is None else jugador,
+            codigocarton=f"B7-C-{pk}",
+            estadocarton=estado,
+            preciopagado=Decimal(precio),
+        )
+
+    def _crear_sin_base(
+        self,
+        cartones,
+        *,
+        participaciones_existentes=(),
+        error_participacion=None,
+        capturar_error=False,
+    ):
+        def asignar_pk(partida):
+            partida.idpartidabingo = 30
+            return partida
+
+        atomic_context = MagicMock()
+        resultado = None
+        error = None
+        with (
+            patch(
+                "apps.bingos.services.transaction.atomic",
+                return_value=atomic_context,
+            ) as atomic_mock,
+            patch(
+                "apps.bingos.services.Bingo.objects.select_for_update"
+            ) as lock_bingo,
+            patch(
+                "apps.bingos.services.Carton.objects.select_for_update"
+            ) as lock_cartones,
+            patch(
+                "apps.bingos.services.CartonPartidaBingo.objects.select_for_update"
+            ) as lock_participaciones,
+            patch(
+                "apps.bingos.services.assign_next_integer_pk",
+                side_effect=asignar_pk,
+            ) as assign_pk_mock,
+            patch.object(Partidabingo, "save") as guardar_partida_mock,
+            patch.object(Carton, "save") as guardar_carton_mock,
+            patch(
+                "apps.bingos.services.CartonPartidaBingo.objects.create",
+                side_effect=error_participacion,
+            ) as crear_participacion_mock,
+        ):
+            lock_bingo.return_value.get.return_value = self.bingo
+            consulta_cartones = lock_cartones.return_value.filter.return_value
+            consulta_cartones.order_by.return_value = cartones
+            consulta_participaciones = (
+                lock_participaciones.return_value.filter.return_value
+            )
+            consulta_participaciones.values_list.return_value = (
+                participaciones_existentes
+            )
+            try:
+                resultado = crear_ronda_con_participaciones(
+                    bingo=self.bingo,
+                    partida=self.partida,
+                    fecha_creacion=self.fecha_creacion,
+                )
+            except Exception as exc:
+                if not capturar_error:
+                    raise
+                error = exc
+
+        return {
+            "resultado": resultado,
+            "error": error,
+            "atomic": atomic_mock,
+            "atomic_context": atomic_context,
+            "lock_bingo": lock_bingo,
+            "lock_cartones": lock_cartones,
+            "lock_participaciones": lock_participaciones,
+            "assign_pk": assign_pk_mock,
+            "guardar_partida": guardar_partida_mock,
+            "guardar_carton": guardar_carton_mock,
+            "crear_participacion": crear_participacion_mock,
+        }
+
+    def test_tres_cartones_maestros_validos_crean_tres_participaciones(self):
+        cartones = [self._carton(pk) for pk in (40, 41, 42)]
+
+        prueba = self._crear_sin_base(cartones)
+
+        self.assertEqual(self.partida.idbingo, self.bingo)
+        self.assertEqual(self.partida.pk, 30)
+        self.assertEqual(
+            len(prueba["resultado"]["participaciones_creadas"]),
+            3,
+        )
+        prueba["atomic"].assert_called_once_with()
+        prueba["lock_bingo"].return_value.get.assert_called_once_with(pk=7)
+        prueba["lock_cartones"].assert_called_once_with(of=("self",))
+        prueba["lock_cartones"].return_value.filter.assert_called_once_with(
+            idbingo=self.bingo,
+            idpartida__isnull=True,
+        )
+        prueba["assign_pk"].assert_called_once_with(self.partida)
+        prueba["guardar_partida"].assert_called_once_with(force_insert=True)
+        prueba["guardar_carton"].assert_not_called()
+        self.assertEqual(prueba["crear_participacion"].call_count, 3)
+        self.assertEqual(
+            {
+                llamada.kwargs["idcarton"].pk
+                for llamada in prueba["crear_participacion"].call_args_list
+            },
+            {40, 41, 42},
+        )
+        for llamada in prueba["crear_participacion"].call_args_list:
+            self.assertEqual(llamada.kwargs["idpartida"], self.partida)
+            self.assertEqual(llamada.kwargs["idbingo"], self.bingo)
+            self.assertEqual(
+                llamada.kwargs["estado_participacion"],
+                CartonPartidaBingo.ESTADO_PENDIENTE,
+            )
+
+    def test_excluye_otro_bingo_historicos_y_cartones_no_validos(self):
+        partida_historica = Partidabingo(
+            idpartidabingo=11,
+            idbingo=self.bingo,
+        )
+        cartones = [
+            self._carton(40),
+            self._carton(41, bingo=self.otro_bingo),
+            self._carton(42, partida=partida_historica),
+            self._carton(43, estado="Disponible"),
+            self._carton(44, estado="Cerrado"),
+            self._carton(45, jugador=Jugador()),
+        ]
+
+        prueba = self._crear_sin_base(cartones)
+
+        prueba["crear_participacion"].assert_called_once()
+        self.assertEqual(
+            prueba["crear_participacion"].call_args.kwargs["idcarton"].pk,
+            40,
+        )
+
+    def test_no_duplica_una_participacion_ya_existente(self):
+        cartones = [self._carton(pk) for pk in (40, 41, 42)]
+
+        prueba = self._crear_sin_base(
+            cartones,
+            participaciones_existentes=(41,),
+        )
+
+        self.assertEqual(prueba["crear_participacion"].call_count, 2)
+        ids_creados = {
+            llamada.kwargs["idcarton"].pk
+            for llamada in prueba["crear_participacion"].call_args_list
+        }
+        self.assertEqual(ids_creados, {40, 42})
+
+    def test_fallo_de_participacion_sale_de_atomic_y_propaga_el_error(self):
+        prueba = self._crear_sin_base(
+            [self._carton(40)],
+            error_participacion=IntegrityError("fallo de participación"),
+            capturar_error=True,
+        )
+
+        self.assertIsInstance(prueba["error"], IntegrityError)
+        self.assertEqual(str(prueba["error"]), "fallo de participación")
+        self.assertIs(
+            prueba["atomic_context"].__exit__.call_args.args[0],
+            IntegrityError,
+        )
+        prueba["guardar_partida"].assert_called_once_with(force_insert=True)
+
+    def test_crear_ronda_no_modifica_precio_pago_premio_ni_cartones(self):
+        cartones = [
+            self._carton(40, precio="4.50"),
+            self._carton(41, precio="6.25"),
+        ]
+        precios_antes = [carton.preciopagado for carton in cartones]
+        premio_antes = self.partida.valorefectivo
+
+        prueba = self._crear_sin_base(cartones)
+
+        self.assertEqual(
+            [carton.preciopagado for carton in cartones],
+            precios_antes,
+        )
+        self.assertEqual(self.partida.valorefectivo, premio_antes)
+        prueba["guardar_carton"].assert_not_called()
+
+    def test_rechaza_una_ronda_ya_registrada_antes_de_abrir_transaccion(self):
+        self.partida.idpartidabingo = 30
+
+        with (
+            patch("apps.bingos.services.transaction.atomic") as atomic_mock,
+            self.assertRaisesMessage(
+                RondaCreacionError,
+                "ya fue registrada",
+            ),
+        ):
+            crear_ronda_con_participaciones(self.bingo, self.partida)
+
+        atomic_mock.assert_not_called()
+
+
+class CreacionRondaVistaTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.bingo = Bingo(idbingo=7, titulobingo="Bingo híbrido")
+
+    def _request(self, data=None):
+        request = self.factory.post(
+            reverse(
+                "bingos:partida_nueva",
+                kwargs={"idbingo": self.bingo.pk},
+            ),
+            data or datos_partida_form(),
+        )
+        request.user = User(username="admin", is_staff=True)
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def test_ruta_de_creacion_usa_servicio_atomico_y_muestra_resultado(self):
+        request = self._request()
+
+        def resultado_servicio(*, bingo, partida):
+            self.assertEqual(bingo, self.bingo)
+            self.assertIsInstance(partida, Partidabingo)
+            partida.idpartidabingo = 30
+            return {
+                "partida": partida,
+                "participaciones_creadas": [Mock(), Mock(), Mock()],
+            }
+
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.crear_ronda_con_participaciones",
+                side_effect=resultado_servicio,
+            ) as crear_ronda_mock,
+        ):
+            response = partida_nueva(request, self.bingo.pk)
+
+        crear_ronda_mock.assert_called_once()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse(
+                "bingos:partida_detalle",
+                kwargs={"idpartidabingo": 30},
+            ),
+        )
+        self.assertIn(
+            "La ronda fue creada correctamente y se registraron las "
+            "participaciones de los cartones activos del Bingo.",
+            [message.message for message in get_messages(request)],
+        )
 
 
 class GenerarAsignarCartonFormTests(SimpleTestCase):
