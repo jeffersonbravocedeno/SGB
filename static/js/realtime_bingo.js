@@ -124,11 +124,10 @@
             ? partida.mensaje_estado_carton
             : partida.mensaje_estado;
         actualizarTexto(raiz, "[data-realtime-mensaje]", mensaje);
-        actualizarTexto(
-            raiz,
-            "[data-realtime-ultima-bola]",
-            partida.ultima_bola ? partida.ultima_bola.codigo : "—"
-        );
+        seleccionarTodos(raiz, "[data-realtime-ultima-bola]").forEach(function (elemento) {
+            elemento.textContent = partida.ultima_bola ? partida.ultima_bola.codigo : "—";
+            elemento.classList.toggle("last-ball-empty", !partida.ultima_bola);
+        });
         seleccionarTodos(raiz, "[data-realtime-sin-bolas]").forEach(function (elemento) {
             elemento.hidden = Boolean(partida.ultima_bola);
         });
@@ -257,13 +256,22 @@
                 ) {
                     return;
                 }
+                if ("CustomEvent" in window) {
+                    raiz.dispatchEvent(new window.CustomEvent("siab:partidaActualizada", {
+                        detail: payload,
+                        bubbles: true,
+                    }));
+                }
                 anunciarBolaExtraida(payload, partidaId);
                 if (payload.requiere_recarga === true) {
                     recargarVistaActual();
                     return;
                 }
                 actualizarDatosComunes(raiz, payload.partida);
-                if (raiz.dataset.realtimeMode === "tablero") {
+                if (
+                    raiz.dataset.realtimeMode === "tablero" ||
+                    raiz.dataset.realtimeMode === "operador"
+                ) {
                     actualizarTablero(raiz, payload.partida);
                 } else if (raiz.dataset.realtimeMode === "carton") {
                     actualizarCarton(raiz, payload.partida);

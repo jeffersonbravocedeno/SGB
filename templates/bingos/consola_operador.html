@@ -9,7 +9,7 @@
     <div>
         <p class="page-kicker">Consola del operador</p>
         <h1>{{ partida.nombreronda }}</h1>
-        <p>{{ partida.idbingo.titulobingo }} · Estado: {{ partida.estadopartida|estado_partida_display }}</p>
+        <p>{{ partida.idbingo.titulobingo }} · Estado: <span data-realtime-estado>{{ partida.estadopartida|estado_partida_display }}</span></p>
     </div>
     <div class="d-flex flex-wrap gap-2">
         {% include "bingos/includes/control_sonido.html" %}
@@ -80,7 +80,7 @@
         <div class="col-lg-4">
             <h2 class="section-subtitle">Estado operativo</h2>
             <dl class="detail-list mt-3">
-                <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></dd></div>
+                <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}" data-realtime-estado>{{ partida.estadopartida|estado_partida_display }}</span></dd></div>
                 <div><dt>Inicio</dt><dd>{{ partida.horainicio|date:"d/m/Y H:i" }}</dd></div>
                 <div><dt>Finalización</dt><dd>{{ partida.horafin|date:"d/m/Y H:i"|default_dash }}</dd></div>
             </dl>
@@ -105,27 +105,51 @@
         <div class="col-lg-4">
             <div class="last-ball-card h-100">
                 <span>Última bola</span>
-                {% if ultima_bola_codigo %}
-                <strong>{{ ultima_bola_codigo }}</strong>
-                {% else %}
-                <strong class="last-ball-empty">—</strong>
-                <small>Aún no se han extraído bolas</small>
-                {% endif %}
+                <strong class="{% if not ultima_bola_codigo %}last-ball-empty{% endif %}" data-realtime-ultima-bola>{% if ultima_bola_codigo %}{{ ultima_bola_codigo }}{% else %}—{% endif %}</strong>
+                <small data-realtime-sin-bolas{% if ultima_bola_codigo %} hidden{% endif %}>Aún no se han extraído bolas</small>
             </div>
         </div>
         <div class="col-lg-8">
             <div class="draw-controls h-100">
                 <div>
                     <p class="page-kicker text-primary mb-1">Bolillero manual</p>
-                    <h2 class="section-subtitle">{{ total_bolas_extraidas }} de 75 bolas extraídas</h2>
-                    <p class="text-muted mb-0">Faltan {{ total_bolas_faltantes }} bola{{ total_bolas_faltantes|pluralize }}.</p>
+                    <h2 class="section-subtitle"><span data-realtime-total-extraidas>{{ total_bolas_extraidas }}</span> de 75 bolas extraídas</h2>
+                    <p class="text-muted mb-0">Faltan <span data-realtime-restantes>{{ total_bolas_faltantes }}</span> bola{{ total_bolas_faltantes|pluralize }}.</p>
                 </div>
-                <form method="post" action="{% url 'bingos:sacar_bola' partida.idpartidabingo %}">
+                <form method="post" action="{% url 'bingos:sacar_bola' partida.idpartidabingo %}" data-bolillero-manual-form>
                     {% csrf_token %}
-                    <button class="btn btn-primary btn-lg w-100" type="submit" {% if not puede_sacar_bola %}disabled{% endif %}>
+                    <button class="btn btn-primary btn-lg w-100" type="submit" data-bolillero-manual-button {% if not puede_sacar_bola %}disabled{% endif %}>
                         Sacar siguiente bola
                     </button>
                 </form>
+                <div
+                    class="border rounded-3 p-3"
+                    data-bolillero-automatico
+                    data-partida-id="{{ partida.idpartidabingo }}"
+                    data-estado-partida="{{ partida.estadopartida }}"
+                    data-bolas-faltantes="{{ total_bolas_faltantes|default:0 }}"
+                    data-puede-sacar-bola="{{ puede_sacar_bola|yesno:'true,false' }}"
+                >
+                    <p class="page-kicker text-primary mb-1">Bolillero automático</p>
+                    <div class="row g-3 align-items-end">
+                        <div class="col-md-4">
+                            <label class="form-label" for="bolillero-intervalo-{{ partida.idpartidabingo }}">Intervalo</label>
+                            <select class="form-select" id="bolillero-intervalo-{{ partida.idpartidabingo }}" data-bolillero-intervalo>
+                                <option value="3">3 segundos</option>
+                                <option value="5" selected>5 segundos</option>
+                                <option value="8">8 segundos</option>
+                                <option value="10">10 segundos</option>
+                            </select>
+                        </div>
+                        <div class="col-md-8">
+                            <div class="d-flex flex-wrap gap-2">
+                                <button class="btn btn-success" type="button" data-bolillero-iniciar {% if not puede_sacar_bola %}disabled{% endif %}>Iniciar extracción automática</button>
+                                <button class="btn btn-outline-secondary" type="button" data-bolillero-detener disabled>Detener extracción automática</button>
+                            </div>
+                        </div>
+                    </div>
+                    <p class="small text-muted mt-3 mb-0" data-bolillero-estado aria-live="polite">Automático detenido</p>
+                </div>
                 {% if not puede_sacar_bola %}
                 <p class="small text-muted mb-0">
                     {% if not hay_bolas_disponibles %}
@@ -147,15 +171,14 @@
             <p>Orden de extracción registrado para esta partida</p>
         </div>
     </div>
-    {% if historial_bolas %}
-    <div class="ball-history">
+    <div class="ball-history{% if not historial_bolas %} d-none{% endif %}" data-realtime-history role="list" aria-label="Bolas extraídas">
+        {% if historial_bolas %}
         {% for bola in historial_bolas %}
-        <span class="ball-history-item" title="Bola número {{ bola.numero }}">{{ bola.codigo }}</span>
+        <span class="ball-history-item" title="Bola número {{ bola.numero }}" role="listitem">{{ bola.codigo }}</span>
         {% endfor %}
+        {% endif %}
     </div>
-    {% else %}
-    <div class="empty-state"><strong>No hay bolas registradas</strong><span>Usa “Sacar siguiente bola” cuando la partida esté En curso.</span></div>
-    {% endif %}
+    <div class="empty-state{% if historial_bolas %} d-none{% endif %}" data-realtime-history-empty><strong>No hay bolas registradas</strong><span>Usa “Sacar siguiente bola” cuando la partida esté En curso.</span></div>
 </section>
 
 <section class="content-panel mb-3">
@@ -171,7 +194,7 @@
             <div class="bingo-board-column">
                 <div class="bingo-board-letter">{{ columna.letra }}</div>
                 {% for bola in columna.bolas %}
-                <div class="bingo-board-number{% if bola.extraida %} is-drawn{% endif %}" title="{{ bola.codigo }}{% if bola.extraida %} extraída{% else %} disponible{% endif %}">
+                <div class="bingo-board-number{% if bola.extraida %} is-drawn{% endif %}" data-bola-numero="{{ bola.numero }}" title="{{ bola.codigo }}{% if bola.extraida %} extraída{% else %} disponible{% endif %}">
                     {{ bola.numero }}
                 </div>
                 {% endfor %}
@@ -374,4 +397,5 @@
 </section>
 </div>
 <script src="{% static 'js/realtime_bingo.js' %}" defer></script>
+<script src="{% static 'js/bolillero_automatico.js' %}" defer></script>
 {% endblock %}

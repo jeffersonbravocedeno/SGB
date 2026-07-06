@@ -4894,6 +4894,32 @@ class PlantillasTiempoRealBingoTests(SimpleTestCase):
         self.request = RequestFactory().get("/juego/")
         self.request.user = AnonymousUser()
 
+    def _contexto_consola(self, partida):
+        bolas = parsear_bolas_cantadas(partida.bolascantadas)
+        bolas_disponibles = obtener_bolas_disponibles(bolas)
+        return {
+            "partida": partida,
+            "acciones_consola": [],
+            "cartones": [],
+            "cartones_validacion": [],
+            "participaciones_hibridas": [],
+            "participaciones_hibridas_validacion": [],
+            "candidatos_desempate": [],
+            "tablero_bingo": preparar_datos_tablero_publico(partida)["tablero_bingo"],
+            "historial_bolas": [
+                {"numero": numero, "codigo": formatear_bola_bingo(numero)}
+                for numero in bolas
+            ],
+            "ultima_bola_codigo": formatear_bola_bingo(bolas[-1]) if bolas else None,
+            "total_bolas_extraidas": len(bolas),
+            "total_bolas_faltantes": len(bolas_disponibles),
+            "hay_bolas_disponibles": bool(bolas_disponibles),
+            "puede_sacar_bola": (
+                partida.estadopartida == ESTADO_PARTIDA_EN_CURSO
+                and bool(bolas_disponibles)
+            ),
+        }
+
     def test_tablero_conserva_actualizacion_manual_y_no_agrega_acciones_admin(self):
         partida = partida_publica_prueba(bolas=[1, 23])
         html = render_to_string(
@@ -4954,22 +4980,68 @@ class PlantillasTiempoRealBingoTests(SimpleTestCase):
         partida = partida_publica_prueba(bolas=[1, 23])
         html = render_to_string(
             "bingos/consola_operador.html",
-            {
-                "partida": partida,
-                "acciones_consola": [],
-                "cartones": [],
-                "cartones_validacion": [],
-                "participaciones_hibridas": [],
-                "participaciones_hibridas_validacion": [],
-                "candidatos_desempate": [],
-                "tablero_bingo": [],
-            },
+            self._contexto_consola(partida),
             request=self.request,
         )
 
         self.assertIn("data-realtime-audio-toggle", html)
         self.assertIn('data-realtime-mode="operador"', html)
         self.assertIn("realtime_bingo.js", html)
+        self.assertIn("bolillero_automatico.js", html)
+
+    def test_consola_operador_incluye_bolillero_automatico(self):
+        partida = partida_publica_prueba(bolas=[1, 23])
+        html = render_to_string(
+            "bingos/consola_operador.html",
+            self._contexto_consola(partida),
+            request=self.request,
+        )
+
+        self.assertIn("Bolillero automático", html)
+        self.assertIn("data-bolillero-intervalo", html)
+        self.assertIn("3 segundos", html)
+        self.assertIn("5 segundos", html)
+        self.assertIn("8 segundos", html)
+        self.assertIn("10 segundos", html)
+        self.assertIn("Iniciar extracción automática", html)
+        self.assertIn("Detener extracción automática", html)
+        self.assertIn("data-bolillero-detener disabled", html)
+        self.assertIn('aria-live="polite"', html)
+        self.assertIn("Automático detenido", html)
+        self.assertIn("Sacar siguiente bola", html)
+        self.assertIn("data-bolillero-manual-form", html)
+
+    def test_consola_operador_deshabilita_inicio_automatico_si_no_puede_extraer(self):
+        partida = partida_publica_prueba(
+            estado=ESTADO_PARTIDA_PAUSADA,
+            bolas=[1, 23],
+        )
+        html = render_to_string(
+            "bingos/consola_operador.html",
+            self._contexto_consola(partida),
+            request=self.request,
+        )
+
+        self.assertIn("data-bolillero-iniciar disabled", html)
+        self.assertIn("Sacar siguiente bola", html)
+
+    def test_consola_operador_tiene_datos_para_actualizacion_visual(self):
+        partida = partida_publica_prueba(bolas=[1, 23])
+        html = render_to_string(
+            "bingos/consola_operador.html",
+            self._contexto_consola(partida),
+            request=self.request,
+        )
+
+        self.assertIn("data-realtime-estado", html)
+        self.assertIn("data-realtime-ultima-bola", html)
+        self.assertIn("data-realtime-sin-bolas", html)
+        self.assertIn("data-realtime-total-extraidas", html)
+        self.assertIn("data-realtime-restantes", html)
+        self.assertIn("data-realtime-history", html)
+        self.assertIn("data-realtime-history-empty", html)
+        self.assertIn('data-bola-numero="1"', html)
+        self.assertIn('data-bola-numero="75"', html)
 
     def test_javascript_anuncia_solo_bolas_nuevas_sin_duplicados(self):
         javascript = Path("static/js/realtime_bingo.js").read_text(
@@ -4987,6 +5059,67 @@ class PlantillasTiempoRealBingoTests(SimpleTestCase):
             javascript.index('payload.evento !== "bola_extraida"'),
             javascript.index("window.speechSynthesis.speak(utterance)"),
         )
+
+    def test_javascript_notifica_actualizaciones_para_modulos_de_consola(self):
+        javascript = Path("static/js/realtime_bingo.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"siab:partidaActualizada"', javascript)
+        self.assertIn("detail: payload", javascript)
+        self.assertIn("bubbles: true", javascript)
+
+    def test_javascript_actualiza_tablero_en_modo_operador(self):
+        javascript = Path("static/js/realtime_bingo.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('raiz.dataset.realtimeMode === "operador"', javascript)
+        self.assertLess(
+            javascript.index('raiz.dataset.realtimeMode === "operador"'),
+            javascript.index("actualizarTablero(raiz, payload.partida)"),
+        )
+
+    def test_javascript_bolillero_automatico_reutiliza_post_manual_y_bloquea_concurrencia(self):
+        javascript = Path("static/js/bolillero_automatico.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("[data-bolillero-manual-form]", javascript)
+        self.assertIn("window.fetch(contexto.formularioManual.action", javascript)
+        self.assertIn('"POST"', javascript)
+        self.assertIn('"X-CSRFToken": obtenerTokenCsrf(contexto)', javascript)
+        self.assertIn("new window.FormData(contexto.formularioManual)", javascript)
+        self.assertIn("solicitudPendiente", javascript)
+        self.assertIn("contexto.solicitudPendiente", javascript)
+        self.assertIn("Espera a que termine la extracción automática pendiente.", javascript)
+
+    def test_javascript_bolillero_automatico_posterga_detencion_si_hay_peticion_pendiente(self):
+        javascript = Path("static/js/bolillero_automatico.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("detenerSolicitado", javascript)
+        self.assertIn("contexto.solicitudPendiente", javascript)
+        self.assertIn("Se detendrá después de la balota actual.", javascript)
+        self.assertIn('escribirEstado(contexto, "Automático detenido")', javascript)
+        self.assertLess(
+            javascript.index("Se detendrá después de la balota actual."),
+            javascript.index('escribirEstado(contexto, "Automático detenido")'),
+        )
+
+    def test_javascript_bolillero_automatico_detiene_estados_no_permitidos(self):
+        javascript = Path("static/js/bolillero_automatico.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('var ESTADO_EN_CURSO = "En curso";', javascript)
+        self.assertIn("contexto.estadoPartida === ESTADO_EN_CURSO", javascript)
+        self.assertIn("!extraccionDisponible || contexto.activo || contexto.solicitudPendiente", javascript)
+        self.assertIn("payload.evento === \"desempate_detectado\"", javascript)
+        self.assertIn("Extracción detenida: la partida ya no está En curso", javascript)
+        self.assertIn("Extracción detenida: ya no quedan bolas disponibles", javascript)
+        self.assertIn("beforeunload", javascript)
 
 
 class FakeReportQuerySet(list):
