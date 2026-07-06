@@ -15,17 +15,13 @@
         {% if partida.estadopartida == "Desempate" %}
         <a class="btn btn-warning" href="{% url 'bingos:desempate_operador' partida.idpartidabingo %}">Ir al desempate</a>
         {% endif %}
-        {% if puede_asignar_cartones %}
-        <a class="btn btn-primary" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">Generar cartón</a>
-        {% else %}
-        <span class="btn btn-outline-light disabled" aria-disabled="true" title="Solo disponible en Programada o En espera">Generación bloqueada</span>
-        {% endif %}
+        <a class="btn btn-primary" href="{% url 'bingos:detalle' partida.idbingo_id %}">Administrar cartones del Bingo</a>
     </div>
 </section>
 
 {% if partida.estadopartida == "Desempate" %}
 <div class="alert alert-warning d-flex flex-wrap justify-content-between align-items-center gap-3" role="alert">
-    <span>El modo Desempate está activo. La extracción normal, la validación de cartones, la generación y la finalización genérica están bloqueadas.</span>
+    <span>El modo Desempate está activo. La extracción normal, la validación de cartones y la finalización genérica están bloqueadas.</span>
     <a class="btn btn-warning" href="{% url 'bingos:desempate_operador' partida.idpartidabingo %}">Ir al desempate</a>
 </div>
 {% endif %}
@@ -194,11 +190,11 @@
         {% endif %}
     </div>
 
+    {% if cartones_validacion %}
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h3 class="section-subtitle mb-0">Cartones históricos de la partida</h3>
         <span class="badge rounded-pill text-bg-secondary">Histórico por partida</span>
     </div>
-    {% if cartones_validacion %}
     <div class="winner-validation-grid">
         {% for item in cartones_validacion %}
         <article class="winner-validation-card{% if item.completo %} is-complete{% endif %}">
@@ -247,8 +243,6 @@
         </article>
         {% endfor %}
     </div>
-    {% else %}
-    <div class="empty-state"><strong>No hay cartones históricos para validar</strong><span>Los cartones del flujo heredado aparecerán aquí.</span></div>
     {% endif %}
 
     <div class="d-flex justify-content-between align-items-center mt-4 mb-3">
@@ -317,17 +311,13 @@
     {% endif %}
 </section>
 
+{% if cartones %}
 <section class="content-panel">
     <div class="section-heading">
         <div>
             <h2>Cartones históricos de la partida</h2>
             <p>Registros que conservan la relación heredada mediante Carton.idpartida</p>
         </div>
-        {% if puede_asignar_cartones %}
-        <a class="btn btn-primary btn-sm" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">+ Generar cartón</a>
-        {% else %}
-        <span class="btn btn-outline-secondary btn-sm disabled" aria-disabled="true">Generación bloqueada</span>
-        {% endif %}
     </div>
     <div class="table-responsive">
         <table class="table modern-table align-middle">
@@ -341,13 +331,12 @@
                     <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
                     <td class="text-end"><a class="btn btn-outline-secondary btn-sm" href="{% url 'bingos:partida_carton_editar' partida.idpartidabingo carton.idcarton %}">Editar</a></td>
                 </tr>
-                {% empty %}
-                <tr><td colspan="5" class="text-muted">No hay cartones asignados a esta partida.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
 </section>
+{% endif %}
 
 <section class="content-panel mt-3">
     <div class="section-heading">
