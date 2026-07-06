@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{% load siab_tags %}
+{% load static siab_tags %}
 
 {% block title %}SIAB | Consola de operador{% endblock %}
 
 {% block content %}
+<div data-realtime-bingo data-realtime-mode="operador" data-partida-id="{{ partida.idpartidabingo }}">
 <section class="page-header">
     <div>
         <p class="page-kicker">Consola del operador</p>
@@ -11,6 +12,7 @@
         <p>{{ partida.idbingo.titulobingo }} · Estado: {{ partida.estadopartida|estado_partida_display }}</p>
     </div>
     <div class="d-flex flex-wrap gap-2">
+        {% include "bingos/includes/control_sonido.html" %}
         <a class="btn btn-outline-light" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Detalle</a>
         {% if partida.estadopartida == "Desempate" %}
         <a class="btn btn-warning" href="{% url 'bingos:desempate_operador' partida.idpartidabingo %}">Ir al desempate</a>
@@ -370,4 +372,6 @@
     <div class="empty-state"><strong>No hay cartones de Bingo en esta ronda</strong><span>Las participaciones híbridas se mostrarán sin duplicar matriz, código ni precio.</span></div>
     {% endif %}
 </section>
+</div>
+<script src="{% static 'js/realtime_bingo.js' %}" defer></script>
 {% endblock %}

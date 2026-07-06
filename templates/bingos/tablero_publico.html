@@ -13,6 +13,7 @@
     </div>
     <div class="d-flex flex-wrap gap-2">
         <span class="realtime-status realtime-status--manual" data-realtime-status role="status">Actualización manual</span>
+        {% include "bingos/includes/control_sonido.html" %}
         <a class="btn btn-outline-light" href="{% url 'bingos:sala_juego_publica' %}">Volver a la sala</a>
         <a class="btn btn-light" href="{% url 'bingos:tablero_publico' partida.idpartidabingo %}">Actualizar tablero</a>
     </div>

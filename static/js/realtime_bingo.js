@@ -1,6 +1,90 @@
 (function () {
     "use strict";
 
+    var CLAVE_PREFERENCIA_SONIDO = "siab.sonido_balotas_habilitado";
+    var balotasProcesadas = new Set();
+    var sonidoHabilitado = leerPreferenciaSonido();
+
+    function leerPreferenciaSonido() {
+        try {
+            return window.localStorage.getItem(CLAVE_PREFERENCIA_SONIDO) === "true";
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function guardarPreferenciaSonido(habilitado) {
+        try {
+            window.localStorage.setItem(
+                CLAVE_PREFERENCIA_SONIDO,
+                habilitado ? "true" : "false"
+            );
+        } catch (error) {
+            // El audio sigue funcionando durante esta visita si localStorage no está disponible.
+        }
+    }
+
+    function actualizarControlesSonido() {
+        document.querySelectorAll("[data-realtime-audio-toggle]").forEach(function (control) {
+            control.setAttribute("aria-pressed", sonidoHabilitado ? "true" : "false");
+            control.textContent = sonidoHabilitado ? "Silenciar sonido" : "Activar sonido";
+            control.classList.toggle("btn-light", sonidoHabilitado);
+            control.classList.toggle("btn-outline-light", !sonidoHabilitado);
+        });
+    }
+
+    function iniciarControlesSonido() {
+        document.querySelectorAll("[data-realtime-audio-toggle]").forEach(function (control) {
+            control.addEventListener("click", function () {
+                sonidoHabilitado = !sonidoHabilitado;
+                guardarPreferenciaSonido(sonidoHabilitado);
+                actualizarControlesSonido();
+            });
+        });
+        actualizarControlesSonido();
+    }
+
+    function anunciarBolaExtraida(payload, partidaId) {
+        if (
+            !payload || payload.tipo !== "partida_actualizada" ||
+            payload.evento !== "bola_extraida" || !payload.partida ||
+            !payload.partida.ultima_bola
+        ) {
+            return;
+        }
+
+        var numero = Number(payload.partida.ultima_bola.numero);
+        if (!Number.isInteger(numero) || numero < 1 || numero > 75) {
+            return;
+        }
+
+        var claveBalota = partidaId + ":" + numero;
+        if (balotasProcesadas.has(claveBalota)) {
+            return;
+        }
+        balotasProcesadas.add(claveBalota);
+
+        if (
+            !sonidoHabilitado || !("speechSynthesis" in window) ||
+            !("SpeechSynthesisUtterance" in window)
+        ) {
+            return;
+        }
+
+        try {
+            var codigo = String(payload.partida.ultima_bola.codigo || codigoBola(numero));
+            var letra = codigo.split("-")[0];
+            var utterance = new window.SpeechSynthesisUtterance(
+                letra + ", " + numero + "."
+            );
+            utterance.lang = "es-EC";
+            utterance.rate = 0.9;
+            window.speechSynthesis.speak(utterance);
+        } catch (error) {
+            // La actualización visual continúa si el navegador bloquea la síntesis de voz.
+        }
+    }
+
     function codigoBola(numero) {
         var letras = "BINGO";
         return letras[Math.floor((numero - 1) / 15)] + "-" + numero;
@@ -173,6 +257,7 @@
                 ) {
                     return;
                 }
+                anunciarBolaExtraida(payload, partidaId);
                 if (payload.requiere_recarga === true) {
                     recargarVistaActual();
                     return;
@@ -205,5 +290,6 @@
         conectar();
     }
 
+    iniciarControlesSonido();
     document.querySelectorAll("[data-realtime-bingo]").forEach(iniciarTiempoReal);
 }());

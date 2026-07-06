@@ -13,6 +13,7 @@
     </div>
     <div class="d-flex flex-wrap gap-2">
         {% if partida %}<span class="realtime-status realtime-status--manual" data-realtime-status role="status">Actualización manual</span>{% endif %}
+        {% if partida %}{% include "bingos/includes/control_sonido.html" %}{% endif %}
         <a class="btn btn-outline-light" href="{% url 'bingos:mis_cartones' %}">Mis cartones</a>
         <a class="btn btn-light" href="{% url 'bingos:mi_carton_detalle' carton.codigocarton %}{% if participacion_seleccionada %}?partida={{ participacion_seleccionada.idpartida_id }}{% endif %}">Actualizar cartón</a>
     </div>

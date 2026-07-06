@@ -4905,6 +4905,9 @@ class PlantillasTiempoRealBingoTests(SimpleTestCase):
         self.assertIn("Actualizar tablero", html)
         self.assertIn("data-realtime-bingo", html)
         self.assertIn("realtime_bingo.js", html)
+        self.assertIn("data-realtime-audio-toggle", html)
+        self.assertIn('aria-pressed="false"', html)
+        self.assertIn("Activar sonido", html)
         self.assertNotIn("Sacar siguiente bola", html)
         self.assertNotIn("Validar cartón", html)
 
@@ -4925,8 +4928,65 @@ class PlantillasTiempoRealBingoTests(SimpleTestCase):
         self.assertIn("Actualizar cartón", html)
         self.assertIn("data-carton-cell", html)
         self.assertIn("realtime_bingo.js", html)
+        self.assertIn("data-realtime-audio-toggle", html)
         self.assertNotIn("Reclamar", html)
         self.assertNotIn("Validar cartón", html)
+
+    def test_mi_carton_privado_incluye_control_de_sonido(self):
+        partida = partida_publica_prueba(bolas=[1, 23])
+        carton = carton_publico_prueba(partida=partida)
+        html = render_to_string(
+            "bingos/mi_carton_detalle.html",
+            {
+                "partida": partida,
+                "carton": carton,
+                "jugador": carton.idjugador,
+                "error_carton": None,
+                **preparar_datos_carton_jugador(carton),
+            },
+            request=self.request,
+        )
+
+        self.assertIn("data-realtime-audio-toggle", html)
+        self.assertIn("realtime_bingo.js", html)
+
+    def test_consola_operador_incluye_control_y_receptor_tiempo_real(self):
+        partida = partida_publica_prueba(bolas=[1, 23])
+        html = render_to_string(
+            "bingos/consola_operador.html",
+            {
+                "partida": partida,
+                "acciones_consola": [],
+                "cartones": [],
+                "cartones_validacion": [],
+                "participaciones_hibridas": [],
+                "participaciones_hibridas_validacion": [],
+                "candidatos_desempate": [],
+                "tablero_bingo": [],
+            },
+            request=self.request,
+        )
+
+        self.assertIn("data-realtime-audio-toggle", html)
+        self.assertIn('data-realtime-mode="operador"', html)
+        self.assertIn("realtime_bingo.js", html)
+
+    def test_javascript_anuncia_solo_bolas_nuevas_sin_duplicados(self):
+        javascript = Path("static/js/realtime_bingo.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("window.localStorage", javascript)
+        self.assertIn('payload.evento !== "bola_extraida"', javascript)
+        self.assertIn("balotasProcesadas.has(claveBalota)", javascript)
+        self.assertIn("balotasProcesadas.add(claveBalota)", javascript)
+        self.assertIn("window.speechSynthesis.speak(utterance)", javascript)
+        self.assertIn('utterance.lang = "es-EC"', javascript)
+        self.assertEqual(javascript.count("speechSynthesis.speak"), 1)
+        self.assertLess(
+            javascript.index('payload.evento !== "bola_extraida"'),
+            javascript.index("window.speechSynthesis.speak(utterance)"),
+        )
 
 
 class FakeReportQuerySet(list):
