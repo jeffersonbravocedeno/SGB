@@ -919,77 +919,12 @@ def partida_carton_nuevo(request, idpartidabingo):
         Partidabingo.objects.select_related("idbingo"),
         idpartidabingo=idpartidabingo,
     )
-
-    if not puede_asignar_cartones(partida):
-        try:
-            validar_asignacion_cartones(partida)
-        except CartonAsignacionError as exc:
-            messages.error(request, str(exc))
-        return redirect(
-            "bingos:partida_detalle",
-            idpartidabingo=partida.idpartidabingo,
-        )
-
-    if request.method == "POST":
-        form = GenerarAsignarCartonForm(request.POST)
-        if form.is_valid():
-            try:
-                carton = crear_y_asignar_carton(
-                    partida=partida,
-                    jugador=form.cleaned_data["idjugador"],
-                    precio_pagado=form.cleaned_data["preciopagado"],
-                )
-            except CartonAsignacionError as exc:
-                messages.error(request, str(exc))
-                return redirect(
-                    "bingos:partida_detalle",
-                    idpartidabingo=partida.idpartidabingo,
-                )
-            except (IntegrityError, ValidationError):
-                logger.exception(
-                    "No fue posible validar o guardar el cartón para la partida %s",
-                    partida.idpartidabingo,
-                )
-                form.add_error(
-                    None,
-                    "No fue posible generar un cartón completo y único. No se creó ningún cartón.",
-                )
-            except DatabaseError:
-                logger.exception(
-                    "No fue posible guardar el cartón para la partida %s",
-                    partida.idpartidabingo,
-                )
-                form.add_error(
-                    None,
-                    "No fue posible generar el cartón. No se creó ningún cartón.",
-                )
-            else:
-                messages.success(
-                    request,
-                    f"Cartón {carton.codigocarton} generado y asignado correctamente.",
-                )
-                detalle_url = reverse(
-                    "bingos:partida_detalle",
-                    kwargs={"idpartidabingo": partida.idpartidabingo},
-                )
-                return redirect(
-                    f"{detalle_url}?carton_generado={carton.idcarton}"
-                )
-    else:
-        form = GenerarAsignarCartonForm(
-            initial={
-                "preciopagado": partida.idbingo.preciocarton,
-            }
-        )
-    return render(
+    messages.info(
         request,
-        "bingos/partida_carton_generar.html",
-        {
-            "form": form,
-            "partida": partida,
-            "titulo": "Generar y asignar cartón",
-        },
+        "Los nuevos cartones se crean para todo el Bingo y participan "
+        "automáticamente en sus rondas. Usa la opción de cartones del Bingo.",
     )
+    return redirect("bingos:detalle", idbingo=partida.idbingo_id)
 
 
 @admin_required

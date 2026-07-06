@@ -959,69 +959,137 @@ class GenerarAsignarCartonFormTests(SimpleTestCase):
         self.assertIn("preciopagado", form.errors)
 
 
-class FlujoAsignacionCartonTests(SimpleTestCase):
+class RutaHeredadaCartonTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
-
-    def _request(self, method="get", data=None):
-        request_method = getattr(self.factory, method)
-        request = request_method("/partidas/1/cartones/nuevo/", data or {})
-        request.user = User(username="admin", is_staff=True)
-        request.session = {}
-        request._messages = FallbackStorage(request)
-        return request
-
-    def _partida(self, estado):
-        bingo = Bingo(
+        self.bingo = Bingo(
             idbingo=2,
             titulobingo="Bingo de prueba",
             preciocarton=Decimal("5.00"),
         )
-        return Partidabingo(
+        self.partida = Partidabingo(
             idpartidabingo=1,
-            idbingo=bingo,
-            estadopartida=estado,
+            idbingo=self.bingo,
+            estadopartida=ESTADO_PARTIDA_PROGRAMADA,
             nombreronda="Ronda 1",
         )
+        self.url = reverse(
+            "bingos:partida_carton_nuevo",
+            kwargs={"idpartidabingo": self.partida.pk},
+        )
 
-    def test_ingreso_en_estado_bloqueado_muestra_mensaje_y_redirige(self):
+    def _request(self, method="get", data=None, usuario=None):
+        request_method = getattr(self.factory, method)
+        request = request_method(self.url, data or {})
+        request.user = usuario or User(username="admin", is_staff=True)
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def test_get_administrador_redirige_al_detalle_del_bingo_asociado(self):
         request = self._request()
-        partida = self._partida(ESTADO_PARTIDA_EN_CURSO)
 
-        with (
-            patch("apps.bingos.views.get_object_or_404", return_value=partida),
-            patch("apps.bingos.views.crear_y_asignar_carton") as crear_mock,
+        with patch(
+            "apps.bingos.views.get_object_or_404",
+            return_value=self.partida,
         ):
-            response = partida_carton_nuevo(request, partida.idpartidabingo)
+            response = partida_carton_nuevo(
+                request,
+                self.partida.idpartidabingo,
+            )
 
         self.assertEqual(response.status_code, 302)
-        crear_mock.assert_not_called()
-        self.assertTrue(
-            any(
-                "Solo se permite en Programada o En espera" in message.message
-                for message in get_messages(request)
-            )
+        self.assertEqual(
+            response["Location"],
+            reverse("bingos:detalle", kwargs={"idbingo": self.bingo.pk}),
         )
+        mensajes = list(get_messages(request))
+        self.assertEqual(len(mensajes), 1)
+        self.assertEqual(mensajes[0].tags, "info")
+        self.assertIn("se crean para todo el Bingo", mensajes[0].message)
 
-    def test_post_invalido_no_invoca_creacion_del_carton(self):
+    def test_post_no_crea_ni_modifica_cartones_o_participaciones(self):
         request = self._request(
             method="post",
-            data={"idjugador": "", "preciopagado": "0"},
+            data={"idjugador": "4", "preciopagado": "5.00"},
         )
-        partida = self._partida(ESTADO_PARTIDA_PROGRAMADA)
 
         with (
-            patch("apps.bingos.views.get_object_or_404", return_value=partida),
-            patch("apps.bingos.views.crear_y_asignar_carton") as crear_mock,
             patch(
-                "apps.bingos.views.render",
-                return_value=HttpResponse(status=200),
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.partida,
             ),
+            patch(
+                "apps.bingos.views.GenerarAsignarCartonForm"
+            ) as formulario_legado,
+            patch("apps.bingos.views.crear_y_asignar_carton") as crear_legado,
+            patch(
+                "apps.bingos.views.crear_carton_maestro_para_bingo"
+            ) as crear_maestro,
+            patch("apps.bingos.views.Carton.objects.create") as crear_carton,
+            patch("apps.bingos.views.Carton.objects.update") as modificar_carton,
+            patch(
+                "apps.bingos.views.CartonPartidaBingo.objects.create"
+            ) as crear_participacion,
+            patch(
+                "apps.bingos.views.CartonPartidaBingo.objects.update"
+            ) as modificar_participacion,
         ):
-            response = partida_carton_nuevo(request, partida.idpartidabingo)
+            response = partida_carton_nuevo(
+                request,
+                self.partida.idpartidabingo,
+            )
 
-        self.assertEqual(response.status_code, 200)
-        crear_mock.assert_not_called()
+        self.assertRedirects(
+            response,
+            reverse("bingos:detalle", kwargs={"idbingo": self.bingo.pk}),
+            fetch_redirect_response=False,
+        )
+        formulario_legado.assert_not_called()
+        crear_legado.assert_not_called()
+        crear_maestro.assert_not_called()
+        crear_carton.assert_not_called()
+        modificar_carton.assert_not_called()
+        crear_participacion.assert_not_called()
+        modificar_participacion.assert_not_called()
+
+    def test_usuarios_sin_permiso_conservan_la_proteccion(self):
+        get_object_mock = Mock()
+
+        request_anonimo = self._request(usuario=AnonymousUser())
+        with patch(
+            "apps.bingos.views.get_object_or_404",
+            get_object_mock,
+        ):
+            response = partida_carton_nuevo(
+                request_anonimo,
+                self.partida.idpartidabingo,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response["Location"])
+        get_object_mock.assert_not_called()
+
+        request_no_admin = self._request(
+            usuario=User(
+                username="jugador",
+                is_staff=False,
+                is_superuser=False,
+            )
+        )
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                get_object_mock,
+            ),
+            self.assertRaises(PermissionDenied),
+        ):
+            partida_carton_nuevo(
+                request_no_admin,
+                self.partida.idpartidabingo,
+            )
+
+        get_object_mock.assert_not_called()
 
 
 @override_settings(
@@ -1233,7 +1301,7 @@ class VentaCartonBingoInterfazTests(SimpleTestCase):
         carton_create.assert_not_called()
         participacion_create.assert_not_called()
 
-    def test_ruta_heredada_sigue_resolviendo_y_no_usa_servicio_hibrido(self):
+    def test_ruta_heredada_sigue_resolviendo(self):
         partida = Partidabingo(
             idpartidabingo=21,
             idbingo=self.bingo,
@@ -1245,41 +1313,6 @@ class VentaCartonBingoInterfazTests(SimpleTestCase):
             kwargs={"idpartidabingo": partida.pk},
         )
         self.assertEqual(resolve(url).url_name, "partida_carton_nuevo")
-        request = self._request(
-            method="post",
-            path=url,
-            data={"idjugador": "4", "preciopagado": "5.00"},
-        )
-        form = self._form_valido(request.POST)
-        carton = Carton(
-            idcarton=41,
-            idbingo=self.bingo,
-            idpartida=partida,
-            idjugador=self.jugador,
-            codigocarton="P21-C-PRUEBA",
-        )
-        with (
-            patch(
-                "apps.bingos.views.get_object_or_404",
-                return_value=partida,
-            ),
-            patch(
-                "apps.bingos.views.GenerarAsignarCartonForm",
-                return_value=form,
-            ),
-            patch(
-                "apps.bingos.views.crear_y_asignar_carton",
-                return_value=carton,
-            ) as legado_mock,
-            patch(
-                "apps.bingos.views.crear_carton_maestro_para_bingo"
-            ) as hibrido_mock,
-        ):
-            response = partida_carton_nuevo(request, partida.pk)
-
-        self.assertEqual(response.status_code, 302)
-        legado_mock.assert_called_once()
-        hibrido_mock.assert_not_called()
 
     def test_detalle_administrativo_enlaza_venta_por_bingo(self):
         request = self._request()
