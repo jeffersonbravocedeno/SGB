@@ -1053,6 +1053,96 @@ def anular_costo_premio_material_bingo(costo, usuario, motivo):
     return costo_bloqueado
 
 
+def cerrar_financieramente_bingo(bingo, usuario, observacion_cierre=""):
+    observacion_cierre = _limpiar_texto(observacion_cierre)
+
+    with transaction.atomic():
+        bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+        list(
+            Partidabingo.objects.select_for_update().filter(
+                idbingo=bingo_bloqueado,
+            )
+        )
+        list(
+            BingoGastoOperativo.objects.select_for_update().filter(
+                idbingo=bingo_bloqueado,
+            )
+        )
+        list(
+            BingoPremioMaterialCosto.objects.select_for_update().filter(
+                idbingo=bingo_bloqueado,
+            )
+        )
+        cierre_bloqueado = (
+            BingoCierreFinanciero.objects.select_for_update()
+            .filter(idbingo=bingo_bloqueado)
+            .order_by("idbingocierrefinanciero")
+            .first()
+        )
+
+        resumen = construir_resumen_financiero_real_bingo(bingo_bloqueado)
+
+        if (
+            cierre_bloqueado is not None
+            and cierre_bloqueado.estado == BingoCierreFinanciero.ESTADO_CERRADO
+        ):
+            raise CierreFinancieroError("El cierre financiero ya está cerrado.")
+
+        bloqueos = resumen["bloqueos_de_cierre"]
+        if bloqueos:
+            raise CierreFinancieroError(
+                "No se puede cerrar financieramente el Bingo: "
+                + " ".join(bloqueos)
+            )
+
+        ahora = timezone.now()
+        snapshot = {
+            "cartonesvendidosunicos": resumen["cartones_vendidos_unicos"],
+            "recaudacionregistrada": resumen["recaudacion_registrada"],
+            "premiosefectivofinalizados": resumen["premios_efectivo_finalizados"],
+            "costospremiosmateriales": resumen["costos_premios_materiales"],
+            "gastosoperativos": resumen["gastos_operativos"],
+            "resultadoprovisional": resumen["resultado_provisional"],
+            "utilidadbruta": resumen["utilidad_bruta"],
+            "utilidadneta": resumen["utilidad_neta"],
+            "totalrondas": resumen["total_rondas"],
+            "rondasfinalizadas": resumen["rondas_finalizadas"],
+            "rondascanceladas": resumen["rondas_canceladas"],
+            "rondaspendientes": resumen["rondas_pendientes"],
+        }
+
+        if cierre_bloqueado is None:
+            cierre_bloqueado = BingoCierreFinanciero(
+                idbingo=bingo_bloqueado,
+                fechacreacion=ahora,
+            )
+
+        for campo, valor in snapshot.items():
+            setattr(cierre_bloqueado, campo, valor)
+
+        cierre_bloqueado.estado = BingoCierreFinanciero.ESTADO_CERRADO
+        cierre_bloqueado.fechacalculo = ahora
+        cierre_bloqueado.fechacierre = ahora
+        cierre_bloqueado.idusuariocierre = usuario
+        cierre_bloqueado.observacioncierre = observacion_cierre
+
+        if cierre_bloqueado.pk is None:
+            cierre_bloqueado.save()
+        else:
+            cierre_bloqueado.save(
+                update_fields=[
+                    *snapshot.keys(),
+                    "estado",
+                    "fechacalculo",
+                    "fechacierre",
+                    "idusuariocierre",
+                    "observacioncierre",
+                ]
+            )
+
+    return cierre_bloqueado
+
+
 def generar_codigo_carton(
     idpartida,
     existe_codigo=None,
@@ -1247,6 +1337,15 @@ def crear_carton_maestro_para_bingo(
             )
 
         bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+        bingo_es_persistido = not getattr(
+            getattr(bingo_bloqueado, "_state", None),
+            "adding",
+            False,
+        )
+        if bingo_es_persistido and _cierre_financiero_esta_cerrado(bingo_bloqueado):
+            raise CierreFinancieroError(
+                "No se pueden vender cartones porque el cierre financiero está cerrado."
+            )
         partidas = list(
             Partidabingo.objects.select_for_update()
             .filter(idbingo=bingo_bloqueado)

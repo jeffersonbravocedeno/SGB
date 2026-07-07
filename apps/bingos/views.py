@@ -41,6 +41,7 @@ from .services import (
     BolaBingoError,
     CartonPublicoError,
     CartonAsignacionError,
+    CierreFinancieroError,
     DesempateError,
     ESTADO_PARTIDA_CANCELADA,
     ESTADO_PARTIDA_DESEMPATE,
@@ -632,6 +633,9 @@ def bingo_carton_nuevo(request, idbingo):
                     precio_pagado=form.cleaned_data["preciopagado"],
                     fecha_compra=None,
                 )
+            except CierreFinancieroError as exc:
+                messages.error(request, str(exc))
+                return redirect("bingos:detalle", idbingo=bingo.idbingo)
             except CartonAsignacionError as exc:
                 form.add_error(None, str(exc))
             except (IntegrityError, ValidationError):
@@ -729,6 +733,9 @@ def comprar_carton_bingo(request, idbingo):
                     precio_pagado=bingo.preciocarton,
                     fecha_compra=None,
                 )
+            except CierreFinancieroError as exc:
+                messages.error(request, str(exc))
+                return redirect("bingos:comprar_carton_bingo", idbingo=bingo.idbingo)
             except CartonAsignacionError as exc:
                 form.add_error(None, str(exc))
             except (IntegrityError, ValidationError):

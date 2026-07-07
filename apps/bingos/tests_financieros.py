@@ -30,7 +30,9 @@ if settings.SETTINGS_MODULE == "config.settings_finance_test":
         ESTADO_PARTIDA_PROGRAMADA,
         anular_costo_premio_material_bingo,
         anular_gasto_operativo_bingo,
+        cerrar_financieramente_bingo,
         construir_resumen_financiero_real_bingo,
+        crear_carton_maestro_para_bingo,
         registrar_costo_premio_material_bingo,
         registrar_gasto_operativo_bingo,
     )
@@ -228,6 +230,29 @@ if settings.SETTINGS_MODULE == "config.settings_finance_test":
                 fechacalculo=self.ahora,
                 fechacierre=self.ahora,
                 idusuariocierre=self.usuario,
+                fechacreacion=self.ahora,
+            )
+
+        def _crear_cierre_abierto(self):
+            return BingoCierreFinanciero.objects.create(
+                idbingo=self.bingo,
+                estado=BingoCierreFinanciero.ESTADO_ABIERTO,
+                cartonesvendidosunicos=0,
+                recaudacionregistrada=Decimal("0.00"),
+                premiosefectivofinalizados=Decimal("0.00"),
+                costospremiosmateriales=Decimal("0.00"),
+                gastosoperativos=Decimal("0.00"),
+                resultadoprovisional=Decimal("0.00"),
+                utilidadbruta=Decimal("0.00"),
+                utilidadneta=Decimal("0.00"),
+                totalrondas=0,
+                rondasfinalizadas=0,
+                rondascanceladas=0,
+                rondaspendientes=0,
+                fechacalculo=self.ahora,
+                fechacierre=None,
+                idusuariocierre=None,
+                observacioncierre="Precalculo",
                 fechacreacion=self.ahora,
             )
 
@@ -984,3 +1009,349 @@ if settings.SETTINGS_MODULE == "config.settings_finance_test":
 
             costo.refresh_from_db()
             self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+
+        def test_cerrar_financieramente_crea_cierre_con_snapshot_correcto(self):
+            partida_finalizada = self._crear_partida(
+                valor=Decimal("4.00"),
+                premio_material="Canasta",
+            )
+            partida_cancelada = self._crear_partida(
+                estado=ESTADO_PARTIDA_CANCELADA,
+                valor=Decimal("99.00"),
+            )
+            costo = self._crear_costo(partida_finalizada, Decimal("3.00"))
+            gasto = self._crear_gasto(Decimal("2.00"))
+            cartones = [self._crear_carton(Decimal("5.00")) for _indice in range(3)]
+            participaciones = []
+            for carton in cartones:
+                participaciones.append(
+                    self._crear_participacion(carton, partida_finalizada)
+                )
+                participaciones.append(
+                    self._crear_participacion(carton, partida_cancelada)
+                )
+            estado_operativo_original = self.bingo.estadobingo
+            antes = timezone.now()
+
+            cierre = cerrar_financieramente_bingo(
+                self.bingo,
+                self.usuario,
+                observacion_cierre="  cierre validado  ",
+            )
+
+            despues = timezone.now()
+            self.assertEqual(BingoCierreFinanciero.objects.count(), 1)
+            self.assertEqual(cierre.estado, BingoCierreFinanciero.ESTADO_CERRADO)
+            self.assertEqual(cierre.idbingo, self.bingo)
+            self.assertEqual(cierre.cartonesvendidosunicos, 3)
+            self.assertEqual(cierre.recaudacionregistrada, Decimal("15.00"))
+            self.assertNotEqual(cierre.recaudacionregistrada, Decimal("30.00"))
+            self.assertEqual(cierre.premiosefectivofinalizados, Decimal("4.00"))
+            self.assertEqual(cierre.costospremiosmateriales, Decimal("3.00"))
+            self.assertEqual(cierre.gastosoperativos, Decimal("2.00"))
+            self.assertEqual(cierre.resultadoprovisional, Decimal("11.00"))
+            self.assertEqual(cierre.utilidadbruta, Decimal("8.00"))
+            self.assertEqual(cierre.utilidadneta, Decimal("6.00"))
+            self.assertEqual(cierre.totalrondas, 2)
+            self.assertEqual(cierre.rondasfinalizadas, 1)
+            self.assertEqual(cierre.rondascanceladas, 1)
+            self.assertEqual(cierre.rondaspendientes, 0)
+            self.assertGreaterEqual(cierre.fechacalculo, antes)
+            self.assertLessEqual(cierre.fechacalculo, despues)
+            self.assertGreaterEqual(cierre.fechacierre, antes)
+            self.assertLessEqual(cierre.fechacierre, despues)
+            self.assertEqual(cierre.idusuariocierre, self.usuario)
+            self.assertEqual(cierre.observacioncierre, "cierre validado")
+
+            self.bingo.refresh_from_db()
+            self.assertEqual(self.bingo.estadobingo, estado_operativo_original)
+            partida_finalizada.refresh_from_db()
+            partida_cancelada.refresh_from_db()
+            self.assertEqual(partida_finalizada.estadopartida, ESTADO_PARTIDA_FINALIZADA)
+            self.assertEqual(partida_finalizada.premiomaterial, "Canasta")
+            self.assertEqual(partida_cancelada.estadopartida, ESTADO_PARTIDA_CANCELADA)
+            for carton in cartones:
+                carton.refresh_from_db()
+                self.assertEqual(carton.estadocarton, "Vendido")
+            for participacion in participaciones:
+                participacion.refresh_from_db()
+                self.assertEqual(
+                    participacion.estado_participacion,
+                    CartonPartidaBingo.ESTADO_PENDIENTE,
+                )
+            gasto.refresh_from_db()
+            costo.refresh_from_db()
+            self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
+            self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+
+        def test_cerrar_financieramente_rechaza_cada_estado_pendiente(self):
+            for indice, estado in enumerate(
+                (
+                    ESTADO_PARTIDA_PROGRAMADA,
+                    ESTADO_PARTIDA_EN_ESPERA,
+                    ESTADO_PARTIDA_EN_CURSO,
+                    ESTADO_PARTIDA_PAUSADA,
+                    ESTADO_PARTIDA_DESEMPATE,
+                ),
+                start=1,
+            ):
+                with self.subTest(estado=estado):
+                    bingo = Bingo.objects.create(
+                        idbingo=300 + indice,
+                        titulobingo=f"Bingo pendiente {indice}",
+                        fechaprogramadabingo=self.ahora,
+                        tipobingo="Virtual",
+                        preciocarton=Decimal("5.00"),
+                        premiomayor=Decimal("50.00"),
+                        descripcionpremiomayor="Premio mayor",
+                        estadobingo="Programado",
+                    )
+                    Partidabingo.objects.create(
+                        idpartidabingo=9300 + indice,
+                        idbingo=bingo,
+                        nombreronda=f"Ronda pendiente {indice}",
+                        valorefectivo=Decimal("0.00"),
+                        premiomaterial="",
+                        estadopartida=estado,
+                        patronganador="carton_lleno",
+                        bolascantadas="[]",
+                        ultimabola=0,
+                        haydesempate=False,
+                        horainicio=self.ahora,
+                        horafin=None,
+                    )
+
+                    with self.assertRaises(CierreFinancieroError) as contexto:
+                        cerrar_financieramente_bingo(bingo, self.usuario)
+
+                    mensaje = str(contexto.exception)
+                    self.assertTrue(
+                        mensaje.startswith(
+                            "No se puede cerrar financieramente el Bingo:"
+                        )
+                    )
+                    self.assertIn("rondas pendientes", mensaje)
+                    self.assertFalse(
+                        BingoCierreFinanciero.objects.filter(idbingo=bingo).exists()
+                    )
+
+        def test_cerrar_financieramente_rechaza_premio_material_sin_costo(self):
+            self._crear_partida(premio_material="Canasta")
+
+            with self.assertRaises(CierreFinancieroError) as contexto:
+                cerrar_financieramente_bingo(self.bingo, self.usuario)
+
+            mensaje = str(contexto.exception)
+            self.assertTrue(
+                mensaje.startswith("No se puede cerrar financieramente el Bingo:")
+            )
+            self.assertIn("premios materiales", mensaje)
+            self.assertEqual(BingoCierreFinanciero.objects.count(), 0)
+
+        def test_cerrar_financieramente_costo_anulado_no_resuelve_bloqueo(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            self._crear_costo(
+                partida,
+                Decimal("10.00"),
+                estado=BingoPremioMaterialCosto.ESTADO_ANULADO,
+            )
+
+            with self.assertRaises(CierreFinancieroError) as contexto:
+                cerrar_financieramente_bingo(self.bingo, self.usuario)
+
+            self.assertIn("premios materiales", str(contexto.exception))
+            self.assertEqual(BingoCierreFinanciero.objects.count(), 0)
+
+        def test_cerrar_financieramente_costo_registrado_resuelve_bloqueo(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            self._crear_costo(partida, Decimal("10.00"))
+
+            cierre = cerrar_financieramente_bingo(self.bingo, self.usuario)
+
+            self.assertEqual(cierre.estado, BingoCierreFinanciero.ESTADO_CERRADO)
+            self.assertEqual(cierre.costospremiosmateriales, Decimal("10.00"))
+            self.assertEqual(cierre.rondaspendientes, 0)
+
+        def test_cerrar_financieramente_cancelada_con_material_no_exige_costo(self):
+            self._crear_partida(
+                estado=ESTADO_PARTIDA_CANCELADA,
+                premio_material="Canasta",
+            )
+
+            cierre = cerrar_financieramente_bingo(self.bingo, self.usuario)
+
+            self.assertEqual(cierre.estado, BingoCierreFinanciero.ESTADO_CERRADO)
+            self.assertEqual(cierre.rondascanceladas, 1)
+            self.assertEqual(cierre.costospremiosmateriales, Decimal("0.00"))
+
+        def test_cerrar_financieramente_segundo_cierre_preserva_snapshot(self):
+            self._crear_carton(Decimal("5.00"))
+            self._crear_partida(valor=Decimal("2.00"))
+            cierre = cerrar_financieramente_bingo(
+                self.bingo,
+                self.usuario,
+                observacion_cierre="Original",
+            )
+            cierre.refresh_from_db()
+            campos_snapshot = (
+                "cartonesvendidosunicos",
+                "recaudacionregistrada",
+                "premiosefectivofinalizados",
+                "costospremiosmateriales",
+                "gastosoperativos",
+                "resultadoprovisional",
+                "utilidadbruta",
+                "utilidadneta",
+                "totalrondas",
+                "rondasfinalizadas",
+                "rondascanceladas",
+                "rondaspendientes",
+                "fechacalculo",
+                "fechacierre",
+                "observacioncierre",
+            )
+            snapshot_original = {
+                campo: getattr(cierre, campo) for campo in campos_snapshot
+            }
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "El cierre financiero ya está cerrado.",
+            ):
+                cerrar_financieramente_bingo(
+                    self.bingo,
+                    self.usuario,
+                    observacion_cierre="Intento posterior",
+                )
+
+            cierre.refresh_from_db()
+            self.assertEqual(BingoCierreFinanciero.objects.count(), 1)
+            for campo, valor in snapshot_original.items():
+                self.assertEqual(getattr(cierre, campo), valor)
+
+        def test_cerrar_financieramente_reutiliza_cierre_abierto(self):
+            self._crear_carton(Decimal("7.00"))
+            self._crear_partida(valor=Decimal("2.00"))
+            cierre_abierto = self._crear_cierre_abierto()
+            cierre_abierto.refresh_from_db()
+            fechacreacion_original = cierre_abierto.fechacreacion
+
+            cierre = cerrar_financieramente_bingo(
+                self.bingo,
+                self.usuario,
+                observacion_cierre="  cierre definitivo  ",
+            )
+
+            self.assertEqual(cierre.pk, cierre_abierto.pk)
+            self.assertEqual(BingoCierreFinanciero.objects.count(), 1)
+            self.assertEqual(cierre.estado, BingoCierreFinanciero.ESTADO_CERRADO)
+            self.assertEqual(cierre.recaudacionregistrada, Decimal("7.00"))
+            self.assertEqual(cierre.resultadoprovisional, Decimal("5.00"))
+            self.assertEqual(cierre.observacioncierre, "cierre definitivo")
+            self.assertEqual(cierre.fechacreacion, fechacreacion_original)
+
+        def test_cerrar_financieramente_snapshot_omite_anulados(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            self._crear_costo(partida, Decimal("8.00"))
+            self._crear_costo(
+                partida,
+                Decimal("20.00"),
+                estado=BingoPremioMaterialCosto.ESTADO_ANULADO,
+            )
+            self._crear_gasto(Decimal("5.00"))
+            self._crear_gasto(
+                Decimal("7.00"),
+                estado=BingoGastoOperativo.ESTADO_ANULADO,
+            )
+
+            cierre = cerrar_financieramente_bingo(self.bingo, self.usuario)
+
+            self.assertEqual(cierre.costospremiosmateriales, Decimal("8.00"))
+            self.assertEqual(cierre.gastosoperativos, Decimal("5.00"))
+            self.assertEqual(cierre.utilidadneta, Decimal("-13.00"))
+
+        def test_servicios_financieros_rechazan_despues_de_cerrar(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            self._crear_costo(partida, Decimal("10.00"))
+            cerrar_financieramente_bingo(self.bingo, self.usuario)
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "No se pueden registrar gastos porque el cierre financiero está cerrado.",
+            ):
+                registrar_gasto_operativo_bingo(
+                    self.bingo,
+                    self.usuario,
+                    "Sonido",
+                    Decimal("15.00"),
+                )
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "No se pueden registrar costos porque el cierre financiero está cerrado.",
+            ):
+                registrar_costo_premio_material_bingo(
+                    self.bingo,
+                    partida,
+                    self.usuario,
+                    "Canasta",
+                    Decimal("12.00"),
+                )
+
+        def test_crear_carton_maestro_permite_venta_antes_del_cierre(self):
+            partida = self._crear_partida(estado=ESTADO_PARTIDA_PROGRAMADA)
+
+            carton = crear_carton_maestro_para_bingo(
+                self.bingo,
+                self.jugador,
+                Decimal("5.00"),
+            )
+
+            self.assertEqual(Carton.objects.count(), 1)
+            self.assertEqual(carton.idbingo, self.bingo)
+            self.assertIsNone(carton.idpartida_id)
+            self.assertEqual(carton.estadocarton, "Vendido")
+            self.assertEqual(carton.preciopagado, Decimal("5.00"))
+            self.assertEqual(
+                CartonPartidaBingo.objects.filter(
+                    idcarton=carton,
+                    idpartida=partida,
+                    idbingo=self.bingo,
+                ).count(),
+                1,
+            )
+
+        def test_crear_carton_maestro_bloquea_venta_despues_del_cierre(self):
+            self._crear_carton(Decimal("5.00"))
+            self._crear_partida(valor=Decimal("2.00"))
+            cierre = cerrar_financieramente_bingo(self.bingo, self.usuario)
+            cierre.refresh_from_db()
+            snapshot_original = {
+                "estado": cierre.estado,
+                "recaudacionregistrada": cierre.recaudacionregistrada,
+                "resultadoprovisional": cierre.resultadoprovisional,
+                "utilidadbruta": cierre.utilidadbruta,
+                "utilidadneta": cierre.utilidadneta,
+                "cartonesvendidosunicos": cierre.cartonesvendidosunicos,
+            }
+            total_cartones = Carton.objects.count()
+            total_participaciones = CartonPartidaBingo.objects.count()
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "No se pueden vender cartones porque el cierre financiero está cerrado.",
+            ):
+                crear_carton_maestro_para_bingo(
+                    self.bingo,
+                    self.jugador,
+                    Decimal("5.00"),
+                )
+
+            self.assertEqual(Carton.objects.count(), total_cartones)
+            self.assertEqual(
+                CartonPartidaBingo.objects.count(),
+                total_participaciones,
+            )
+            cierre.refresh_from_db()
+            for campo, valor in snapshot_original.items():
+                self.assertEqual(getattr(cierre, campo), valor)

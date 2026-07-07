@@ -75,6 +75,7 @@ from .services import (
     CartonNoCompletoError,
     CartonAsignacionError,
     CartonPublicoError,
+    CierreFinancieroError,
     DatosDesempateInvalidosError,
     DesempateError,
     DesempateIncompletoError,
@@ -1820,6 +1821,50 @@ class VentaCartonBingoInterfazTests(SimpleTestCase):
         carton_create.assert_not_called()
         participacion_create.assert_not_called()
 
+    def test_cierre_financiero_en_venta_admin_redirige_con_mensaje(self):
+        request = self._request(
+            method="post",
+            data={"idjugador": "4", "preciopagado": "5.00"},
+        )
+        form = self._form_valido(request.POST)
+        mensaje = (
+            "No se pueden vender cartones porque el cierre financiero está cerrado."
+        )
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.GenerarCartonBingoForm",
+                return_value=form,
+            ),
+            patch(
+                "apps.bingos.views.crear_carton_maestro_para_bingo",
+                side_effect=CierreFinancieroError(mensaje),
+            ) as crear_mock,
+            patch("apps.bingos.views.Carton.objects.create") as carton_create,
+            patch(
+                "apps.bingos.views.CartonPartidaBingo.objects.create"
+            ) as participacion_create,
+        ):
+            response = bingo_carton_nuevo(request, self.bingo.pk)
+
+        crear_mock.assert_called_once_with(
+            bingo=self.bingo,
+            jugador=self.jugador,
+            precio_pagado=Decimal("5.00"),
+            fecha_compra=None,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse("bingos:detalle", kwargs={"idbingo": self.bingo.pk}),
+        )
+        self.assertIn(mensaje, [mensaje.message for mensaje in get_messages(request)])
+        carton_create.assert_not_called()
+        participacion_create.assert_not_called()
+
     def test_ruta_heredada_sigue_resolviendo(self):
         partida = Partidabingo(
             idpartidabingo=21,
@@ -2013,6 +2058,51 @@ class CompraDirectaCartonJugadorTests(SimpleTestCase):
         self.assertEqual(response["Location"], reverse("bingos:mis_cartones"))
         mensajes = [mensaje.message for mensaje in get_messages(request)]
         self.assertIn("Compra completada. Tu cartón es B7-C-DIRECTA.", mensajes)
+
+    def test_compra_despues_de_cierre_redirige_con_mensaje_sin_crear(self):
+        request = self._request(
+            method="post",
+            data={"confirmar_compra": "on"},
+        )
+        mensaje = (
+            "No se pueden vender cartones porque el cierre financiero está cerrado."
+        )
+
+        with (
+            self._autorizar_jugador(),
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.bingo,
+            ),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter",
+                return_value=self.partidas,
+            ),
+            patch(
+                "apps.bingos.views.crear_carton_maestro_para_bingo",
+                side_effect=CierreFinancieroError(mensaje),
+            ) as crear_mock,
+            patch("apps.bingos.views.Carton.objects.create") as carton_create,
+            patch(
+                "apps.bingos.views.CartonPartidaBingo.objects.create"
+            ) as participacion_create,
+        ):
+            response = comprar_carton_bingo(request, self.bingo.pk)
+
+        crear_mock.assert_called_once_with(
+            bingo=self.bingo,
+            jugador=self.jugador,
+            precio_pagado=self.bingo.preciocarton,
+            fecha_compra=None,
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse("bingos:comprar_carton_bingo", kwargs={"idbingo": self.bingo.pk}),
+        )
+        self.assertIn(mensaje, [mensaje.message for mensaje in get_messages(request)])
+        carton_create.assert_not_called()
+        participacion_create.assert_not_called()
 
     def test_no_crea_carton_sin_rondas_elegibles(self):
         request = self._request(
