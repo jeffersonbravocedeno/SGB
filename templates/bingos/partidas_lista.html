@@ -36,6 +36,7 @@
                     <th>Inicio</th>
                     <th>Premio</th>
                     <th>Ganador</th>
+                    <th>Patrón ganador</th>
                     <th>Estado</th>
                     <th class="text-end">Acciones</th>
                 </tr>
@@ -48,6 +49,7 @@
                     <td>{{ partida.horainicio|date:"d/m/Y H:i" }}</td>
                     <td>${{ partida.valorefectivo|floatformat:2 }}</td>
                     <td>{{ partida.idjugadorganador|default:"Sin ganador" }}</td>
+                    <td>{{ partida.get_patronganador_display }}</td>
                     <td><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></td>
                     <td class="text-end">
                         <div class="btn-group btn-group-sm">
@@ -57,7 +59,7 @@
                     </td>
                 </tr>
                 {% empty %}
-                <tr><td colspan="7"><div class="empty-state"><strong>No se encontraron partidas</strong><span>Crea una partida desde el detalle de un bingo.</span></div></td></tr>
+                <tr><td colspan="8"><div class="empty-state"><strong>No se encontraron partidas</strong><span>Crea una partida desde el detalle de un bingo.</span></div></td></tr>
                 {% endfor %}
             </tbody>
         </table>

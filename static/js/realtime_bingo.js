@@ -90,6 +90,272 @@
         return letras[Math.floor((numero - 1) / 15)] + "-" + numero;
     }
 
+    function normalizarPatronGanador(valor) {
+        var patron = String(valor || "").trim();
+        var patronesValidos = {
+            carton_lleno: true,
+            linea_horizontal: true,
+            linea_vertical: true,
+            diagonal: true,
+            cuatro_esquinas: true,
+            cruz: true,
+            x: true,
+        };
+        return patronesValidos[patron] ? patron : "carton_lleno";
+    }
+
+    function totalCasillasPatron(patron) {
+        patron = normalizarPatronGanador(patron);
+        if (patron === "cuatro_esquinas") {
+            return 4;
+        }
+        if (
+            patron === "linea_horizontal" ||
+            patron === "linea_vertical" ||
+            patron === "diagonal"
+        ) {
+            return 5;
+        }
+        if (patron === "cruz" || patron === "x") {
+            return 8;
+        }
+        return 24;
+    }
+
+    function valorNumericoCelda(celda) {
+        return Number(celda && celda.dataset ? celda.dataset.bolaNumero : NaN);
+    }
+
+    function casillaMarcada(celda) {
+        if (!celda) {
+            return false;
+        }
+        return celda.classList.contains("public-card-cell--marked") ||
+            celda.classList.contains("public-card-cell--free");
+    }
+
+    function construirMatrizCartonDesdeDOM(raiz) {
+        var filas = seleccionarTodos(raiz, ".public-bingo-card tbody tr");
+        if (filas.length !== 5) {
+            return [];
+        }
+
+        return filas.map(function (fila) {
+            return Array.prototype.slice.call(fila.children).map(function (celda) {
+                return {
+                    valor: valorNumericoCelda(celda),
+                    marcada: casillaMarcada(celda),
+                    libre: celda.classList.contains("public-card-cell--free"),
+                };
+            });
+        });
+    }
+
+    function casillaEstaMarcada(casilla) {
+        return Boolean(casilla && (casilla.marcada || casilla.libre));
+    }
+
+    function numerosFaltantesFila(fila) {
+        return fila.reduce(function (acumulado, casilla) {
+            if (!casillaEstaMarcada(casilla)) {
+                acumulado.push(casilla.valor);
+            }
+            return acumulado;
+        }, []);
+    }
+
+    function numerosFaltantesColumna(matriz, indiceColumna) {
+        var faltantes = [];
+        for (var indiceFila = 0; indiceFila < 5; indiceFila += 1) {
+            var casilla = matriz[indiceFila][indiceColumna];
+            if (!casillaEstaMarcada(casilla)) {
+                faltantes.push(casilla.valor);
+            }
+        }
+        return faltantes;
+    }
+
+    function numerosFaltantesDiagonalPrincipal(matriz) {
+        var faltantes = [];
+        for (var indice = 0; indice < 5; indice += 1) {
+            var casilla = matriz[indice][indice];
+            if (!casillaEstaMarcada(casilla)) {
+                faltantes.push(casilla.valor);
+            }
+        }
+        return faltantes;
+    }
+
+    function numerosFaltantesDiagonalSecundaria(matriz) {
+        var faltantes = [];
+        for (var indice = 0; indice < 5; indice += 1) {
+            var casilla = matriz[indice][4 - indice];
+            if (!casillaEstaMarcada(casilla)) {
+                faltantes.push(casilla.valor);
+            }
+        }
+        return faltantes;
+    }
+
+    function unirFaltantes() {
+        var faltantes = [];
+        Array.prototype.slice.call(arguments).forEach(function (secuencia) {
+            (secuencia || []).forEach(function (numero) {
+                if (faltantes.indexOf(numero) === -1) {
+                    faltantes.push(numero);
+                }
+            });
+        });
+        return faltantes;
+    }
+
+    function obtenerFaltantesPatronGanador(matriz, patron) {
+        patron = normalizarPatronGanador(patron);
+        if (patron === "carton_lleno") {
+            return unirFaltantes.apply(null, matriz.map(numerosFaltantesFila));
+        }
+        if (patron === "cuatro_esquinas") {
+            var esquinas = [
+                matriz[0][0],
+                matriz[0][4],
+                matriz[4][0],
+                matriz[4][4],
+            ];
+            return esquinas.reduce(function (faltantes, casilla) {
+                if (!casillaEstaMarcada(casilla)) {
+                    faltantes.push(casilla.valor);
+                }
+                return faltantes;
+            }, []);
+        }
+        if (patron === "linea_horizontal") {
+            var faltantesPorFila = matriz.map(numerosFaltantesFila);
+            return faltantesPorFila.reduce(function (mejor, faltantes, indice) {
+                if (!mejor) {
+                    return { faltantes: faltantes, indice: indice };
+                }
+                if (
+                    faltantes.length < mejor.faltantes.length ||
+                    (faltantes.length === mejor.faltantes.length && indice < mejor.indice)
+                ) {
+                    return { faltantes: faltantes, indice: indice };
+                }
+                return mejor;
+            }, null).faltantes;
+        }
+        if (patron === "linea_vertical") {
+            var faltantesPorColumna = [0, 1, 2, 3, 4].map(function (indice) {
+                return numerosFaltantesColumna(matriz, indice);
+            });
+            return faltantesPorColumna.reduce(function (mejor, faltantes, indice) {
+                if (!mejor) {
+                    return { faltantes: faltantes, indice: indice };
+                }
+                if (
+                    faltantes.length < mejor.faltantes.length ||
+                    (faltantes.length === mejor.faltantes.length && indice < mejor.indice)
+                ) {
+                    return { faltantes: faltantes, indice: indice };
+                }
+                return mejor;
+            }, null).faltantes;
+        }
+        if (patron === "diagonal") {
+            var diagonalPrincipal = numerosFaltantesDiagonalPrincipal(matriz);
+            var diagonalSecundaria = numerosFaltantesDiagonalSecundaria(matriz);
+            return diagonalPrincipal.length <= diagonalSecundaria.length
+                ? diagonalPrincipal
+                : diagonalSecundaria;
+        }
+        if (patron === "cruz") {
+            return unirFaltantes(
+                numerosFaltantesFila(matriz[2]),
+                numerosFaltantesColumna(matriz, 2)
+            );
+        }
+        if (patron === "x") {
+            return unirFaltantes(
+                numerosFaltantesDiagonalPrincipal(matriz),
+                numerosFaltantesDiagonalSecundaria(matriz)
+            );
+        }
+        return unirFaltantes.apply(null, matriz.map(numerosFaltantesFila));
+    }
+
+    function obtenerResumenPatronCarton(raiz) {
+        var matriz = construirMatrizCartonDesdeDOM(raiz);
+        if (!matriz.length) {
+            return null;
+        }
+        var patron = normalizarPatronGanador(raiz.dataset.patronGanador);
+        var faltantes = obtenerFaltantesPatronGanador(matriz, patron);
+        var total = totalCasillasPatron(patron);
+        var marcados = total - faltantes.length;
+        return {
+            patron: patron,
+            etiqueta: raiz.dataset.patronGanadorLabel || patron,
+            total: total,
+            marcados: marcados,
+            progreso: total ? Math.round((marcados / total) * 100) : 0,
+            faltantes: faltantes,
+            faltantesCodigos: faltantes.map(codigoBola),
+            completo: faltantes.length === 0,
+        };
+    }
+
+    function actualizarPatronTablero(raiz, partida) {
+        if (!partida) {
+            return;
+        }
+        actualizarTexto(
+            raiz,
+            "[data-realtime-patron-label]",
+            partida.patron_ganador_label || "Cartón lleno"
+        );
+        actualizarTexto(
+            raiz,
+            "[data-realtime-patron-total]",
+            String(partida.total_requeridos_patron || totalCasillasPatron(partida.patron_ganador))
+        );
+    }
+
+    function actualizarPatronCarton(raiz) {
+        var resumen = obtenerResumenPatronCarton(raiz);
+        if (!resumen) {
+            return;
+        }
+        actualizarTexto(raiz, "[data-realtime-patron-label]", resumen.etiqueta);
+        actualizarTexto(
+            raiz,
+            "[data-realtime-patron-progreso]",
+            resumen.marcados + " de " + resumen.total + " números marcados"
+        );
+        actualizarTexto(
+            raiz,
+            "[data-realtime-patron-total]",
+            String(resumen.total)
+        );
+        seleccionarTodos(raiz, "[data-realtime-patron-faltantes]").forEach(function (elemento) {
+            elemento.classList.toggle("d-none", resumen.completo);
+            elemento.hidden = resumen.completo;
+            if (resumen.completo) {
+                return;
+            }
+            elemento.replaceChildren();
+            elemento.appendChild(document.createTextNode("Faltan: "));
+            resumen.faltantesCodigos.forEach(function (codigo) {
+                var badge = document.createElement("span");
+                badge.className = "badge text-bg-light";
+                badge.textContent = codigo;
+                elemento.appendChild(badge);
+            });
+        });
+        seleccionarTodos(raiz, "[data-realtime-patron-completo]").forEach(function (elemento) {
+            elemento.classList.toggle("d-none", !resumen.completo);
+            elemento.hidden = !resumen.completo;
+        });
+    }
+
     function seleccionarTodos(raiz, selector) {
         return Array.prototype.slice.call(raiz.querySelectorAll(selector));
     }
@@ -188,6 +454,7 @@
         seleccionarTodos(raiz, "[data-realtime-desempate]").forEach(function (elemento) {
             elemento.classList.toggle("d-none", !partida.resuelta_por_desempate);
         });
+        actualizarPatronTablero(raiz, partida);
     }
 
     function actualizarCarton(raiz, partida) {
@@ -213,6 +480,7 @@
             elemento.textContent = marcados + " de " + raiz.dataset.totalNumerosCarton +
                 " números marcados" + puntoFinal;
         });
+        actualizarPatronCarton(raiz);
     }
 
     function recargarVistaActual() {

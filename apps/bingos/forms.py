@@ -14,6 +14,7 @@ from apps.jugadores.models import Jugador
 from .models import Bingo, Carton, Partidabingo
 from .services import (
     ESTADOS_PARTIDA,
+    ESTADO_PARTIDA_PROGRAMADA,
     estado_partida_valido,
     normalizar_estado_partida,
 )
@@ -105,6 +106,7 @@ class PartidaBingoForm(FriendlyModelForm):
             "valorefectivo",
             "premiomaterial",
             "estadopartida",
+            "patronganador",
             "bolascantadas",
             "ultimabola",
             "haydesempate",
@@ -119,6 +121,7 @@ class PartidaBingoForm(FriendlyModelForm):
             "valorefectivo": "Premio en efectivo",
             "premiomaterial": "Premio material",
             "estadopartida": "Estado",
+            "patronganador": "Patrón ganador",
             "bolascantadas": "Bolas cantadas",
             "ultimabola": "Última bola",
             "haydesempate": "Hay desempate",
@@ -136,6 +139,18 @@ class PartidaBingoForm(FriendlyModelForm):
         super().__init__(*args, **kwargs)
         self.fields["idjugadorganador"].queryset = Jugador.objects.order_by("aliasjugador")
         self.fields["idjugadorganador"].empty_label = "Sin ganador definido"
+        patronganador_field = self.fields["patronganador"]
+        patronganador_field.initial = (
+            patronganador_field.initial
+            or self._meta.model._meta.get_field("patronganador").default
+        )
+        if self.instance and self.instance.pk:
+            estado = normalizar_estado_partida(self.instance.estadopartida)
+            if estado != ESTADO_PARTIDA_PROGRAMADA:
+                patronganador_field.disabled = True
+                patronganador_field.help_text = (
+                    "Solo se puede cambiar cuando la ronda está Programada."
+                )
 
     def clean_estadopartida(self):
         estado = normalizar_estado_partida(self.cleaned_data.get("estadopartida"))

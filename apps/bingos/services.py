@@ -42,6 +42,24 @@ ESTADOS_ASIGNACION_CARTONES = {
 }
 CASILLA_LIBRE = "LIBRE"
 
+PATRON_GANADOR_CARTON_LLENO = "carton_lleno"
+PATRON_GANADOR_LINEA_HORIZONTAL = "linea_horizontal"
+PATRON_GANADOR_LINEA_VERTICAL = "linea_vertical"
+PATRON_GANADOR_DIAGONAL = "diagonal"
+PATRON_GANADOR_CUATRO_ESQUINAS = "cuatro_esquinas"
+PATRON_GANADOR_CRUZ = "cruz"
+PATRON_GANADOR_X = "x"
+
+PATRONES_GANADORES = {
+    PATRON_GANADOR_CARTON_LLENO: "Cartón lleno",
+    PATRON_GANADOR_LINEA_HORIZONTAL: "Línea horizontal",
+    PATRON_GANADOR_LINEA_VERTICAL: "Línea vertical",
+    PATRON_GANADOR_DIAGONAL: "Diagonal",
+    PATRON_GANADOR_CUATRO_ESQUINAS: "Cuatro esquinas",
+    PATRON_GANADOR_CRUZ: "Cruz",
+    PATRON_GANADOR_X: "Letra X",
+}
+
 ESTADOS_PARTIDA_LEGADOS = {
     "En Juego": ESTADO_PARTIDA_EN_CURSO,
     "Verificando": ESTADO_PARTIDA_EN_ESPERA,
@@ -119,13 +137,15 @@ class CartonPublicoError(ValueError):
 
 
 class CartonNoCompletoError(ValidacionCartonError):
-    def __init__(self, faltantes):
+    def __init__(self, faltantes, patronganador=None):
+        self.patronganador = normalizar_patron_ganador(patronganador)
         self.faltantes = list(faltantes)
         codigos = ", ".join(
             formatear_bola_bingo(numero) for numero in self.faltantes
         )
+        etiqueta = obtener_etiqueta_patron_ganador(self.patronganador)
         super().__init__(
-            f"Este cartón aún no completa Bingo. Faltan: {codigos}."
+            f"Este cartón aún no completa el patrón {etiqueta}. Faltan: {codigos}."
         )
 
 
@@ -225,6 +245,210 @@ def _normalizar_matriz_carton_bingo(matriz):
             "La matriz debe contener 24 números únicos y una casilla LIBRE."
         )
     return normalizada
+
+
+def normalizar_patron_ganador(valor):
+    valor = str(valor or "").strip()
+    return valor if valor in PATRONES_GANADORES else PATRON_GANADOR_CARTON_LLENO
+
+
+def obtener_etiqueta_patron_ganador(patron_ganador):
+    patron = normalizar_patron_ganador(patron_ganador)
+    return PATRONES_GANADORES.get(patron, PATRONES_GANADORES[PATRON_GANADOR_CARTON_LLENO])
+
+
+def _validar_matriz_marcada_carton(matriz):
+    if not isinstance(matriz, list) or len(matriz) != 5:
+        raise MatrizCartonInvalidaError(
+            "La matriz marcada debe tener cinco filas."
+        )
+    if any(not isinstance(fila, list) or len(fila) != 5 for fila in matriz):
+        raise MatrizCartonInvalidaError(
+            "La matriz marcada debe tener cinco columnas por fila."
+        )
+    if any(
+        not isinstance(casilla, dict)
+        for fila in matriz
+        for casilla in fila
+    ):
+        raise MatrizCartonInvalidaError(
+            "La matriz marcada debe contener casillas estructuradas."
+        )
+    return matriz
+
+
+def _casilla_esta_marcada(casilla):
+    return bool(casilla.get("marcada")) or bool(casilla.get("libre"))
+
+
+def _numeros_faltantes_fila_marcada(fila):
+    return [
+        casilla["valor"]
+        for casilla in fila
+        if not _casilla_esta_marcada(casilla)
+    ]
+
+
+def _numeros_faltantes_columna_marcada(matriz, indice_columna):
+    return [
+        matriz[indice_fila][indice_columna]["valor"]
+        for indice_fila in range(5)
+        if not _casilla_esta_marcada(matriz[indice_fila][indice_columna])
+    ]
+
+
+def _numeros_faltantes_diagonal_principal_marcada(matriz):
+    return [
+        matriz[indice][indice]["valor"]
+        for indice in range(5)
+        if not _casilla_esta_marcada(matriz[indice][indice])
+    ]
+
+
+def _numeros_faltantes_diagonal_secundaria_marcada(matriz):
+    return [
+        matriz[indice][4 - indice]["valor"]
+        for indice in range(5)
+        if not _casilla_esta_marcada(matriz[indice][4 - indice])
+    ]
+
+
+def _union_faltantes(*secuencias):
+    faltantes = []
+    for secuencia in secuencias:
+        for numero in secuencia:
+            if numero not in faltantes:
+                faltantes.append(numero)
+    return faltantes
+
+
+def obtener_numeros_faltantes_patron_ganador(matriz_marcada, patronganador):
+    matriz_marcada = _validar_matriz_marcada_carton(matriz_marcada)
+    patron = normalizar_patron_ganador(patronganador)
+
+    if patron == PATRON_GANADOR_CARTON_LLENO:
+        return _union_faltantes(
+            *(
+                _numeros_faltantes_fila_marcada(fila)
+                for fila in matriz_marcada
+            )
+        )
+
+    if patron == PATRON_GANADOR_CUATRO_ESQUINAS:
+        esquinas = (
+            matriz_marcada[0][0],
+            matriz_marcada[0][4],
+            matriz_marcada[4][0],
+            matriz_marcada[4][4],
+        )
+        return [
+            casilla["valor"]
+            for casilla in esquinas
+            if not _casilla_esta_marcada(casilla)
+        ]
+
+    if patron == PATRON_GANADOR_LINEA_HORIZONTAL:
+        faltantes_por_fila = [
+            _numeros_faltantes_fila_marcada(fila)
+            for fila in matriz_marcada
+        ]
+        return min(
+            faltantes_por_fila,
+            key=lambda faltantes: (len(faltantes), faltantes_por_fila.index(faltantes)),
+        )
+
+    if patron == PATRON_GANADOR_LINEA_VERTICAL:
+        faltantes_por_columna = [
+            _numeros_faltantes_columna_marcada(matriz_marcada, indice)
+            for indice in range(5)
+        ]
+        return min(
+            faltantes_por_columna,
+            key=lambda faltantes: (len(faltantes), faltantes_por_columna.index(faltantes)),
+        )
+
+    if patron == PATRON_GANADOR_DIAGONAL:
+        diagonal_principal = _numeros_faltantes_diagonal_principal_marcada(
+            matriz_marcada
+        )
+        diagonal_secundaria = _numeros_faltantes_diagonal_secundaria_marcada(
+            matriz_marcada
+        )
+        return min(
+            [diagonal_principal, diagonal_secundaria],
+            key=lambda faltantes: (
+                len(faltantes),
+                0 if faltantes is diagonal_principal else 1,
+            ),
+        )
+
+    if patron == PATRON_GANADOR_CRUZ:
+        return _union_faltantes(
+            _numeros_faltantes_fila_marcada(matriz_marcada[2]),
+            _numeros_faltantes_columna_marcada(matriz_marcada, 2),
+        )
+
+    if patron == PATRON_GANADOR_X:
+        return _union_faltantes(
+            _numeros_faltantes_diagonal_principal_marcada(matriz_marcada),
+            _numeros_faltantes_diagonal_secundaria_marcada(matriz_marcada),
+        )
+
+    return _union_faltantes(
+        *(
+            _numeros_faltantes_fila_marcada(fila)
+            for fila in matriz_marcada
+        )
+    )
+
+
+def carton_cumple_patron_ganador(matriz_marcada, patronganador):
+    return not obtener_numeros_faltantes_patron_ganador(
+        matriz_marcada,
+        patronganador,
+    )
+
+
+def total_casillas_patron_ganador(patron_ganador):
+    patron = normalizar_patron_ganador(patron_ganador)
+    if patron == PATRON_GANADOR_CUATRO_ESQUINAS:
+        return 4
+    if patron in {
+        PATRON_GANADOR_LINEA_HORIZONTAL,
+        PATRON_GANADOR_LINEA_VERTICAL,
+        PATRON_GANADOR_DIAGONAL,
+    }:
+        return 5
+    if patron in {PATRON_GANADOR_CRUZ, PATRON_GANADOR_X}:
+        return 8
+    return 24
+
+
+def preparar_resumen_patron_ganador(matriz, bolas_extraidas, patronganador):
+    patron = normalizar_patron_ganador(patronganador)
+    matriz_marcada = construir_matriz_marcada_carton(matriz, bolas_extraidas)
+    faltantes = obtener_numeros_faltantes_patron_ganador(
+        matriz_marcada,
+        patron,
+    )
+    total_requeridos = total_casillas_patron_ganador(patron)
+    numeros_marcados = total_requeridos - len(faltantes)
+    return {
+        "patron_ganador": patron,
+        "patron_ganador_label": obtener_etiqueta_patron_ganador(patron),
+        "numeros_marcados_patron": numeros_marcados,
+        "total_requeridos_patron": total_requeridos,
+        "progreso_patron": (
+            round((numeros_marcados / total_requeridos) * 100)
+            if total_requeridos
+            else 0
+        ),
+        "numeros_faltantes_patron": faltantes,
+        "faltantes_patron_codigos": [
+            formatear_bola_bingo(numero) for numero in faltantes
+        ],
+        "patron_completo": not faltantes,
+    }
 
 
 def obtener_numeros_carton(matriz):
@@ -823,6 +1047,9 @@ def preparar_resumen_partida_publica(partida):
 def preparar_datos_tablero_publico(partida):
     datos_bolas = preparar_datos_bolas_partida(partida)
     estado = normalizar_estado_partida(partida.estadopartida)
+    patron_ganador = normalizar_patron_ganador(
+        getattr(partida, "patronganador", None)
+    )
     ganador = None
     if estado == ESTADO_PARTIDA_FINALIZADA and partida.idjugadorganador_id:
         ganador = partida.idjugadorganador.aliasjugador or "Jugador ganador"
@@ -833,6 +1060,13 @@ def preparar_datos_tablero_publico(partida):
         "ultima_bola_codigo": datos_bolas["ultima_bola_codigo"],
         "total_bolas_extraidas": datos_bolas["total_bolas_extraidas"],
         "total_bolas_faltantes": datos_bolas["total_bolas_faltantes"],
+        "patron_ganador": patron_ganador,
+        "patron_ganador_label": obtener_etiqueta_patron_ganador(
+            patron_ganador
+        ),
+        "total_requeridos_patron": total_casillas_patron_ganador(
+            patron_ganador
+        ),
         "mensaje_estado_publico": mensaje_estado_tablero_publico(estado),
         "ganador_publico": ganador,
         "resuelta_por_desempate": (
@@ -903,13 +1137,25 @@ def evaluar_carton_en_partida(carton, partida):
         )
 
     matriz = _normalizar_matriz_carton_bingo(carton.matriznumeros)
-    faltantes = obtener_numeros_faltantes_carton(
+    matriz_marcada = construir_matriz_marcada_carton(
         matriz,
         partida.bolascantadas,
+    )
+    patron_ganador = normalizar_patron_ganador(
+        getattr(partida, "patronganador", None)
+    )
+    faltantes = obtener_numeros_faltantes_patron_ganador(
+        matriz_marcada,
+        patron_ganador,
     )
     return {
         "carton": carton,
         "matriz": matriz,
+        "matriz_marcada": matriz_marcada,
+        "patron_ganador": patron_ganador,
+        "patron_ganador_label": obtener_etiqueta_patron_ganador(
+            patron_ganador
+        ),
         "faltantes": faltantes,
         "completo": not faltantes,
     }
@@ -977,6 +1223,11 @@ def preparar_datos_carton_jugador(carton):
         carton.matriznumeros,
         partida.bolascantadas,
     )
+    patron = preparar_resumen_patron_ganador(
+        carton.matriznumeros,
+        partida.bolascantadas,
+        getattr(partida, "patronganador", None),
+    )
     datos_bolas = preparar_datos_bolas_partida(partida)
     return {
         "matriz_carton": matriz,
@@ -986,6 +1237,7 @@ def preparar_datos_carton_jugador(carton):
         ),
         "total_numeros_carton": 24,
         "numeros_faltantes": faltantes,
+        **patron,
         "ultima_bola_codigo": datos_bolas["ultima_bola_codigo"],
         "mensaje_estado_carton": mensaje_estado_carton_publico(
             partida.estadopartida
@@ -994,6 +1246,10 @@ def preparar_datos_carton_jugador(carton):
 
 
 def preparar_cartones_para_validacion(partida, cartones):
+    patron_ganador = normalizar_patron_ganador(
+        getattr(partida, "patronganador", None)
+    )
+    total_requerido = total_casillas_patron_ganador(patron_ganador)
     resultado = []
     for carton in cartones:
         # La consola de validación solo expone cartones que pueden competir.
@@ -1009,9 +1265,9 @@ def preparar_cartones_para_validacion(partida, cartones):
                 carton.matriznumeros,
                 partida.bolascantadas,
             )
-            faltantes = obtener_numeros_faltantes_carton(
-                carton.matriznumeros,
-                partida.bolascantadas,
+            faltantes_patron = obtener_numeros_faltantes_patron_ganador(
+                matriz_marcada,
+                patron_ganador,
             )
         except MatrizCartonInvalidaError as exc:
             error = "La matriz de este cartón es inválida y no puede ganar."
@@ -1021,17 +1277,39 @@ def preparar_cartones_para_validacion(partida, cartones):
                 partida.pk,
                 exc,
             )
+            faltantes_patron = []
 
         resultado.append(
             {
                 "carton": carton,
                 "matriz": matriz_marcada,
-                "faltantes": faltantes,
+                "patron_ganador": patron_ganador,
+                "patron_ganador_label": obtener_etiqueta_patron_ganador(
+                    patron_ganador
+                ),
+                "faltantes": faltantes_patron,
                 "faltantes_codigos": [
-                    formatear_bola_bingo(numero) for numero in faltantes
+                    formatear_bola_bingo(numero)
+                    for numero in faltantes_patron
                 ],
-                "cantidad_marcados": 24 - len(faltantes) if matriz_marcada else 0,
-                "completo": matriz_marcada is not None and not faltantes,
+                "cantidad_marcados": (
+                    total_requerido - len(faltantes_patron)
+                    if matriz_marcada
+                    else 0
+                ),
+                "total_requeridos": total_requerido,
+                "progreso": (
+                    round(
+                        (
+                            (total_requerido - len(faltantes_patron))
+                            / total_requerido
+                        )
+                        * 100
+                    )
+                    if matriz_marcada and total_requerido
+                    else 0
+                ),
+                "completo": matriz_marcada is not None and not faltantes_patron,
                 "error": error,
                 "puede_validar": (
                     error is None and estado_permite_validar_carton(partida)
@@ -1486,7 +1764,10 @@ def validar_carton_ganador(partida, carton):
             ) from exc
 
         if not evaluacion["completo"]:
-            raise CartonNoCompletoError(evaluacion["faltantes"])
+            raise CartonNoCompletoError(
+                evaluacion["faltantes"],
+                patronganador=evaluacion["patron_ganador"],
+            )
 
         cartones_ganadores = buscar_cartones_ganadores(
             partida_bloqueada,
@@ -1614,15 +1895,27 @@ def evaluar_participacion_en_partida(participacion, partida=None):
         )
 
     matriz = _normalizar_matriz_carton_bingo(carton.matriznumeros)
-    faltantes = obtener_numeros_faltantes_carton(
+    matriz_marcada = construir_matriz_marcada_carton(
         matriz,
         partida.bolascantadas,
+    )
+    patron_ganador = normalizar_patron_ganador(
+        getattr(partida, "patronganador", None)
+    )
+    faltantes = obtener_numeros_faltantes_patron_ganador(
+        matriz_marcada,
+        patron_ganador,
     )
     return {
         "participacion": participacion,
         "carton": carton,
         "partida": partida,
         "matriz": matriz,
+        "matriz_marcada": matriz_marcada,
+        "patron_ganador": patron_ganador,
+        "patron_ganador_label": obtener_etiqueta_patron_ganador(
+            patron_ganador
+        ),
         "faltantes": faltantes,
         "completo": not faltantes,
     }
@@ -1660,6 +1953,10 @@ def preparar_participaciones_hibridas_para_consola(
     participaciones=None,
 ):
     """Prepara estado y progreso por participación para la consola."""
+    patron_ganador = normalizar_patron_ganador(
+        getattr(partida, "patronganador", None)
+    )
+    total_requerido = total_casillas_patron_ganador(patron_ganador)
     participaciones = (
         obtener_participaciones_hibridas_partida(partida)
         if participaciones is None
@@ -1682,9 +1979,9 @@ def preparar_participaciones_hibridas_para_consola(
                 carton.matriznumeros,
                 partida.bolascantadas,
             )
-            faltantes = obtener_numeros_faltantes_carton(
-                carton.matriznumeros,
-                partida.bolascantadas,
+            faltantes = obtener_numeros_faltantes_patron_ganador(
+                matriz_marcada,
+                patron_ganador,
             )
         except MatrizCartonInvalidaError as exc:
             error = "La matriz de este cartón es inválida y no puede ganar."
@@ -1695,7 +1992,11 @@ def preparar_participaciones_hibridas_para_consola(
                 exc,
             )
 
-        cantidad_marcados = 24 - len(faltantes) if matriz_marcada else 0
+        cantidad_marcados = (
+            total_requerido - len(faltantes)
+            if matriz_marcada
+            else 0
+        )
         resultado.append(
             {
                 "tipo_registro": "hibrido",
@@ -1703,12 +2004,21 @@ def preparar_participaciones_hibridas_para_consola(
                 "participacion": participacion,
                 "carton": carton,
                 "matriz": matriz_marcada,
+                "patron_ganador": patron_ganador,
+                "patron_ganador_label": obtener_etiqueta_patron_ganador(
+                    patron_ganador
+                ),
                 "faltantes": faltantes,
                 "faltantes_codigos": [
                     formatear_bola_bingo(numero) for numero in faltantes
                 ],
                 "cantidad_marcados": cantidad_marcados,
-                "progreso": round((cantidad_marcados / 24) * 100),
+                "total_requeridos": total_requerido,
+                "progreso": (
+                    round((cantidad_marcados / total_requerido) * 100)
+                    if total_requerido
+                    else 0
+                ),
                 "completo": matriz_marcada is not None and not faltantes,
                 "estado_participacion": participacion.estado_participacion,
                 "indicevictoria": participacion.indicevictoria,
@@ -2016,7 +2326,10 @@ def validar_participacion_ganadora(
                 "La matriz del cartón es inválida y no puede ganar."
             ) from exc
         if not evaluacion["completo"]:
-            raise CartonNoCompletoError(evaluacion["faltantes"])
+            raise CartonNoCompletoError(
+                evaluacion["faltantes"],
+                patronganador=evaluacion["patron_ganador"],
+            )
 
         participaciones_ganadoras = buscar_participaciones_ganadoras(
             partida_bloqueada,

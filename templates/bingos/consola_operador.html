@@ -81,6 +81,7 @@
             <h2 class="section-subtitle">Estado operativo</h2>
             <dl class="detail-list mt-3">
                 <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}" data-realtime-estado>{{ partida.estadopartida|estado_partida_display }}</span></dd></div>
+                <div><dt>Patrón ganador</dt><dd>{{ partida.get_patronganador_display }}</dd></div>
                 <div><dt>Inicio</dt><dd>{{ partida.horainicio|date:"d/m/Y H:i" }}</dd></div>
                 <div><dt>Finalización</dt><dd>{{ partida.horafin|date:"d/m/Y H:i"|default_dash }}</dd></div>
             </dl>
@@ -253,9 +254,9 @@
             {% if item.error %}
             <div class="alert alert-danger py-2 mb-0" role="alert">{{ item.error }}</div>
             {% elif item.completo %}
-            <div class="validation-count is-complete">24 de 24 números marcados</div>
+            <div class="validation-count is-complete">{{ item.total_requeridos|default:24 }} de {{ item.total_requeridos|default:24 }} números marcados</div>
             {% else %}
-            <div class="validation-count">Faltan {{ item.faltantes|length }} número{{ item.faltantes|length|pluralize }}</div>
+            <div class="validation-count">{{ item.cantidad_marcados }} de {{ item.total_requeridos|default:24 }} números marcados · {{ item.progreso }}%</div>
             <div class="pending-ball-list">
                 {% for codigo in item.faltantes_codigos %}<span>{{ codigo }}</span>{% endfor %}
             </div>
@@ -316,9 +317,9 @@
             {% if item.error %}
             <div class="alert alert-danger py-2 mb-0" role="alert">{{ item.error }}</div>
             {% elif item.completo %}
-            <div class="validation-count is-complete">24 de 24 números marcados · 100%</div>
+            <div class="validation-count is-complete">{{ item.total_requeridos|default:24 }} de {{ item.total_requeridos|default:24 }} números marcados · 100%</div>
             {% else %}
-            <div class="validation-count">{{ item.cantidad_marcados }} de 24 números marcados · {{ item.progreso }}%</div>
+            <div class="validation-count">{{ item.cantidad_marcados }} de {{ item.total_requeridos|default:24 }} números marcados · {{ item.progreso }}%</div>
             <div class="pending-ball-list">
                 {% for codigo in item.faltantes_codigos %}<span>{{ codigo }}</span>{% endfor %}
             </div>

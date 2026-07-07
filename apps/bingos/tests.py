@@ -89,12 +89,15 @@ from .services import (
     evaluar_carton_en_partida,
     evaluar_participacion_en_partida,
     extraer_siguiente_bola,
+    construir_matriz_marcada_carton,
     formatear_bola_bingo,
     generar_codigo_carton,
     generar_codigo_carton_bingo,
     generar_matriz_carton_bingo,
     letra_bingo,
     normalizar_estado_partida,
+    normalizar_patron_ganador,
+    obtener_etiqueta_patron_ganador,
     normalizar_candidatos_desempate,
     normalizar_candidatos_desempate_participaciones,
     obtener_partidas_elegibles_venta_carton,
@@ -108,13 +111,17 @@ from .services import (
     obtener_bolas_disponibles,
     parsear_bolas_cantadas,
     parsear_candidatos_desempate,
+    carton_cumple_patron_ganador,
+    obtener_numeros_faltantes_patron_ganador,
     preparar_cartones_para_validacion,
     preparar_datos_carton_jugador,
     preparar_datos_desempate,
     preparar_datos_tablero_publico,
     preparar_participaciones_hibridas_para_consola,
+    preparar_resumen_patron_ganador,
     preparar_resumen_partida_publica,
     puede_asignar_cartones,
+    total_casillas_patron_ganador,
     serializar_bolas_cantadas,
     serializar_candidatos_desempate,
     serializar_matriz_carton_bingo,
@@ -162,6 +169,7 @@ def datos_partida_form(**overrides):
         "valorefectivo": "22",
         "premiomaterial": "cafsf",
         "estadopartida": "Programada",
+        "patronganador": "carton_lleno",
         "bolascantadas": "[]",
         "ultimabola": "0",
         "haydesempate": "",
@@ -253,6 +261,14 @@ class PartidaBingoFormTests(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["estadopartida"], "Programada")
 
+    def test_formulario_nuevo_incluye_patron_ganador_por_defecto(self):
+        form = PartidaBingoForm()
+
+        self.assertIn("patronganador", form.fields)
+        self.assertEqual(form.fields["patronganador"].initial, "carton_lleno")
+        self.assertEqual(form.fields["patronganador"].label, "Patrón ganador")
+        self.assertEqual(form.fields["patronganador"].choices[0][0], "carton_lleno")
+
     def test_en_espera_es_valida_al_crear_partida(self):
         form = PartidaBingoForm(data=datos_partida_form(estadopartida="En espera"))
 
@@ -282,6 +298,39 @@ class PartidaBingoFormTests(SimpleTestCase):
         partida = form.save(commit=False)
         self.assertEqual(partida.estadopartida, "Programada")
 
+    def test_programada_permite_cambiar_patron_ganador(self):
+        partida = Partidabingo(
+            idpartidabingo=1,
+            estadopartida=ESTADO_PARTIDA_PROGRAMADA,
+            patronganador="carton_lleno",
+        )
+        form = PartidaBingoForm(
+            data=datos_partida_form(patronganador="cuatro_esquinas"),
+            instance=partida,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["patronganador"], "cuatro_esquinas")
+
+    def test_en_curso_y_finalizada_conservan_patron_ganador_guardado(self):
+        for estado in (ESTADO_PARTIDA_EN_CURSO, ESTADO_PARTIDA_FINALIZADA):
+            with self.subTest(estado=estado):
+                partida = Partidabingo(
+                    idpartidabingo=2,
+                    estadopartida=estado,
+                    patronganador="cuatro_esquinas",
+                )
+                form = PartidaBingoForm(
+                    data=datos_partida_form(patronganador="x"),
+                    instance=partida,
+                )
+
+                self.assertTrue(form.is_valid(), form.errors)
+                self.assertEqual(
+                    form.cleaned_data["patronganador"],
+                    "cuatro_esquinas",
+                )
+
     def test_no_se_crearon_migraciones_de_bingos(self):
         migration_files = sorted(
             path.name
@@ -290,6 +339,116 @@ class PartidaBingoFormTests(SimpleTestCase):
         )
 
         self.assertEqual(migration_files, [])
+
+
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class PlantillaPartidaFormularioPatronTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.bingo = Bingo(idbingo=7, titulobingo="Bingo de prueba")
+
+    def _request(self, path):
+        request = self.factory.get(path)
+        request.user = User(username="admin", is_staff=True)
+        return request
+
+    def test_nueva_ronda_muestra_selector_de_patron_ganador(self):
+        with patch(
+            "apps.bingos.forms.Jugador.objects.order_by",
+            return_value=Jugador.objects.none(),
+        ):
+            html = render_to_string(
+                "bingos/partida_formulario.html",
+                {
+                    "form": PartidaBingoForm(),
+                    "bingo": self.bingo,
+                    "titulo": "Nueva ronda",
+                },
+                request=self._request("/partidas/nueva/"),
+            )
+
+        self.assertIn("Patrón ganador", html)
+        self.assertIn("Cartón lleno", html)
+        self.assertNotIn("Solo se puede cambiar cuando la ronda está Programada.", html)
+
+    def test_edicion_no_programada_muestra_patron_solo_lectura(self):
+        partida = Partidabingo(
+            idpartidabingo=21,
+            idbingo=self.bingo,
+            nombreronda="Ronda 21",
+            valorefectivo=Decimal("25.00"),
+            premiomaterial="",
+            estadopartida=ESTADO_PARTIDA_EN_CURSO,
+            patronganador="cuatro_esquinas",
+            bolascantadas="[]",
+            ultimabola=0,
+            haydesempate=False,
+            horainicio=timezone.now(),
+        )
+
+        with patch(
+            "apps.bingos.forms.Jugador.objects.order_by",
+            return_value=Jugador.objects.none(),
+        ):
+            html = render_to_string(
+                "bingos/partida_formulario.html",
+                {
+                    "form": PartidaBingoForm(instance=partida),
+                    "partida": partida,
+                    "bingo": self.bingo,
+                    "titulo": "Editar partida",
+                },
+                request=self._request("/partidas/21/editar/"),
+            )
+
+        self.assertIn("Patrón ganador", html)
+        self.assertIn("Cuatro esquinas", html)
+        self.assertIn(
+            "El patrón ganador no se puede cambiar porque la ronda ya no está Programada.",
+            html,
+        )
+
+
+class PatronGanadorPartidaTests(SimpleTestCase):
+    def test_partidabingo_reconoce_patronganador(self):
+        field = Partidabingo._meta.get_field("patronganador")
+        self.assertEqual(field.db_column, "patronganador")
+        self.assertEqual(field.max_length, 20)
+        self.assertEqual(field.default, "carton_lleno")
+        self.assertEqual(
+            dict(field.flatchoices),
+            {
+                "carton_lleno": "Cartón lleno",
+                "linea_horizontal": "Línea horizontal",
+                "linea_vertical": "Línea vertical",
+                "diagonal": "Diagonal",
+                "cuatro_esquinas": "Cuatro esquinas",
+                "cruz": "Cruz",
+                "x": "Letra X",
+            },
+        )
+
+    def test_partidabingo_nueva_usa_carton_lleno_por_defecto(self):
+        partida = Partidabingo()
+
+        self.assertEqual(partida.patronganador, "carton_lleno")
+
+    def test_ronda_existente_puede_leerse_con_carton_lleno(self):
+        partida = Partidabingo(
+            idpartidabingo=99,
+            patronganador="carton_lleno",
+        )
+
+        self.assertEqual(partida.patronganador, "carton_lleno")
 
 
 class GeneracionMatrizCartonTests(SimpleTestCase):
@@ -2330,6 +2489,132 @@ class ReglaGanadorCartonTests(SimpleTestCase):
             obtener_numeros_carton(matriz_danada)
 
 
+class PatronGanadorCartonTests(SimpleTestCase):
+    def setUp(self):
+        self.matriz = matriz_carton_prueba()
+
+    def _matriz_marcada(self, numeros_marcados):
+        marcados = set(numeros_marcados)
+        return [
+            [
+                {
+                    "valor": valor,
+                    "libre": valor == CASILLA_LIBRE,
+                    "marcada": valor == CASILLA_LIBRE or valor in marcados,
+                }
+                for valor in fila
+            ]
+            for fila in self.matriz
+        ]
+
+    def test_carton_lleno_complete_e_incompleto(self):
+        completa = self._matriz_marcada(obtener_numeros_carton(self.matriz))
+        incompleta = self._matriz_marcada([1, 2, 3])
+
+        self.assertTrue(carton_cumple_patron_ganador(completa, "carton_lleno"))
+        self.assertFalse(
+            carton_cumple_patron_ganador(incompleta, "carton_lleno")
+        )
+        self.assertCountEqual(
+            obtener_numeros_faltantes_patron_ganador(
+                incompleta,
+                "carton_lleno",
+            ),
+            [16, 31, 46, 61, 17, 32, 47, 62, 18, 48, 63, 4, 19, 33, 49, 64, 5, 20, 34, 50, 65],
+        )
+        self.assertEqual(total_casillas_patron_ganador("carton_lleno"), 24)
+
+    def test_linea_horizontal_y_vertical_con_tie_elige_la_primera(self):
+        horizontal = self._matriz_marcada([1, 16, 31, 46, 2, 17, 32, 47])
+        vertical = self._matriz_marcada([1, 2, 3, 4, 16, 17, 18, 19])
+
+        self.assertEqual(
+            obtener_numeros_faltantes_patron_ganador(
+                horizontal,
+                "linea_horizontal",
+            ),
+            [61],
+        )
+        self.assertEqual(
+            obtener_numeros_faltantes_patron_ganador(
+                vertical,
+                "linea_vertical",
+            ),
+            [5],
+        )
+
+    def test_diagonal_cuatro_esquinas_cruz_y_x(self):
+        diagonal = self._matriz_marcada([17, 49, 65, 47, 19, 5])
+        cuatro_esquinas = self._matriz_marcada([])
+        cruz = self._matriz_marcada([3, 48, 63, 31, 32, 33, 34])
+        x = self._matriz_marcada([17, 49, 65, 47, 19, 5])
+
+        self.assertEqual(
+            obtener_numeros_faltantes_patron_ganador(diagonal, "diagonal"),
+            [1],
+        )
+        self.assertEqual(
+            obtener_numeros_faltantes_patron_ganador(
+                cuatro_esquinas,
+                "cuatro_esquinas",
+            ),
+            [1, 61, 5, 65],
+        )
+        self.assertEqual(
+            obtener_numeros_faltantes_patron_ganador(cruz, "cruz"),
+            [18],
+        )
+        self.assertEqual(
+            obtener_numeros_faltantes_patron_ganador(x, "x"),
+            [1, 61],
+        )
+        self.assertEqual(total_casillas_patron_ganador("cuatro_esquinas"), 4)
+        self.assertEqual(total_casillas_patron_ganador("cruz"), 8)
+        self.assertEqual(total_casillas_patron_ganador("x"), 8)
+
+    def test_casilla_libre_central_cuenta_como_marcada(self):
+        matriz = self._matriz_marcada([3, 48, 63, 31, 32, 33, 34])
+
+        self.assertTrue(matriz[2][2]["libre"])
+        self.assertTrue(matriz[2][2]["marcada"])
+        self.assertEqual(
+            obtener_numeros_faltantes_patron_ganador(matriz, "cruz"),
+            [18],
+        )
+
+    def test_patron_invalido_usando_fallback_carton_lleno(self):
+        matriz = self._matriz_marcada([1, 2, 3])
+
+        self.assertEqual(normalizar_patron_ganador("patron-raro"), "carton_lleno")
+        self.assertEqual(obtener_etiqueta_patron_ganador("patron-raro"), "Cartón lleno")
+        self.assertEqual(
+            obtener_numeros_faltantes_patron_ganador(matriz, "patron-raro"),
+            obtener_numeros_faltantes_patron_ganador(matriz, "carton_lleno"),
+        )
+
+    def test_resumen_patron_cuatro_esquinas_calcula_progreso_y_faltantes(self):
+        resumen = preparar_resumen_patron_ganador(
+            self.matriz,
+            [1, 61, 5],
+            "cuatro_esquinas",
+        )
+
+        self.assertEqual(resumen["patron_ganador_label"], "Cuatro esquinas")
+        self.assertEqual(resumen["total_requeridos_patron"], 4)
+        self.assertEqual(resumen["numeros_marcados_patron"], 3)
+        self.assertEqual(resumen["progreso_patron"], 75)
+        self.assertEqual(resumen["numeros_faltantes_patron"], [65])
+        self.assertEqual(resumen["faltantes_patron_codigos"], ["O-65"])
+        self.assertFalse(resumen["patron_completo"])
+        self.assertNotIn("LIBRE", resumen["faltantes_patron_codigos"])
+
+    def test_error_de_incompleto_menciona_el_patron_legible(self):
+        error = CartonNoCompletoError([1, 61], "cuatro_esquinas")
+
+        self.assertIn("Cuatro esquinas", str(error))
+        self.assertIn("Faltan: B-1, O-61", str(error))
+
+
 class ValidacionGanadorTests(SimpleTestCase):
     def _partida(self, estado=ESTADO_PARTIDA_EN_CURSO, bolas=None, pk=20):
         return Partidabingo(
@@ -2366,6 +2651,7 @@ class ValidacionGanadorTests(SimpleTestCase):
             estadopartida=partida.estadopartida,
             bolascantadas=partida.bolascantadas,
             ultimabola=partida.ultimabola,
+            patronganador=getattr(partida, "patronganador", None),
             idjugadorganador=partida.idjugadorganador,
             haydesempate=partida.haydesempate,
             idbingadores=partida.idbingadores,
@@ -2514,6 +2800,29 @@ class ValidacionGanadorTests(SimpleTestCase):
 
         self.assertIsNone(partida.idjugadorganador)
 
+    def test_validacion_historica_con_cuatro_esquinas_reconoce_desempate(self):
+        partida = self._partida(bolas=[1, 61, 5, 65])
+        partida.patronganador = "cuatro_esquinas"
+        carton_uno = self._carton(partida, pk=31, jugador_pk=41)
+        carton_dos = self._carton(partida, pk=32, jugador_pk=42)
+
+        resultado, _bloqueada, _atomic, _lock_partida, _lock_cartones = (
+            self._validar_sin_base(
+                partida,
+                carton_uno,
+                [carton_uno, carton_dos],
+            )
+        )
+
+        self.assertEqual(resultado["resultado"], "desempate")
+        self.assertEqual(partida.estadopartida, ESTADO_PARTIDA_DESEMPATE)
+        self.assertTrue(partida.haydesempate)
+        candidatos = parsear_candidatos_desempate(partida.idbingadores)
+        self.assertEqual(
+            [candidato["idcarton"] for candidato in candidatos],
+            [31, 32],
+        )
+
     def test_carton_incompleto_no_modifica_partida(self):
         numeros = obtener_numeros_carton(matriz_carton_prueba())
         partida = self._partida(bolas=numeros[:-1])
@@ -2570,6 +2879,21 @@ class ValidacionGanadorTests(SimpleTestCase):
         self.assertFalse(partida.haydesempate)
         self.assertEqual(partida.estadopartida, ESTADO_PARTIDA_EN_CURSO)
 
+    def test_validacion_en_partida_no_en_curso_sigue_bloqueada(self):
+        for estado in (
+            ESTADO_PARTIDA_PROGRAMADA,
+            ESTADO_PARTIDA_PAUSADA,
+            ESTADO_PARTIDA_EN_ESPERA,
+            ESTADO_PARTIDA_DESEMPATE,
+            ESTADO_PARTIDA_FINALIZADA,
+            ESTADO_PARTIDA_CANCELADA,
+        ):
+            with self.subTest(estado=estado):
+                partida = self._partida(estado=estado)
+                carton = self._carton(partida)
+                with self.assertRaises(ValidacionCartonError):
+                    validar_carton_ganador(partida, carton)
+
     def test_evaluar_carton_danado_genera_error_controlado_y_evidencia(self):
         partida = self._partida(bolas=range(1, 76))
         carton = self._carton(partida)
@@ -2597,6 +2921,24 @@ class ValidacionGanadorTests(SimpleTestCase):
             [item["carton"].pk for item in resultado],
             [vendido.pk],
         )
+
+    def test_preparacion_con_cuatro_esquinas_calcula_total_y_faltantes(self):
+        partida = self._partida(
+            bolas=[1, 61, 5],
+        )
+        partida.patronganador = "cuatro_esquinas"
+        carton = self._carton(partida, pk=31)
+
+        resultado = preparar_cartones_para_validacion(partida, [carton])
+
+        self.assertEqual(resultado[0]["patron_ganador"], "cuatro_esquinas")
+        self.assertEqual(resultado[0]["patron_ganador_label"], "Cuatro esquinas")
+        self.assertEqual(resultado[0]["total_requeridos"], 4)
+        self.assertEqual(resultado[0]["cantidad_marcados"], 3)
+        self.assertEqual(resultado[0]["progreso"], 75)
+        self.assertEqual(resultado[0]["faltantes"], [65])
+        self.assertEqual(resultado[0]["faltantes_codigos"], ["O-65"])
+        self.assertFalse(resultado[0]["completo"])
 
 
 class ParticipacionGanadoraHibridaTests(SimpleTestCase):
@@ -2672,6 +3014,7 @@ class ParticipacionGanadoraHibridaTests(SimpleTestCase):
             estadopartida=partida.estadopartida,
             bolascantadas=partida.bolascantadas,
             ultimabola=partida.ultimabola,
+            patronganador=getattr(partida, "patronganador", None),
             idjugadorganador=partida.idjugadorganador,
             haydesempate=partida.haydesempate,
             idbingadores=partida.idbingadores,
@@ -2941,6 +3284,32 @@ class ParticipacionGanadoraHibridaTests(SimpleTestCase):
         )
         primera.save.assert_not_called()
         segunda.save.assert_not_called()
+
+    def test_validacion_hibrida_con_cuatro_esquinas_reconoce_desempate(self):
+        partida = self._partida(bolas=[1, 61, 5, 65])
+        partida.patronganador = "cuatro_esquinas"
+        primer_carton = self._carton(pk=40, jugador=self.jugador)
+        segundo_carton = self._carton(pk=41, jugador=self.jugador)
+        primera = self._participacion(primer_carton, partida, pk=51)
+        segunda = self._participacion(segundo_carton, partida, pk=52)
+
+        resultado, bloqueada, _atomic, _lock = self._validar_sin_base(
+            partida,
+            primer_carton,
+            [primera, segunda],
+        )
+
+        self.assertEqual(resultado["resultado"], "desempate")
+        self.assertEqual(bloqueada.estadopartida, ESTADO_PARTIDA_DESEMPATE)
+        self.assertTrue(bloqueada.haydesempate)
+        candidatos = normalizar_candidatos_desempate_participaciones(
+            bloqueada.idbingadores,
+            partida=bloqueada,
+        )
+        self.assertEqual(
+            [item["idcartonpartidabingo"] for item in candidatos],
+            [51, 52],
+        )
 
     def test_conserva_dos_candidatas_del_mismo_jugador(self):
         partida = self._partida()
@@ -3216,6 +3585,24 @@ class ConsolaValidacionHibridaTests(SimpleTestCase):
         self.assertEqual(datos[0]["cantidad_marcados"], 24)
         self.assertEqual(datos[0]["progreso"], 100)
 
+    def test_presentacion_cuatro_esquinas_usa_total_cuatro_y_faltantes_de_esquina(self):
+        self.partida.patronganador = "cuatro_esquinas"
+        self.partida.bolascantadas = serializar_bolas_cantadas([1, 61, 5])
+        self.partida.ultimabola = 5
+
+        datos = preparar_participaciones_hibridas_para_consola(
+            self.partida,
+            participaciones=[self.participacion],
+        )
+
+        self.assertEqual(datos[0]["patron_ganador"], "cuatro_esquinas")
+        self.assertEqual(datos[0]["patron_ganador_label"], "Cuatro esquinas")
+        self.assertEqual(datos[0]["total_requeridos"], 4)
+        self.assertEqual(datos[0]["cantidad_marcados"], 3)
+        self.assertEqual(datos[0]["progreso"], 75)
+        self.assertEqual(datos[0]["faltantes"], [65])
+        self.assertEqual(datos[0]["faltantes_codigos"], ["O-65"])
+
     def test_consola_carga_grupos_heredado_e_hibrido_separados(self):
         request = self.factory.get(
             reverse(
@@ -3277,6 +3664,49 @@ class ConsolaValidacionHibridaTests(SimpleTestCase):
             contexto["participaciones_hibridas_validacion"],
             [item_hibrido],
         )
+
+    def test_consola_muestra_total_requerido_del_patron_en_la_plantilla(self):
+        item = {
+            "participacion": self.participacion,
+            "etiqueta_tipo": "Cartón de Bingo",
+            "carton": self.carton_hibrido,
+            "matriz": [],
+            "patron_ganador": "cuatro_esquinas",
+            "patron_ganador_label": "Cuatro esquinas",
+            "faltantes": [65],
+            "faltantes_codigos": ["O-65"],
+            "cantidad_marcados": 3,
+            "total_requeridos": 4,
+            "progreso": 75,
+            "completo": False,
+            "estado_participacion": CartonPartidaBingo.ESTADO_EN_JUEGO,
+            "indicevictoria": 9,
+            "fechavalidacion": timezone.now(),
+            "error": None,
+            "puede_validar": True,
+        }
+        request = self.factory.get("/partidas/21/consola/")
+        request.user = User(username="admin", is_staff=True)
+        html = render_to_string(
+            "bingos/consola_operador.html",
+            {
+                "partida": self.partida,
+                "acciones_consola": [],
+                "actualizacion_estados_pendiente": False,
+                "cartones": [self.carton_heredado],
+                "cartones_validacion": [],
+                "participaciones_hibridas": [self.participacion],
+                "participaciones_hibridas_validacion": [item],
+                "error_participaciones_hibridas": None,
+                "candidatos_desempate": [],
+                "puede_asignar_cartones": False,
+                "puede_validar_cartones": True,
+            },
+            request=request,
+        )
+
+        self.assertIn("3 de 4 números marcados · 75%", html)
+        self.assertNotIn("24 de 24 números marcados", html)
 
     def test_validacion_heredada_conserva_servicio_existente(self):
         request = self._request(self.carton_heredado)
@@ -3981,6 +4411,18 @@ class ServiciosPublicosBingoTests(SimpleTestCase):
         self.assertEqual(datos["ultima_bola_codigo"], "O-73")
         self.assertEqual(datos["total_bolas_extraidas"], 3)
         self.assertEqual(datos["total_bolas_faltantes"], 72)
+        self.assertEqual(datos["patron_ganador_label"], "Cartón lleno")
+        self.assertEqual(datos["total_requeridos_patron"], 24)
+
+    def test_payload_websocket_incluye_patron_ganador_y_total_requerido(self):
+        partida = partida_publica_prueba(bolas=[1, 61, 5], ultima=5)
+        partida.patronganador = "cuatro_esquinas"
+
+        payload = construir_payload_publico_partida(partida, "bola_extraida")
+
+        self.assertEqual(payload["partida"]["patron_ganador"], "cuatro_esquinas")
+        self.assertEqual(payload["partida"]["patron_ganador_label"], "Cuatro esquinas")
+        self.assertEqual(payload["partida"]["total_requeridos_patron"], 4)
 
     def test_tablero_marca_las_bolas_extraidas(self):
         partida = partida_publica_prueba(bolas=[1, 27, 73])
@@ -4050,6 +4492,9 @@ class ServiciosPublicosBingoTests(SimpleTestCase):
         self.assertTrue(all(len(fila) == 5 for fila in datos["matriz_carton"]))
         self.assertTrue(datos["matriz_carton"][2][2]["libre"])
         self.assertEqual(datos["matriz_carton"][2][2]["valor"], CASILLA_LIBRE)
+        self.assertEqual(datos["patron_ganador_label"], "Cartón lleno")
+        self.assertEqual(datos["total_requeridos_patron"], 24)
+        self.assertEqual(datos["numeros_marcados_patron"], 0)
 
     def test_carton_diferencia_numeros_marcados_y_pendientes(self):
         partida = partida_publica_prueba(bolas=[1, 16])
@@ -4060,6 +4505,21 @@ class ServiciosPublicosBingoTests(SimpleTestCase):
         self.assertTrue(datos["matriz_carton"][0][0]["marcada"])
         self.assertTrue(datos["matriz_carton"][0][1]["marcada"])
         self.assertFalse(datos["matriz_carton"][0][2]["marcada"])
+
+    def test_carton_cuatro_esquinas_prepara_progreso_y_faltantes_del_patron(self):
+        partida = partida_publica_prueba(bolas=[1, 61, 5], ultima=5)
+        partida.patronganador = "cuatro_esquinas"
+        carton = carton_publico_prueba(partida=partida)
+
+        datos = preparar_datos_carton_jugador(carton)
+
+        self.assertEqual(datos["patron_ganador_label"], "Cuatro esquinas")
+        self.assertEqual(datos["total_requeridos_patron"], 4)
+        self.assertEqual(datos["numeros_marcados_patron"], 3)
+        self.assertEqual(datos["progreso_patron"], 75)
+        self.assertEqual(datos["numeros_faltantes_patron"], [65])
+        self.assertEqual(datos["faltantes_patron_codigos"], ["O-65"])
+        self.assertFalse(datos["patron_completo"])
 
     def test_contador_ignora_libre(self):
         matriz = matriz_carton_prueba()
@@ -4367,6 +4827,11 @@ class PlantillasPublicasBingoTests(SimpleTestCase):
         self.assertIn("3", html)
         self.assertIn("<dt>Extraídas</dt>", html)
         self.assertIn("<dt>Restantes</dt>", html)
+        self.assertIn("Patrón de esta ronda", html)
+        self.assertIn("Cartón lleno", html)
+        self.assertIn("Casillas requeridas", html)
+        self.assertIn("data-realtime-patron-label", html)
+        self.assertIn("data-realtime-patron-total", html)
         self.assertEqual(html.count('class="public-bingo-column col"'), 5)
         self.assertIn("public-bingo-ball is-drawn", html)
         self.assertIn("public-ball-check", html)
@@ -4377,6 +4842,18 @@ class PlantillasPublicasBingoTests(SimpleTestCase):
         self.assertIn("O-73", html)
         self.assertNotIn("Sacar siguiente bola", html)
         self.assertNotIn("Validar cartón", html)
+
+    def test_tablero_cuatro_esquinas_muestra_patron_legible(self):
+        partida = partida_publica_prueba(bolas=[1, 61, 5, 65], ultima=65)
+        partida.patronganador = "cuatro_esquinas"
+        html = render_to_string(
+            "bingos/tablero_publico.html",
+            {"partida": partida, **preparar_datos_tablero_publico(partida)},
+            request=self._request("/juego/partidas/20/tablero/"),
+        )
+
+        self.assertIn("Patrón de esta ronda", html)
+        self.assertIn("Cuatro esquinas", html)
 
     def test_tablero_sin_bolas_muestra_mensaje_controlado(self):
         partida = partida_publica_prueba(bolas=[], ultima=0)
@@ -4447,7 +4924,13 @@ class PlantillasPublicasBingoTests(SimpleTestCase):
         self.assertIn("<dt>Bingo</dt>", html)
         self.assertIn("<dt>Ronda</dt>", html)
         self.assertIn("<dt>Estado</dt>", html)
-        self.assertIn("<dt>Progreso</dt>", html)
+        self.assertIn("Patrón de esta ronda", html)
+        self.assertIn("Cartón lleno", html)
+        self.assertIn("<dt>Progreso del cartón</dt>", html)
+        self.assertIn("data-realtime-patron-label", html)
+        self.assertIn("data-realtime-patron-progreso", html)
+        self.assertIn("data-realtime-patron-completo", html)
+        self.assertIn("data-realtime-patron-faltantes", html)
         self.assertIn("LIBRE", html)
         self.assertIn("public-card-cell--marked", html)
         self.assertIn("public-card-cell--pending", html)
@@ -4457,6 +4940,56 @@ class PlantillasPublicasBingoTests(SimpleTestCase):
         self.assertIn("★ Automática", html)
         self.assertIn("2 de 24 números marcados.", html)
         self.assertIn("La casilla LIBRE se marca automáticamente.", html)
+
+    def test_carton_cuatro_esquinas_muestra_progreso_y_mensaje_de_patron(self):
+        partida = partida_publica_prueba(bolas=[1, 61, 5, 65], ultima=65)
+        partida.patronganador = "cuatro_esquinas"
+        carton = carton_publico_prueba(partida=partida)
+        datos = preparar_datos_carton_jugador(carton)
+
+        html = render_to_string(
+            "bingos/carton_publico.html",
+            {
+                "carton": carton,
+                "partida": partida,
+                "error_carton": None,
+                **datos,
+            },
+            request=self._request("/juego/cartones/PUBLICO-001/"),
+        )
+
+        self.assertIn("Patrón de esta ronda", html)
+        self.assertIn("Cuatro esquinas", html)
+        self.assertIn("4 de 4 números marcados", html)
+        self.assertIn("¡Patrón completado! Espera la validación del operador.", html)
+        self.assertNotIn("LIBRE", datos["numeros_faltantes_patron"])
+        self.assertEqual(datos["total_requeridos_patron"], 4)
+        self.assertIn("data-realtime-patron-completo", html)
+        self.assertIn("data-realtime-patron-faltantes", html)
+
+    def test_mi_carton_detalle_muestra_patron_y_progreso_real(self):
+        partida = partida_publica_prueba(bolas=[1, 61, 5], ultima=5)
+        partida.patronganador = "cuatro_esquinas"
+        carton = carton_publico_prueba(partida=partida)
+        html = render_to_string(
+            "bingos/mi_carton_detalle.html",
+            {
+                "partida": partida,
+                "carton": carton,
+                "jugador": carton.idjugador,
+                "error_carton": None,
+                **preparar_datos_carton_jugador(carton),
+            },
+            request=self._request("/mis-cartones/PUBLICO-001/"),
+        )
+
+        self.assertIn("Patrón de esta ronda", html)
+        self.assertIn("Cuatro esquinas", html)
+        self.assertIn("3 de 4 números marcados", html)
+        self.assertIn("Faltan:", html)
+        self.assertIn("data-realtime-patron-label", html)
+        self.assertIn("data-realtime-patron-progreso", html)
+        self.assertIn("data-realtime-patron-faltantes", html)
 
     def test_carton_no_expone_precio_otros_cartones_ni_otros_jugadores(self):
         partida = partida_publica_prueba(bolas=[1])
@@ -4478,6 +5011,51 @@ class PlantillasPublicasBingoTests(SimpleTestCase):
         self.assertNotIn("otro_jugador_privado", html)
         self.assertNotIn("Editar", html)
         self.assertNotIn("Validar cartón", html)
+
+
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class PlantillasAdministrativasPartidasTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _request(self, path):
+        request = self.factory.get(path)
+        request.user = User(username="admin", is_staff=True)
+        return request
+
+    def test_lista_partidas_muestra_patron_ganador_legible(self):
+        bingo = Bingo(idbingo=7, titulobingo="Bingo administrativo")
+        partida = Partidabingo(
+            idpartidabingo=21,
+            idbingo=bingo,
+            nombreronda="Ronda 21",
+            valorefectivo=Decimal("25.00"),
+            premiomaterial="",
+            estadopartida=ESTADO_PARTIDA_PROGRAMADA,
+            patronganador="cuatro_esquinas",
+            bolascantadas="[]",
+            ultimabola=0,
+            haydesempate=False,
+            horainicio=timezone.now(),
+        )
+
+        html = render_to_string(
+            "bingos/partidas_lista.html",
+            {"page_obj": [partida], "busqueda": "", "total": 1},
+            request=self._request("/partidas/"),
+        )
+
+        self.assertIn("Patrón ganador", html)
+        self.assertIn("Cuatro esquinas", html)
 
 
 class EstadoPartidaTests(SimpleTestCase):
@@ -5492,6 +6070,8 @@ class PlantillasTiempoRealBingoTests(SimpleTestCase):
         self.assertIn('data-realtime-mode="operador"', html)
         self.assertIn("realtime_bingo.js", html)
         self.assertIn("bolillero_automatico.js", html)
+        self.assertIn("Patrón ganador", html)
+        self.assertIn("Cartón lleno", html)
 
     def test_consola_operador_incluye_bolillero_automatico(self):
         partida = partida_publica_prueba(bolas=[1, 23])
@@ -5572,6 +6152,18 @@ class PlantillasTiempoRealBingoTests(SimpleTestCase):
         self.assertIn('"siab:partidaActualizada"', javascript)
         self.assertIn("detail: payload", javascript)
         self.assertIn("bubbles: true", javascript)
+
+    def test_javascript_actualiza_el_patron_en_vistas_publicas(self):
+        javascript = Path("static/js/realtime_bingo.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("actualizarPatronTablero", javascript)
+        self.assertIn("actualizarPatronCarton", javascript)
+        self.assertIn("[data-realtime-patron-label]", javascript)
+        self.assertIn("[data-realtime-patron-progreso]", javascript)
+        self.assertIn("[data-realtime-patron-faltantes]", javascript)
+        self.assertIn("[data-realtime-patron-completo]", javascript)
 
     def test_javascript_actualiza_tablero_en_modo_operador(self):
         javascript = Path("static/js/realtime_bingo.js").read_text(
@@ -6385,6 +6977,7 @@ class VisibilidadCartonesHibridosAdminTests(SimpleTestCase):
         return request
 
     def test_detalle_ronda_muestra_participacion_hibrida_sin_vacio(self):
+        self.partida.patronganador = "cuatro_esquinas"
         cartones = _CartonesConsultaQuerySet()
         with (
             patch(
@@ -6409,6 +7002,8 @@ class VisibilidadCartonesHibridosAdminTests(SimpleTestCase):
 
         self.assertContains(response, self.carton_maestro.codigocarton, count=1)
         self.assertContains(response, "Cartón del Bingo")
+        self.assertContains(response, "Patrón ganador")
+        self.assertContains(response, "Cuatro esquinas")
         self.assertContains(response, CartonPartidaBingo.ESTADO_GANADOR)
         self.assertContains(response, "Índice de victoria: 24")
         self.assertNotContains(

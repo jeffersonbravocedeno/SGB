@@ -47,13 +47,14 @@
             </div>
             <div class="table-responsive mb-4">
                 <table class="table modern-table align-middle">
-                    <thead><tr><th>Ronda</th><th>Premio efectivo</th><th>Ganador</th><th>Inicio</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
+                    <thead><tr><th>Ronda</th><th>Premio efectivo</th><th>Ganador</th><th>Patrón</th><th>Inicio</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
                     <tbody>
                         {% for partida in partidas %}
                         <tr>
                             <td>{{ partida.nombreronda }}</td>
                             <td>${{ partida.valorefectivo|floatformat:2 }}</td>
                             <td>{{ partida.idjugadorganador|default:"Sin ganador" }}</td>
+                            <td>{{ partida.get_patronganador_display }}</td>
                             <td>{{ partida.horainicio|date:"d/m/Y H:i" }}</td>
                             <td><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></td>
                             <td class="text-end">
@@ -64,7 +65,7 @@
                             </td>
                         </tr>
                         {% empty %}
-                        <tr><td colspan="6" class="text-muted">No hay partidas asociadas.</td></tr>
+                        <tr><td colspan="7" class="text-muted">No hay partidas asociadas.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>

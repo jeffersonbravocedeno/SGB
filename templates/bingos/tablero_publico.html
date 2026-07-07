@@ -4,7 +4,7 @@
 {% block title %}SIAB | Tablero de Bingo{% endblock %}
 
 {% block content %}
-<div data-realtime-bingo data-realtime-mode="tablero" data-partida-id="{{ partida.idpartidabingo }}">
+<div data-realtime-bingo data-realtime-mode="tablero" data-partida-id="{{ partida.idpartidabingo }}" data-patron-ganador="{{ patron_ganador }}" data-patron-ganador-label="{{ patron_ganador_label }}" data-total-requeridos-patron="{{ total_requeridos_patron }}">
 <section class="page-header public-page-header">
     <div>
         <p class="page-kicker">TABLERO DE BINGO</p>
@@ -32,6 +32,8 @@
         <div><dt>Bingo</dt><dd>{{ partida.idbingo.titulobingo }}</dd></div>
         <div><dt>Ronda</dt><dd>{{ partida.nombreronda }}</dd></div>
         <div><dt>Estado</dt><dd data-realtime-estado>{{ partida.estadopartida|estado_partida_display }}</dd></div>
+        <div><dt>Patrón de esta ronda</dt><dd data-realtime-patron-label>{{ patron_ganador_label }}</dd></div>
+        <div><dt>Casillas requeridas</dt><dd><span data-realtime-patron-total>{{ total_requeridos_patron }}</span></dd></div>
         <div><dt>Premio</dt><dd>${{ partida.valorefectivo|floatformat:2 }}{% if partida.premiomaterial %} · {{ partida.premiomaterial }}{% endif %}</dd></div>
         <div><dt>Extraídas</dt><dd><span data-realtime-total-extraidas>{{ total_bolas_extraidas }}</span> de 75 bolas</dd></div>
         <div><dt>Restantes</dt><dd><span data-realtime-restantes>{{ total_bolas_faltantes }}</span> de 75 bolas</dd></div>

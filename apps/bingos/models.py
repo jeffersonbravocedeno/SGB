@@ -34,6 +34,20 @@ class Partidabingo(models.Model):
     valorefectivo = models.DecimalField(max_digits=10, decimal_places=2)
     premiomaterial = models.CharField(max_length=150)
     estadopartida = models.CharField(max_length=20)
+    patronganador = models.CharField(
+        max_length=20,
+        db_column='patronganador',
+        choices=(
+            ('carton_lleno', 'Cartón lleno'),
+            ('linea_horizontal', 'Línea horizontal'),
+            ('linea_vertical', 'Línea vertical'),
+            ('diagonal', 'Diagonal'),
+            ('cuatro_esquinas', 'Cuatro esquinas'),
+            ('cruz', 'Cruz'),
+            ('x', 'Letra X'),
+        ),
+        default='carton_lleno',
+    )
     bolascantadas = models.TextField()
     ultimabola = models.IntegerField()
     haydesempate = models.BooleanField(blank=True, null=True)

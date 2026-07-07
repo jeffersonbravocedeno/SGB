@@ -78,6 +78,7 @@ from .services import (
     preparar_datos_tablero_publico,
     preparar_participaciones_hibridas_para_consola,
     preparar_resumen_partida_publica,
+    preparar_resumen_patron_ganador,
     puede_asignar_cartones,
     estado_permite_validar_carton,
     preparar_accion_consola,
@@ -403,6 +404,14 @@ def _datos_carton_vacios(partida=None):
         "numeros_marcados": 0,
         "total_numeros_carton": 24,
         "numeros_faltantes": [],
+        "patron_ganador": None,
+        "patron_ganador_label": None,
+        "numeros_marcados_patron": 0,
+        "total_requeridos_patron": 0,
+        "progreso_patron": 0,
+        "numeros_faltantes_patron": [],
+        "faltantes_patron_codigos": [],
+        "patron_completo": False,
         "ultima_bola_codigo": (
             preparar_datos_bolas_partida(partida)["ultima_bola_codigo"]
             if partida is not None
@@ -519,6 +528,11 @@ def _preparar_datos_carton_hibrido(carton, partida):
         carton.matriznumeros,
         partida.bolascantadas,
     )
+    patron = preparar_resumen_patron_ganador(
+        carton.matriznumeros,
+        partida.bolascantadas,
+        getattr(partida, "patronganador", None),
+    )
     datos_bolas = preparar_datos_bolas_partida(partida)
     return {
         "matriz_carton": matriz,
@@ -528,6 +542,7 @@ def _preparar_datos_carton_hibrido(carton, partida):
         ),
         "total_numeros_carton": 24,
         "numeros_faltantes": faltantes,
+        **patron,
         "ultima_bola_codigo": datos_bolas["ultima_bola_codigo"],
         "mensaje_estado_carton": mensaje_estado_carton_publico(
             partida.estadopartida
@@ -886,6 +901,7 @@ def partida_nueva(request, idbingo):
         form = PartidaBingoForm(
             initial={
                 "estadopartida": ESTADO_PARTIDA_PROGRAMADA,
+                "patronganador": "carton_lleno",
                 "bolascantadas": "[]",
                 "ultimabola": 0,
                 "haydesempate": False,

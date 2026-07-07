@@ -53,6 +53,7 @@
             <h2 class="section-subtitle">Datos de la partida</h2>
             <dl class="detail-list">
                 <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></dd></div>
+                <div><dt>Patrón ganador</dt><dd>{{ partida.get_patronganador_display }}</dd></div>
                 <div><dt>Ganador</dt><dd>{{ partida.idjugadorganador|default:"Sin ganador" }}</dd></div>
                 <div><dt>Premio efectivo</dt><dd>${{ partida.valorefectivo|floatformat:2 }}</dd></div>
                 <div><dt>Premio material</dt><dd>{{ partida.premiomaterial }}</dd></div>
@@ -69,7 +70,7 @@
             </div>
             <div class="table-responsive">
                 <table class="table modern-table align-middle">
-                    <thead><tr><th>Código</th><th>Tipo</th><th>Jugador</th><th>Precio</th><th>Estado / resultado</th><th class="text-end">Acciones</th></tr></thead>
+                    <thead><tr><th>Código</th><th>Tipo</th><th>Jugador</th><th>Precio</th><th>Patrón</th><th>Estado / resultado</th><th class="text-end">Acciones</th></tr></thead>
                     <tbody>
                         {% if cartones or participaciones_hibridas %}
                         {% for participacion in participaciones_hibridas %}
@@ -78,6 +79,7 @@
                             <td><span class="badge text-bg-primary">Cartón del Bingo</span></td>
                             <td>{{ participacion.idcarton.idjugador|default:"Sin jugador" }}</td>
                             <td>${{ participacion.idcarton.preciopagado|floatformat:2 }}</td>
+                            <td>{{ partida.get_patronganador_display }}</td>
                             <td>
                                 <span class="badge rounded-pill {{ participacion.estado_participacion|estado_class }}">{{ participacion.estado_participacion }}</span>
                                 {% if participacion.indicevictoria or participacion.indicevictoria == 0 %}<div class="small text-muted">Índice de victoria: {{ participacion.indicevictoria }}</div>{% endif %}
@@ -91,12 +93,13 @@
                             <td><span class="badge text-bg-secondary">Cartón heredado por ronda</span></td>
                             <td>{{ carton.idjugador|default:"Sin jugador" }}</td>
                             <td>${{ carton.preciopagado|floatformat:2 }}</td>
+                            <td>{{ partida.get_patronganador_display }}</td>
                             <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
                             <td class="text-end"><a class="btn btn-outline-secondary btn-sm" href="{% url 'bingos:partida_carton_editar' partida.idpartidabingo carton.idcarton %}">Editar</a></td>
                         </tr>
                         {% endfor %}
                         {% else %}
-                        <tr><td colspan="6" class="text-muted">No hay cartones registrados para esta partida.</td></tr>
+                        <tr><td colspan="7" class="text-muted">No hay cartones registrados para esta partida.</td></tr>
                         {% endif %}
                     </tbody>
                 </table>

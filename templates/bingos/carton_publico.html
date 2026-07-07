@@ -4,7 +4,7 @@
 {% block title %}SIAB | Mi cartón{% endblock %}
 
 {% block content %}
-<div{% if partida %} data-realtime-bingo data-realtime-mode="carton" data-partida-id="{{ partida.idpartidabingo }}" data-total-numeros-carton="{{ total_numeros_carton }}"{% endif %}>
+<div{% if partida %} data-realtime-bingo data-realtime-mode="carton" data-partida-id="{{ partida.idpartidabingo }}" data-total-numeros-carton="{{ total_numeros_carton }}" data-patron-ganador="{{ patron_ganador }}" data-patron-ganador-label="{{ patron_ganador_label }}" data-total-requeridos-patron="{{ total_requeridos_patron }}"{% endif %}>
 <section class="page-header public-page-header">
     <div>
         <p class="page-kicker">{% if es_hibrido %}CARTÓN DE BINGO{% else %}HISTÓRICO POR PARTIDA{% endif %}</p>
@@ -42,6 +42,20 @@
 <div class="alert alert-success" role="status">Este cartón ganó la ronda {{ partida.nombreronda }}.</div>
 {% endif %}
 <section class="content-panel mb-3">
+    <div class="section-heading">
+        <div>
+            <h2>Patrón de esta ronda</h2>
+            <p>El cartón muestra el patrón activo del Bingo y su avance real.</p>
+        </div>
+    </div>
+    <dl class="public-board-summary">
+        <div><dt>Patrón de esta ronda</dt><dd data-realtime-patron-label>{{ patron_ganador_label }}</dd></div>
+        <div><dt>Progreso del patrón</dt><dd data-realtime-patron-progreso>{{ numeros_marcados_patron }} de {{ total_requeridos_patron }} números marcados</dd></div>
+    </dl>
+    <div class="alert alert-success mb-0{% if not patron_completo %} d-none{% endif %}" role="status" data-realtime-patron-completo>¡Patrón completado! Espera la validación del operador.</div>
+    <div class="public-card-progress-note{% if patron_completo or not faltantes_patron_codigos %} d-none{% endif %}" data-realtime-patron-faltantes>Faltan: {% for codigo in faltantes_patron_codigos %}<span class="badge text-bg-light">{{ codigo }}</span>{% endfor %}</div>
+</section>
+<section class="content-panel mb-3">
     <dl class="public-board-summary">
         <div><dt>Bingo</dt><dd>{{ partida.idbingo.titulobingo }}</dd></div>
         <div><dt>Ronda</dt><dd>{{ partida.nombreronda }}</dd></div>
@@ -51,7 +65,7 @@
         <div><dt>Índice de victoria</dt><dd>{{ participacion_seleccionada.indicevictoria|default:"-" }}</dd></div>
         {% endif %}
         <div><dt>Última bola</dt><dd data-realtime-ultima-bola>{{ ultima_bola_codigo|default:"—" }}</dd></div>
-        <div><dt>Progreso</dt><dd data-realtime-progreso>{{ numeros_marcados }} de {{ total_numeros_carton }} números marcados</dd></div>
+        <div><dt>Progreso del cartón</dt><dd data-realtime-progreso>{{ numeros_marcados }} de {{ total_numeros_carton }} números marcados</dd></div>
     </dl>
 </section>
 {% endif %}
