@@ -696,6 +696,31 @@ def _sumar_monto_registrado(queryset):
     return queryset.aggregate(total=Sum("monto"))["total"] or Decimal("0.00")
 
 
+def _limpiar_texto(valor):
+    return str(valor or "").strip()
+
+
+def _validar_monto_gasto(monto):
+    if isinstance(monto, bool):
+        raise CierreFinancieroError("El monto del gasto debe ser mayor que cero.")
+    try:
+        monto_decimal = Decimal(str(monto))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise CierreFinancieroError(
+            "El monto del gasto debe ser mayor que cero."
+        ) from exc
+    if not monto_decimal.is_finite() or monto_decimal <= 0:
+        raise CierreFinancieroError("El monto del gasto debe ser mayor que cero.")
+    return monto_decimal
+
+
+def _cierre_financiero_esta_cerrado(bingo):
+    return BingoCierreFinanciero.objects.filter(
+        idbingo=bingo,
+        estado=BingoCierreFinanciero.ESTADO_CERRADO,
+    ).exists()
+
+
 def construir_resumen_financiero_real_bingo(bingo):
     """Calcula el resumen financiero real sin cerrar ni modificar el Bingo."""
     if bingo is None or getattr(bingo, "pk", None) is None:
@@ -841,6 +866,80 @@ def construir_resumen_financiero_real_bingo(bingo):
         "cierre_existente": cierre_existente,
         "cierre_esta_cerrado": cierre_esta_cerrado,
     }
+
+
+def registrar_gasto_operativo_bingo(
+    bingo,
+    usuario,
+    concepto,
+    monto,
+    fechagasto=None,
+    observacion="",
+):
+    concepto = _limpiar_texto(concepto)
+    if not concepto:
+        raise CierreFinancieroError("El concepto del gasto es obligatorio.")
+    monto = _validar_monto_gasto(monto)
+    observacion = _limpiar_texto(observacion)
+
+    with transaction.atomic():
+        bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+        if _cierre_financiero_esta_cerrado(bingo_bloqueado):
+            raise CierreFinancieroError(
+                "No se pueden registrar gastos porque el cierre financiero "
+                "está cerrado."
+            )
+
+        ahora = timezone.now()
+        return BingoGastoOperativo.objects.create(
+            idbingo=bingo_bloqueado,
+            concepto=concepto,
+            monto=monto,
+            fechagasto=fechagasto or ahora,
+            estado=BingoGastoOperativo.ESTADO_REGISTRADO,
+            observacion=observacion,
+            idusuarioregistro=usuario,
+            fechacreacion=ahora,
+        )
+
+
+def anular_gasto_operativo_bingo(gasto, usuario, motivo):
+    motivo = _limpiar_texto(motivo)
+    if not motivo:
+        raise CierreFinancieroError("Debe indicar el motivo de anulación.")
+
+    with transaction.atomic():
+        bingo_id = getattr(gasto, "idbingo_id", None)
+        if bingo_id is None:
+            bingo_id = getattr(getattr(gasto, "idbingo", None), "pk", None)
+        bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo_id)
+        gasto_bloqueado = BingoGastoOperativo.objects.select_for_update().get(
+            pk=gasto.pk,
+            idbingo=bingo_bloqueado,
+        )
+
+        if _cierre_financiero_esta_cerrado(bingo_bloqueado):
+            raise CierreFinancieroError(
+                "No se pueden anular gastos porque el cierre financiero está "
+                "cerrado."
+            )
+        if gasto_bloqueado.estado == BingoGastoOperativo.ESTADO_ANULADO:
+            raise CierreFinancieroError("El gasto ya se encuentra anulado.")
+
+        gasto_bloqueado.estado = BingoGastoOperativo.ESTADO_ANULADO
+        gasto_bloqueado.idusuarioanulacion = usuario
+        gasto_bloqueado.fechaanulacion = timezone.now()
+        gasto_bloqueado.motivoanulacion = motivo
+        gasto_bloqueado.save(
+            update_fields=[
+                "estado",
+                "idusuarioanulacion",
+                "fechaanulacion",
+                "motivoanulacion",
+            ]
+        )
+
+    return gasto_bloqueado
 
 
 def generar_codigo_carton(

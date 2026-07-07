@@ -2,6 +2,7 @@ from django.conf import settings
 
 
 if settings.SETTINGS_MODULE == "config.settings_finance_test":
+    from datetime import timedelta
     from decimal import Decimal
 
     from django.contrib.auth.models import User
@@ -19,6 +20,7 @@ if settings.SETTINGS_MODULE == "config.settings_finance_test":
         Partidabingo,
     )
     from .services import (
+        CierreFinancieroError,
         ESTADO_PARTIDA_CANCELADA,
         ESTADO_PARTIDA_DESEMPATE,
         ESTADO_PARTIDA_EN_CURSO,
@@ -26,7 +28,9 @@ if settings.SETTINGS_MODULE == "config.settings_finance_test":
         ESTADO_PARTIDA_FINALIZADA,
         ESTADO_PARTIDA_PAUSADA,
         ESTADO_PARTIDA_PROGRAMADA,
+        anular_gasto_operativo_bingo,
         construir_resumen_financiero_real_bingo,
+        registrar_gasto_operativo_bingo,
     )
     from apps.jugadores.models import Jugador
 
@@ -410,3 +414,208 @@ if settings.SETTINGS_MODULE == "config.settings_finance_test":
                     for bloqueo in resumen["bloqueos_de_cierre"]
                 )
             )
+
+        def test_registrar_gasto_operativo_correcto(self):
+            fecha_gasto = self.ahora - timedelta(days=1)
+
+            gasto = registrar_gasto_operativo_bingo(
+                self.bingo,
+                self.usuario,
+                "  Impresion de cartones  ",
+                "12.50",
+                fechagasto=fecha_gasto,
+                observacion="  urgente  ",
+            )
+
+            self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
+            self.assertEqual(gasto.idusuarioregistro, self.usuario)
+            self.assertEqual(gasto.concepto, "Impresion de cartones")
+            self.assertEqual(gasto.monto, Decimal("12.50"))
+            self.assertEqual(gasto.fechagasto, fecha_gasto)
+            self.assertEqual(gasto.observacion, "urgente")
+            self.assertIsNotNone(gasto.fechacreacion)
+
+        def test_registrar_gasto_usa_fecha_actual_si_no_recibe_fecha(self):
+            antes = timezone.now()
+
+            gasto = registrar_gasto_operativo_bingo(
+                self.bingo,
+                self.usuario,
+                "Transporte",
+                Decimal("3.00"),
+            )
+
+            despues = timezone.now()
+            self.assertGreaterEqual(gasto.fechagasto, antes)
+            self.assertLessEqual(gasto.fechagasto, despues)
+
+        def test_registrar_gasto_rechaza_concepto_vacio(self):
+            for concepto in ("", "   "):
+                with self.subTest(concepto=repr(concepto)):
+                    with self.assertRaisesMessage(
+                        CierreFinancieroError,
+                        "El concepto del gasto es obligatorio.",
+                    ):
+                        registrar_gasto_operativo_bingo(
+                            self.bingo,
+                            self.usuario,
+                            concepto,
+                            Decimal("1.00"),
+                        )
+
+            self.assertEqual(BingoGastoOperativo.objects.count(), 0)
+
+        def test_registrar_gasto_rechaza_montos_no_positivos_y_booleanos(self):
+            for monto in (Decimal("0.00"), Decimal("-1.00"), True, False):
+                with self.subTest(monto=repr(monto)):
+                    with self.assertRaisesMessage(
+                        CierreFinancieroError,
+                        "El monto del gasto debe ser mayor que cero.",
+                    ):
+                        registrar_gasto_operativo_bingo(
+                            self.bingo,
+                            self.usuario,
+                            "Gasto invalido",
+                            monto,
+                        )
+
+            self.assertEqual(BingoGastoOperativo.objects.count(), 0)
+
+        def test_registrar_gasto_rechaza_montos_invalidos(self):
+            for monto in (
+                Decimal("NaN"),
+                Decimal("Infinity"),
+                Decimal("-Infinity"),
+                "texto-invalido",
+                "",
+                None,
+            ):
+                with self.subTest(monto=repr(monto)):
+                    with self.assertRaisesMessage(
+                        CierreFinancieroError,
+                        "El monto del gasto debe ser mayor que cero.",
+                    ):
+                        registrar_gasto_operativo_bingo(
+                            self.bingo,
+                            self.usuario,
+                            "Gasto invalido",
+                            monto,
+                        )
+
+                    self.assertEqual(BingoGastoOperativo.objects.count(), 0)
+
+        def test_anular_gasto_operativo_conserva_registro_y_guarda_auditoria(self):
+            gasto = registrar_gasto_operativo_bingo(
+                self.bingo,
+                self.usuario,
+                "Sonido",
+                Decimal("15.00"),
+            )
+            usuario_anulacion = User.objects.create_user(
+                username="admin_anulacion",
+                password="test",
+            )
+            antes = timezone.now()
+
+            gasto_anulado = anular_gasto_operativo_bingo(
+                gasto,
+                usuario_anulacion,
+                "  Factura duplicada  ",
+            )
+
+            despues = timezone.now()
+            self.assertEqual(BingoGastoOperativo.objects.count(), 1)
+            self.assertEqual(gasto_anulado.pk, gasto.pk)
+            self.assertEqual(gasto_anulado.estado, BingoGastoOperativo.ESTADO_ANULADO)
+            self.assertEqual(gasto_anulado.idusuarioanulacion, usuario_anulacion)
+            self.assertGreaterEqual(gasto_anulado.fechaanulacion, antes)
+            self.assertLessEqual(gasto_anulado.fechaanulacion, despues)
+            self.assertEqual(gasto_anulado.motivoanulacion, "Factura duplicada")
+
+        def test_anular_gasto_rechaza_motivo_vacio(self):
+            gasto = registrar_gasto_operativo_bingo(
+                self.bingo,
+                self.usuario,
+                "Sonido",
+                Decimal("15.00"),
+            )
+
+            for motivo in ("", "   "):
+                with self.subTest(motivo=repr(motivo)):
+                    with self.assertRaisesMessage(
+                        CierreFinancieroError,
+                        "Debe indicar el motivo de anulación.",
+                    ):
+                        anular_gasto_operativo_bingo(gasto, self.usuario, motivo)
+
+            gasto.refresh_from_db()
+            self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
+
+        def test_anular_gasto_rechaza_gasto_ya_anulado(self):
+            gasto = registrar_gasto_operativo_bingo(
+                self.bingo,
+                self.usuario,
+                "Sonido",
+                Decimal("15.00"),
+            )
+            anular_gasto_operativo_bingo(gasto, self.usuario, "Error")
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "El gasto ya se encuentra anulado.",
+            ):
+                anular_gasto_operativo_bingo(gasto, self.usuario, "Otro error")
+
+        def test_resumen_cuenta_gasto_registrado_por_servicio(self):
+            registrar_gasto_operativo_bingo(
+                self.bingo,
+                self.usuario,
+                "Sonido",
+                Decimal("15.00"),
+            )
+
+            resumen = self._resumen()
+
+            self.assertEqual(resumen["gastos_operativos"], Decimal("15.00"))
+
+        def test_resumen_deja_de_contar_gasto_anulado_por_servicio(self):
+            gasto = registrar_gasto_operativo_bingo(
+                self.bingo,
+                self.usuario,
+                "Sonido",
+                Decimal("15.00"),
+            )
+            anular_gasto_operativo_bingo(gasto, self.usuario, "Error")
+
+            resumen = self._resumen()
+
+            self.assertEqual(resumen["gastos_operativos"], Decimal("0.00"))
+
+        def test_registrar_gasto_bloquea_bingo_con_cierre_cerrado(self):
+            self._crear_cierre_cerrado()
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "No se pueden registrar gastos porque el cierre financiero está cerrado.",
+            ):
+                registrar_gasto_operativo_bingo(
+                    self.bingo,
+                    self.usuario,
+                    "Sonido",
+                    Decimal("15.00"),
+                )
+
+            self.assertEqual(BingoGastoOperativo.objects.count(), 0)
+
+        def test_anular_gasto_bloquea_bingo_con_cierre_cerrado(self):
+            gasto = self._crear_gasto(Decimal("15.00"))
+            self._crear_cierre_cerrado()
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "No se pueden anular gastos porque el cierre financiero está cerrado.",
+            ):
+                anular_gasto_operativo_bingo(gasto, self.usuario, "Error")
+
+            gasto.refresh_from_db()
+            self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
