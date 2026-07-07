@@ -15,6 +15,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 from .services import (
     ESTADO_PARTIDA_FINALIZADA,
+    calcular_recaudacion_registrada,
     estado_partida_mostrar,
     formatear_bola_bingo,
     parsear_bolas_cantadas,
@@ -408,34 +409,6 @@ def generar_pdf_reporte_partida(
 
     doc.build(story)
     return buffer.getvalue()
-
-
-def calcular_recaudacion_registrada(cartones_o_resumenes):
-    """Calcula la recaudación registrada desde cartones maestros únicos.
-
-    Deduplica explícitamente por idcarton o pk, ignora precios NULL y no
-    recorre participaciones para sumar dinero. Mantiene la política
-    histórica actual de elegibilidad sin filtrar retroactivamente por
-    estado de venta, confirmación o pago.
-
-    Devuelve un Decimal coherente con el código actual.
-    """
-    vistos = set()
-    total = Decimal("0.00")
-    for item in (cartones_o_resumenes or []):
-        if isinstance(item, dict):
-            pk = item.get("idcarton") or item.get("pk")
-            precio = item.get("precio_pagado")
-        else:
-            pk = getattr(item, "idcarton", None) or getattr(item, "pk", None)
-            precio = getattr(item, "preciopagado", None)
-        if pk is None or pk in vistos:
-            continue
-        vistos.add(pk)
-        if precio in (None, ""):
-            continue
-        total += Decimal(str(precio))
-    return total
 
 
 def generar_excel_cartones_partida(

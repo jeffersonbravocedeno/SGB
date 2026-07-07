@@ -81,6 +81,7 @@ from .services import (
     confirmar_y_finalizar_desempate,
     confirmar_y_finalizar_desempate_participaciones,
     construir_candidato_desempate_participacion,
+    construir_preliquidacion_financiera_bingo,
     crear_carton_maestro_para_bingo,
     crear_ronda_con_participaciones,
     crear_y_asignar_carton,
@@ -154,6 +155,7 @@ from .views import (
     mi_carton_detalle,
     mis_cartones,
     partida_nueva,
+    preliquidacion_financiera,
     sacar_bola,
     sala_juego_publica,
     sortear_desempate,
@@ -7893,3 +7895,390 @@ class RecaudacionRegistradaDuplicacionTests(SimpleTestCase):
         ]
         for carton in cartones:
             self.assertEqual(codigos.count(carton.codigocarton), 2)
+
+
+class PreliquidacionFinancieraServicioTests(SimpleTestCase):
+    def setUp(self):
+        self.bingo = Bingo(
+            idbingo=120,
+            titulobingo="Bingo preliquidacion",
+            fechaprogramadabingo=timezone.now(),
+            tipobingo="Virtual",
+            preciocarton=Decimal("5.00"),
+            premiomayor=Decimal("50.00"),
+            descripcionpremiomayor="Premio",
+            estadobingo="Programado",
+        )
+        self.otro_bingo = Bingo(
+            idbingo=121,
+            titulobingo="Otro Bingo",
+            fechaprogramadabingo=timezone.now(),
+            tipobingo="Virtual",
+            preciocarton=Decimal("5.00"),
+            premiomayor=Decimal("50.00"),
+            descripcionpremiomayor="Premio",
+            estadobingo="Programado",
+        )
+        self.jugador = Jugador(idjugador=50, aliasjugador="jugador_preliq")
+        ahora = timezone.now()
+        self.partidas = [
+            self._partida(
+                1201,
+                self.bingo,
+                ESTADO_PARTIDA_FINALIZADA,
+                Decimal("25.00"),
+                "Canasta",
+                ahora,
+            ),
+            self._partida(
+                1202,
+                self.bingo,
+                ESTADO_PARTIDA_PROGRAMADA,
+                Decimal("50.00"),
+                "",
+                ahora,
+            ),
+            self._partida(
+                1203,
+                self.bingo,
+                ESTADO_PARTIDA_EN_CURSO,
+                Decimal("99.00"),
+                "Bono",
+                ahora,
+            ),
+            self._partida(
+                1204,
+                self.bingo,
+                ESTADO_PARTIDA_CANCELADA,
+                Decimal("70.00"),
+                "",
+                ahora,
+            ),
+        ]
+        self.cartones = [
+            self._carton_maestro(501, "B120-C-01", Decimal("5.00")),
+            self._carton_maestro(502, "B120-C-02", Decimal("5.00")),
+            self._carton_maestro(503, "B120-C-03", Decimal("5.00")),
+            self._carton_maestro(503, "B120-C-03-DUP", Decimal("5.00")),
+            self._carton_maestro(
+                504,
+                "B120-C-DISP",
+                Decimal("5.00"),
+                estado="Disponible",
+            ),
+            self._carton_historico(505, "P1201-C-HIST", Decimal("5.00")),
+            self._carton_maestro(
+                506,
+                "B121-C-OTRO",
+                Decimal("100.00"),
+                bingo=self.otro_bingo,
+            ),
+        ]
+        self.participaciones = [
+            self._participacion(9000 + indice, carton, partida)
+            for indice, (carton, partida) in enumerate(
+                (
+                    (carton, partida)
+                    for carton in self.cartones[:3]
+                    for partida in self.partidas[:3]
+                ),
+                start=1,
+            )
+        ]
+
+    def _partida(self, pk, bingo, estado, valor, premio_material, ahora):
+        return Partidabingo(
+            idpartidabingo=pk,
+            idbingo=bingo,
+            nombreronda=f"Ronda {pk}",
+            valorefectivo=valor,
+            premiomaterial=premio_material,
+            estadopartida=estado,
+            bolascantadas="[]",
+            ultimabola=0,
+            haydesempate=False,
+            horainicio=ahora,
+            horafin=ahora if estado == ESTADO_PARTIDA_FINALIZADA else None,
+        )
+
+    def _carton_maestro(self, pk, codigo, precio, estado="Vendido", bingo=None):
+        return Carton(
+            idcarton=pk,
+            idjugador=self.jugador,
+            idbingo=bingo or self.bingo,
+            idpartida=None,
+            codigocarton=codigo,
+            matriznumeros=serializar_matriz_carton_bingo(matriz_carton_prueba()),
+            indicevictoria=None,
+            preciopagado=precio,
+            fechacompra=timezone.now(),
+            estadocarton=estado,
+        )
+
+    def _carton_historico(self, pk, codigo, precio):
+        return Carton(
+            idcarton=pk,
+            idjugador=self.jugador,
+            idbingo=self.bingo,
+            idpartida=self.partidas[0],
+            codigocarton=codigo,
+            matriznumeros=serializar_matriz_carton_bingo(matriz_carton_prueba()),
+            indicevictoria=None,
+            preciopagado=precio,
+            fechacompra=timezone.now(),
+            estadocarton="Vendido",
+        )
+
+    def _participacion(self, pk, carton, partida):
+        return CartonPartidaBingo(
+            idcartonpartidabingo=pk,
+            idcarton=carton,
+            idpartida=partida,
+            idbingo=partida.idbingo,
+            estado_participacion=CartonPartidaBingo.ESTADO_PENDIENTE,
+            indicevictoria=None,
+            es_asignacion_original=False,
+            origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
+            fechacreacion=timezone.now(),
+            fechavalidacion=None,
+        )
+
+    def _preliquidacion(self):
+        return construir_preliquidacion_financiera_bingo(
+            self.bingo,
+            cartones=self.cartones,
+            partidas=self.partidas,
+        )
+
+    def test_tres_cartones_de_cinco_no_se_multiplican_por_tres_rondas(self):
+        datos = self._preliquidacion()
+
+        self.assertEqual(datos["cartones_vendidos_unicos"], 3)
+        self.assertEqual(datos["recaudacion_registrada"], Decimal("15.00"))
+        self.assertNotEqual(datos["recaudacion_registrada"], Decimal("45.00"))
+
+    def test_solo_rondas_finalizadas_cuentan_como_premio_efectivo(self):
+        datos = self._preliquidacion()
+
+        self.assertEqual(
+            datos["premios_efectivo_finalizados"],
+            Decimal("25.00"),
+        )
+
+    def test_premios_materiales_y_gastos_quedan_pendientes(self):
+        datos = self._preliquidacion()
+
+        self.assertEqual(
+            [premio["descripcion"] for premio in datos["premios_materiales"]],
+            ["Canasta", "Bono"],
+        )
+        self.assertTrue(
+            all(
+                premio["costo"] == "Costo pendiente de registrar"
+                for premio in datos["premios_materiales"]
+            )
+        )
+        self.assertEqual(datos["gastos_operativos"], "Pendientes de registrar")
+        self.assertIn(
+            "Los costos de premios materiales todavía no están registrados.",
+            datos["alertas"],
+        )
+        self.assertIn(
+            "Los gastos operativos todavía no están registrados.",
+            datos["alertas"],
+        )
+
+    def test_resultado_provisional_resta_solo_premios_en_efectivo_finalizados(self):
+        datos = self._preliquidacion()
+
+        self.assertEqual(datos["resultado_provisional"], Decimal("-10.00"))
+
+    def test_estado_de_rondas_detecta_pendientes_y_terminales(self):
+        datos = self._preliquidacion()
+
+        self.assertEqual(
+            datos["estado_rondas"],
+            {
+                "total": 4,
+                "finalizadas": 1,
+                "canceladas": 1,
+                "pendientes": 2,
+            },
+        )
+        self.assertIn(
+            "El Bingo todavía no está listo para un cierre financiero: "
+            "existen rondas pendientes.",
+            datos["alertas"],
+        )
+
+
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class PreliquidacionFinancieraVistaTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.bingo = Bingo(
+            idbingo=130,
+            titulobingo="Bingo vista preliquidacion",
+            fechaprogramadabingo=timezone.now(),
+            tipobingo="Virtual",
+            preciocarton=Decimal("5.00"),
+            premiomayor=Decimal("50.00"),
+            descripcionpremiomayor="Premio",
+            estadobingo="Programado",
+        )
+        self.jugador = Jugador(idjugador=60, aliasjugador="jugador_vista")
+        ahora = timezone.now()
+        self.partida = Partidabingo(
+            idpartidabingo=1301,
+            idbingo=self.bingo,
+            nombreronda="Ronda vista",
+            valorefectivo=Decimal("25.00"),
+            premiomaterial="Canasta",
+            estadopartida=ESTADO_PARTIDA_FINALIZADA,
+            bolascantadas="[]",
+            ultimabola=0,
+            haydesempate=False,
+            horainicio=ahora,
+            horafin=ahora,
+        )
+        self.carton = Carton(
+            idcarton=13001,
+            idjugador=self.jugador,
+            idbingo=self.bingo,
+            idpartida=None,
+            codigocarton="B130-C-01",
+            matriznumeros=serializar_matriz_carton_bingo(matriz_carton_prueba()),
+            indicevictoria=None,
+            preciopagado=Decimal("5.00"),
+            fechacompra=ahora,
+            estadocarton="Vendido",
+        )
+        self.carton.total_participaciones = 1
+        self.datos = construir_preliquidacion_financiera_bingo(
+            self.bingo,
+            cartones=[self.carton],
+            partidas=[self.partida],
+        )
+
+    def _request(self, path, user=None, method="get"):
+        request = getattr(self.factory, method)(path)
+        request.user = user if user is not None else self._admin()
+        request.session = {}
+        return request
+
+    def _admin(self):
+        return User(username="admin_preliq", is_staff=True)
+
+    def _jugador(self):
+        return User(username="jugador_preliq", is_staff=False, is_superuser=False)
+
+    def test_administrador_puede_acceder_a_preliquidacion(self):
+        with (
+            patch("apps.bingos.views.get_object_or_404", return_value=self.bingo),
+            patch(
+                "apps.bingos.views.construir_preliquidacion_financiera_bingo",
+                return_value=self.datos,
+            ) as construir,
+        ):
+            response = preliquidacion_financiera(
+                self._request("/bingos/130/preliquidacion/"),
+                self.bingo.pk,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Preliquidación financiera")
+        self.assertContains(
+            response,
+            "Resultado provisional antes de costos materiales y gastos",
+        )
+        self.assertContains(response, "Pendientes de registrar")
+        self.assertNotContains(response, "Utilidad neta")
+        construir.assert_called_once_with(self.bingo)
+
+    def test_jugador_no_puede_acceder_a_preliquidacion(self):
+        with self.assertRaises(PermissionDenied):
+            preliquidacion_financiera(
+                self._request(
+                    "/bingos/130/preliquidacion/",
+                    user=self._jugador(),
+                ),
+                self.bingo.pk,
+            )
+
+    def test_visitante_no_puede_acceder_a_preliquidacion(self):
+        response = preliquidacion_financiera(
+            self._request(
+                "/bingos/130/preliquidacion/",
+                user=AnonymousUser(),
+            ),
+            self.bingo.pk,
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response["Location"])
+
+    def test_preliquidacion_acepta_solo_get(self):
+        with (
+            patch("apps.bingos.views.get_object_or_404", return_value=self.bingo),
+            patch(
+                "apps.bingos.views.construir_preliquidacion_financiera_bingo",
+                return_value=self.datos,
+            ),
+        ):
+            response = preliquidacion_financiera(
+                self._request(
+                    "/bingos/130/preliquidacion/",
+                    method="post",
+                ),
+                self.bingo.pk,
+            )
+
+        self.assertEqual(response.status_code, 405)
+
+    def test_ruta_de_preliquidacion_resuelve_la_vista(self):
+        self.assertIs(
+            resolve("/bingos/130/preliquidacion/").func,
+            preliquidacion_financiera,
+        )
+        self.assertEqual(
+            reverse(
+                "bingos:preliquidacion_financiera",
+                kwargs={"idbingo": self.bingo.pk},
+            ),
+            "/bingos/130/preliquidacion/",
+        )
+
+    def test_detalle_de_bingo_muestra_enlace_a_preliquidacion(self):
+        with (
+            patch("apps.bingos.views.get_object_or_404", return_value=self.bingo),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter",
+                return_value=_CartonesConsultaQuerySet([self.partida]),
+            ),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=_CartonesConsultaQuerySet([self.carton]),
+            ),
+        ):
+            response = bingo_detalle(
+                self._request("/bingos/130/"),
+                self.bingo.pk,
+            )
+
+        self.assertContains(response, "Ver preliquidación financiera")
+        self.assertContains(
+            response,
+            reverse(
+                "bingos:preliquidacion_financiera",
+                kwargs={"idbingo": self.bingo.pk},
+            ),
+        )

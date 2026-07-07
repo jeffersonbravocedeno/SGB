@@ -3,6 +3,7 @@ import logging
 import random
 import re
 import uuid
+from collections import Counter
 from collections.abc import Iterable
 from decimal import Decimal, InvalidOperation
 
@@ -40,6 +41,29 @@ ESTADOS_ASIGNACION_CARTONES = {
     ESTADO_PARTIDA_PROGRAMADA,
     ESTADO_PARTIDA_EN_ESPERA,
 }
+ESTADOS_PARTIDA_PENDIENTES_PRELIQUIDACION = {
+    ESTADO_PARTIDA_PROGRAMADA,
+    ESTADO_PARTIDA_EN_ESPERA,
+    ESTADO_PARTIDA_EN_CURSO,
+    ESTADO_PARTIDA_PAUSADA,
+    ESTADO_PARTIDA_DESEMPATE,
+}
+ESTADOS_PARTIDA_TERMINALES_PRELIQUIDACION = {
+    ESTADO_PARTIDA_FINALIZADA,
+    ESTADO_PARTIDA_CANCELADA,
+}
+TEXTO_COSTO_PREMIO_MATERIAL_PENDIENTE = "Costo pendiente de registrar"
+TEXTO_GASTOS_OPERATIVOS_PENDIENTES = "Pendientes de registrar"
+ALERTA_RONDAS_PENDIENTES_PRELIQUIDACION = (
+    "El Bingo todavía no está listo para un cierre financiero: "
+    "existen rondas pendientes."
+)
+ALERTA_PREMIOS_MATERIALES_PRELIQUIDACION = (
+    "Los costos de premios materiales todavía no están registrados."
+)
+ALERTA_GASTOS_OPERATIVOS_PRELIQUIDACION = (
+    "Los gastos operativos todavía no están registrados."
+)
 CASILLA_LIBRE = "LIBRE"
 
 PATRON_GANADOR_CARTON_LLENO = "carton_lleno"
@@ -497,6 +521,162 @@ def _carton_vendido_y_asignado(carton):
         carton.idjugador_id is not None
         and str(carton.estadocarton or "").strip().lower() == "vendido"
     )
+
+
+def _decimal_o_cero(value):
+    if value in (None, ""):
+        return Decimal("0.00")
+    return Decimal(str(value))
+
+
+def _idbingo_de_carton(carton):
+    idbingo = getattr(carton, "idbingo_id", None)
+    if idbingo is not None:
+        return idbingo
+    bingo = getattr(carton, "idbingo", None)
+    return getattr(bingo, "pk", None)
+
+
+def _idbingo_de_partida(partida):
+    idbingo = getattr(partida, "idbingo_id", None)
+    if idbingo is not None:
+        return idbingo
+    bingo = getattr(partida, "idbingo", None)
+    return getattr(bingo, "pk", None)
+
+
+def _carton_maestro_vendido_para_bingo(carton, bingo):
+    return (
+        _idbingo_de_carton(carton) == bingo.pk
+        and getattr(carton, "idpartida_id", None) is None
+        and str(getattr(carton, "estadocarton", "") or "").strip().lower()
+        == "vendido"
+    )
+
+
+def calcular_recaudacion_registrada(cartones_o_resumenes):
+    """Calcula recaudación registrada desde cartones únicos, nunca participaciones."""
+    vistos = set()
+    total = Decimal("0.00")
+    for item in (cartones_o_resumenes or []):
+        if isinstance(item, dict):
+            pk = item.get("idcarton") or item.get("pk")
+            precio = item.get("precio_pagado")
+        else:
+            pk = getattr(item, "idcarton", None) or getattr(item, "pk", None)
+            precio = getattr(item, "preciopagado", None)
+        if pk is None or pk in vistos:
+            continue
+        vistos.add(pk)
+        if precio in (None, ""):
+            continue
+        total += Decimal(str(precio))
+    return total
+
+
+def construir_preliquidacion_financiera_bingo(
+    bingo,
+    cartones=None,
+    partidas=None,
+):
+    """Devuelve una preliquidación informativa sin modificar datos."""
+    if bingo is None or getattr(bingo, "pk", None) is None:
+        raise ValueError("El Bingo es obligatorio para preliquidar.")
+
+    if cartones is None:
+        cartones = (
+            Carton.objects.filter(
+                idbingo=bingo,
+                idpartida__isnull=True,
+                estadocarton="Vendido",
+            )
+            .select_related("idjugador", "idbingo")
+            .order_by("idcarton")
+        )
+    if partidas is None:
+        partidas = (
+            Partidabingo.objects.filter(idbingo=bingo)
+            .select_related("idbingo")
+            .order_by("horainicio", "idpartidabingo")
+        )
+
+    cartones_maestros_vendidos = []
+    cartones_vistos = set()
+    for carton in list(cartones or []):
+        pk = getattr(carton, "pk", None)
+        if pk in cartones_vistos:
+            continue
+        if not _carton_maestro_vendido_para_bingo(carton, bingo):
+            continue
+        cartones_vistos.add(pk)
+        cartones_maestros_vendidos.append(carton)
+
+    recaudacion_registrada = calcular_recaudacion_registrada(
+        cartones_maestros_vendidos
+    )
+
+    partidas = [
+        partida
+        for partida in list(partidas or [])
+        if _idbingo_de_partida(partida) == bingo.pk
+    ]
+    conteo_estados = Counter()
+    premios_efectivo_finalizados = Decimal("0.00")
+    premios_materiales = []
+
+    for partida in partidas:
+        estado = normalizar_estado_partida(getattr(partida, "estadopartida", None))
+        conteo_estados[estado] += 1
+        if estado == ESTADO_PARTIDA_FINALIZADA:
+            premios_efectivo_finalizados += _decimal_o_cero(
+                getattr(partida, "valorefectivo", None)
+            )
+
+        premio_material = str(getattr(partida, "premiomaterial", "") or "").strip()
+        if premio_material:
+            premios_materiales.append(
+                {
+                    "partida": partida,
+                    "ronda": partida.nombreronda,
+                    "estado": estado,
+                    "descripcion": premio_material,
+                    "costo": TEXTO_COSTO_PREMIO_MATERIAL_PENDIENTE,
+                }
+            )
+
+    rondas_pendientes = sum(
+        conteo_estados[estado]
+        for estado in ESTADOS_PARTIDA_PENDIENTES_PRELIQUIDACION
+    )
+    estado_rondas = {
+        "total": len(partidas),
+        "finalizadas": conteo_estados[ESTADO_PARTIDA_FINALIZADA],
+        "canceladas": conteo_estados[ESTADO_PARTIDA_CANCELADA],
+        "pendientes": rondas_pendientes,
+    }
+
+    alertas = []
+    if rondas_pendientes:
+        alertas.append(ALERTA_RONDAS_PENDIENTES_PRELIQUIDACION)
+    if premios_materiales:
+        alertas.append(ALERTA_PREMIOS_MATERIALES_PRELIQUIDACION)
+    alertas.append(ALERTA_GASTOS_OPERATIVOS_PRELIQUIDACION)
+
+    return {
+        "bingo": bingo,
+        "cartones_vendidos_unicos": len(cartones_maestros_vendidos),
+        "cartones_maestros_vendidos": cartones_maestros_vendidos,
+        "recaudacion_registrada": recaudacion_registrada,
+        "premios_efectivo_finalizados": premios_efectivo_finalizados,
+        "premios_materiales": premios_materiales,
+        "costo_premio_material_pendiente": TEXTO_COSTO_PREMIO_MATERIAL_PENDIENTE,
+        "gastos_operativos": TEXTO_GASTOS_OPERATIVOS_PENDIENTES,
+        "resultado_provisional": (
+            recaudacion_registrada - premios_efectivo_finalizados
+        ),
+        "estado_rondas": estado_rondas,
+        "alertas": alertas,
+    }
 
 
 def generar_codigo_carton(

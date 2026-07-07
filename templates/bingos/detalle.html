@@ -15,6 +15,7 @@
         <a class="btn btn-outline-secondary" href="{% url 'bingos:partidas_lista' %}">Partidas</a>
         <a class="btn btn-outline-secondary" href="{% url 'bingos:bingo_resumen_excel' bingo.idbingo %}">Exportar resumen</a>
         {% if request.user.is_staff or request.user.is_superuser %}
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:preliquidacion_financiera' bingo.idbingo %}">Ver preliquidación financiera</a>
         <a class="btn btn-success" href="{% url 'bingos:bingo_carton_nuevo' bingo.idbingo %}">Vender cartón para todo el Bingo</a>
         {% endif %}
         <a class="btn btn-primary" href="{% url 'bingos:editar' bingo.idbingo %}">Editar</a>

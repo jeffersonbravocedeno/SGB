@@ -41,6 +41,11 @@ urlpatterns = [
         name="bingo_carton_nuevo",
     ),
     path(
+        "bingos/<int:idbingo>/preliquidacion/",
+        views.preliquidacion_financiera,
+        name="preliquidacion_financiera",
+    ),
+    path(
         "bingos/<int:idbingo>/comprar-carton/",
         views.comprar_carton_bingo,
         name="comprar_carton_bingo",

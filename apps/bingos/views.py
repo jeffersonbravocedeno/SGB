@@ -58,6 +58,7 @@ from .services import (
     confirmar_y_finalizar_desempate,
     construir_matriz_marcada_carton,
     contar_numeros_marcados_carton,
+    construir_preliquidacion_financiera_bingo,
     crear_carton_maestro_para_bingo,
     crear_ronda_con_participaciones,
     crear_y_asignar_carton,
@@ -814,6 +815,21 @@ def bingo_resumen_excel(request, idbingo):
         contenido,
         XLSX_CONTENT_TYPE,
         nombre_archivo_seguro("resumen_bingo", bingo.idbingo, "xlsx"),
+    )
+
+
+@admin_required
+@require_GET
+def preliquidacion_financiera(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    preliquidacion = construir_preliquidacion_financiera_bingo(bingo)
+    return render(
+        request,
+        "bingos/preliquidacion_financiera.html",
+        {
+            "bingo": bingo,
+            "preliquidacion": preliquidacion,
+        },
     )
 
 
