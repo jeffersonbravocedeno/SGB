@@ -28,8 +28,10 @@ if settings.SETTINGS_MODULE == "config.settings_finance_test":
         ESTADO_PARTIDA_FINALIZADA,
         ESTADO_PARTIDA_PAUSADA,
         ESTADO_PARTIDA_PROGRAMADA,
+        anular_costo_premio_material_bingo,
         anular_gasto_operativo_bingo,
         construir_resumen_financiero_real_bingo,
+        registrar_costo_premio_material_bingo,
         registrar_gasto_operativo_bingo,
     )
     from apps.jugadores.models import Jugador
@@ -619,3 +621,366 @@ if settings.SETTINGS_MODULE == "config.settings_finance_test":
 
             gasto.refresh_from_db()
             self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
+
+        def test_registrar_costo_material_correcto(self):
+            partida = self._crear_partida(premio_material="Canasta familiar")
+
+            costo = registrar_costo_premio_material_bingo(
+                self.bingo,
+                partida,
+                self.usuario,
+                "  Canasta familiar  ",
+                "18.50",
+                observacion="  compra local  ",
+            )
+
+            self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+            self.assertEqual(costo.idbingo, self.bingo)
+            self.assertEqual(costo.idpartidabingo, partida.pk)
+            self.assertEqual(costo.idusuarioregistro, self.usuario)
+            self.assertEqual(costo.descripcionpremio, "Canasta familiar")
+            self.assertEqual(costo.monto, Decimal("18.50"))
+            self.assertEqual(costo.observacion, "compra local")
+            partida.refresh_from_db()
+            self.assertEqual(partida.premiomaterial, "Canasta familiar")
+
+        def test_registrar_costo_material_rechaza_partida_de_otro_bingo(self):
+            otro_bingo = Bingo.objects.create(
+                idbingo=101,
+                titulobingo="Otro bingo",
+                fechaprogramadabingo=self.ahora,
+                tipobingo="Virtual",
+                preciocarton=Decimal("5.00"),
+                premiomayor=Decimal("50.00"),
+                descripcionpremiomayor="Premio mayor",
+                estadobingo="Programado",
+            )
+            partida = Partidabingo.objects.create(
+                idpartidabingo=9001,
+                idbingo=otro_bingo,
+                nombreronda="Ronda otro bingo",
+                valorefectivo=Decimal("0.00"),
+                premiomaterial="Canasta",
+                estadopartida=ESTADO_PARTIDA_FINALIZADA,
+                patronganador="carton_lleno",
+                bolascantadas="[]",
+                ultimabola=0,
+                haydesempate=False,
+                horainicio=self.ahora,
+                horafin=self.ahora,
+            )
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "La partida no pertenece al Bingo indicado.",
+            ):
+                registrar_costo_premio_material_bingo(
+                    self.bingo,
+                    partida,
+                    self.usuario,
+                    "Canasta",
+                    Decimal("10.00"),
+                )
+
+            self.assertEqual(BingoPremioMaterialCosto.objects.count(), 0)
+
+        def test_registrar_costo_material_rechaza_descripcion_vacia(self):
+            partida = self._crear_partida(premio_material="Canasta")
+
+            for descripcion in ("", "   "):
+                with self.subTest(descripcion=repr(descripcion)):
+                    with self.assertRaisesMessage(
+                        CierreFinancieroError,
+                        "La descripción del premio es obligatoria.",
+                    ):
+                        registrar_costo_premio_material_bingo(
+                            self.bingo,
+                            partida,
+                            self.usuario,
+                            descripcion,
+                            Decimal("10.00"),
+                        )
+
+            self.assertEqual(BingoPremioMaterialCosto.objects.count(), 0)
+
+        def test_registrar_costo_material_rechaza_partida_sin_premio_material(self):
+            for premio_material in ("", "   "):
+                partida = self._crear_partida(premio_material=premio_material)
+                with self.subTest(premio_material=repr(premio_material)):
+                    with self.assertRaisesMessage(
+                        CierreFinancieroError,
+                        "La partida no tiene un premio material configurado.",
+                    ):
+                        registrar_costo_premio_material_bingo(
+                            self.bingo,
+                            partida,
+                            self.usuario,
+                            "Canasta",
+                            Decimal("10.00"),
+                        )
+
+            self.assertEqual(BingoPremioMaterialCosto.objects.count(), 0)
+
+        def test_registrar_costo_material_rechaza_montos_invalidos(self):
+            partida = self._crear_partida(premio_material="Canasta")
+
+            for monto in (
+                Decimal("-1.00"),
+                True,
+                False,
+                Decimal("NaN"),
+                Decimal("Infinity"),
+                Decimal("-Infinity"),
+                "texto-invalido",
+            ):
+                with self.subTest(monto=repr(monto)):
+                    with self.assertRaisesMessage(
+                        CierreFinancieroError,
+                        "El monto del costo no puede ser negativo.",
+                    ):
+                        registrar_costo_premio_material_bingo(
+                            self.bingo,
+                            partida,
+                            self.usuario,
+                            "Canasta",
+                            monto,
+                        )
+
+                    self.assertEqual(BingoPremioMaterialCosto.objects.count(), 0)
+
+        def test_registrar_costo_material_rechaza_cero_sin_observacion(self):
+            partida = self._crear_partida(premio_material="Canasta")
+
+            for observacion in ("", "   "):
+                with self.subTest(observacion=repr(observacion)):
+                    with self.assertRaisesMessage(
+                        CierreFinancieroError,
+                        "Un costo de cero debe incluir una observación que indique la donación.",
+                    ):
+                        registrar_costo_premio_material_bingo(
+                            self.bingo,
+                            partida,
+                            self.usuario,
+                            "Canasta",
+                            Decimal("0.00"),
+                            observacion=observacion,
+                        )
+
+            self.assertEqual(BingoPremioMaterialCosto.objects.count(), 0)
+
+        def test_registrar_costo_material_permite_cero_con_observacion(self):
+            partida = self._crear_partida(premio_material="Canasta")
+
+            costo = registrar_costo_premio_material_bingo(
+                self.bingo,
+                partida,
+                self.usuario,
+                "Canasta",
+                Decimal("0.00"),
+                observacion="Donación del proveedor",
+            )
+
+            self.assertEqual(costo.monto, Decimal("0.00"))
+            self.assertEqual(costo.observacion, "Donación del proveedor")
+            self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+
+        def test_registrar_costo_material_rechaza_segundo_registrado(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            registrar_costo_premio_material_bingo(
+                self.bingo,
+                partida,
+                self.usuario,
+                "Canasta",
+                Decimal("10.00"),
+            )
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "Ya existe un costo de premio material registrado para esta partida.",
+            ):
+                registrar_costo_premio_material_bingo(
+                    self.bingo,
+                    partida,
+                    self.usuario,
+                    "Canasta nueva",
+                    Decimal("12.00"),
+                )
+
+            self.assertEqual(
+                BingoPremioMaterialCosto.objects.filter(
+                    estado=BingoPremioMaterialCosto.ESTADO_REGISTRADO
+                ).count(),
+                1,
+            )
+
+        def test_anular_costo_material_conserva_registro_y_guarda_auditoria(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            costo = registrar_costo_premio_material_bingo(
+                self.bingo,
+                partida,
+                self.usuario,
+                "Canasta",
+                Decimal("10.00"),
+            )
+            usuario_anulacion = User.objects.create_user(
+                username="admin_anula_costo",
+                password="test",
+            )
+            antes = timezone.now()
+
+            costo_anulado = anular_costo_premio_material_bingo(
+                costo,
+                usuario_anulacion,
+                "  Valor duplicado  ",
+            )
+
+            despues = timezone.now()
+            self.assertEqual(BingoPremioMaterialCosto.objects.count(), 1)
+            self.assertEqual(costo_anulado.pk, costo.pk)
+            self.assertEqual(
+                costo_anulado.estado,
+                BingoPremioMaterialCosto.ESTADO_ANULADO,
+            )
+            self.assertEqual(costo_anulado.idusuarioanulacion, usuario_anulacion)
+            self.assertGreaterEqual(costo_anulado.fechaanulacion, antes)
+            self.assertLessEqual(costo_anulado.fechaanulacion, despues)
+            self.assertEqual(costo_anulado.motivoanulacion, "Valor duplicado")
+
+        def test_anular_costo_material_rechaza_motivo_vacio(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            costo = registrar_costo_premio_material_bingo(
+                self.bingo,
+                partida,
+                self.usuario,
+                "Canasta",
+                Decimal("10.00"),
+            )
+
+            for motivo in ("", "   "):
+                with self.subTest(motivo=repr(motivo)):
+                    with self.assertRaisesMessage(
+                        CierreFinancieroError,
+                        "Debe indicar el motivo de anulación.",
+                    ):
+                        anular_costo_premio_material_bingo(
+                            costo,
+                            self.usuario,
+                            motivo,
+                        )
+
+            costo.refresh_from_db()
+            self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+
+        def test_anular_costo_material_rechaza_costo_ya_anulado(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            costo = registrar_costo_premio_material_bingo(
+                self.bingo,
+                partida,
+                self.usuario,
+                "Canasta",
+                Decimal("10.00"),
+            )
+            anular_costo_premio_material_bingo(costo, self.usuario, "Error")
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "El costo de premio material ya se encuentra anulado.",
+            ):
+                anular_costo_premio_material_bingo(costo, self.usuario, "Otro error")
+
+        def test_resumen_cuenta_costo_material_registrado_por_servicio(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            registrar_costo_premio_material_bingo(
+                self.bingo,
+                partida,
+                self.usuario,
+                "Canasta",
+                Decimal("10.00"),
+            )
+
+            resumen = self._resumen()
+
+            self.assertEqual(resumen["costos_premios_materiales"], Decimal("10.00"))
+
+        def test_resumen_deja_de_contar_costo_material_anulado_por_servicio(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            costo = registrar_costo_premio_material_bingo(
+                self.bingo,
+                partida,
+                self.usuario,
+                "Canasta",
+                Decimal("10.00"),
+            )
+            anular_costo_premio_material_bingo(costo, self.usuario, "Error")
+
+            resumen = self._resumen()
+
+            self.assertEqual(resumen["costos_premios_materiales"], Decimal("0.00"))
+
+        def test_registrar_costo_material_permite_nuevo_despues_de_anular(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            costo = registrar_costo_premio_material_bingo(
+                self.bingo,
+                partida,
+                self.usuario,
+                "Canasta",
+                Decimal("10.00"),
+            )
+            anular_costo_premio_material_bingo(costo, self.usuario, "Error")
+
+            nuevo_costo = registrar_costo_premio_material_bingo(
+                self.bingo,
+                partida,
+                self.usuario,
+                "Canasta corregida",
+                Decimal("12.00"),
+            )
+
+            self.assertNotEqual(nuevo_costo.pk, costo.pk)
+            self.assertEqual(nuevo_costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+            self.assertEqual(nuevo_costo.monto, Decimal("12.00"))
+            self.assertEqual(
+                BingoPremioMaterialCosto.objects.filter(
+                    idpartidabingo=partida.pk,
+                    estado=BingoPremioMaterialCosto.ESTADO_REGISTRADO,
+                ).count(),
+                1,
+            )
+
+        def test_registrar_costo_material_bloquea_bingo_con_cierre_cerrado(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            self._crear_cierre_cerrado()
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "No se pueden registrar costos porque el cierre financiero está cerrado.",
+            ):
+                registrar_costo_premio_material_bingo(
+                    self.bingo,
+                    partida,
+                    self.usuario,
+                    "Canasta",
+                    Decimal("10.00"),
+                )
+
+            self.assertEqual(BingoPremioMaterialCosto.objects.count(), 0)
+
+        def test_anular_costo_material_bloquea_bingo_con_cierre_cerrado(self):
+            partida = self._crear_partida(premio_material="Canasta")
+            costo = registrar_costo_premio_material_bingo(
+                self.bingo,
+                partida,
+                self.usuario,
+                "Canasta",
+                Decimal("10.00"),
+            )
+            self._crear_cierre_cerrado()
+
+            with self.assertRaisesMessage(
+                CierreFinancieroError,
+                "No se pueden anular costos porque el cierre financiero está cerrado.",
+            ):
+                anular_costo_premio_material_bingo(costo, self.usuario, "Error")
+
+            costo.refresh_from_db()
+            self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)

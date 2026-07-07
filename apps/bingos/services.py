@@ -714,6 +714,24 @@ def _validar_monto_gasto(monto):
     return monto_decimal
 
 
+def _validar_monto_costo_premio_material(monto, observacion):
+    if isinstance(monto, bool):
+        raise CierreFinancieroError("El monto del costo no puede ser negativo.")
+    try:
+        monto_decimal = Decimal(str(monto))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise CierreFinancieroError(
+            "El monto del costo no puede ser negativo."
+        ) from exc
+    if not monto_decimal.is_finite() or monto_decimal < 0:
+        raise CierreFinancieroError("El monto del costo no puede ser negativo.")
+    if monto_decimal == 0 and not observacion:
+        raise CierreFinancieroError(
+            "Un costo de cero debe incluir una observación que indique la donación."
+        )
+    return monto_decimal
+
+
 def _cierre_financiero_esta_cerrado(bingo):
     return BingoCierreFinanciero.objects.filter(
         idbingo=bingo,
@@ -940,6 +958,99 @@ def anular_gasto_operativo_bingo(gasto, usuario, motivo):
         )
 
     return gasto_bloqueado
+
+
+def registrar_costo_premio_material_bingo(
+    bingo,
+    partida,
+    usuario,
+    descripcion_premio,
+    monto,
+    observacion="",
+):
+    descripcion_premio = _limpiar_texto(descripcion_premio)
+    if not descripcion_premio:
+        raise CierreFinancieroError("La descripción del premio es obligatoria.")
+    observacion = _limpiar_texto(observacion)
+    monto = _validar_monto_costo_premio_material(monto, observacion)
+
+    with transaction.atomic():
+        bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+        partida_bloqueada = Partidabingo.objects.select_for_update().get(
+            pk=partida.pk
+        )
+        if partida_bloqueada.idbingo_id != bingo_bloqueado.pk:
+            raise CierreFinancieroError(
+                "La partida no pertenece al Bingo indicado."
+            )
+        if _cierre_financiero_esta_cerrado(bingo_bloqueado):
+            raise CierreFinancieroError(
+                "No se pueden registrar costos porque el cierre financiero "
+                "está cerrado."
+            )
+        if not _limpiar_texto(partida_bloqueada.premiomaterial):
+            raise CierreFinancieroError(
+                "La partida no tiene un premio material configurado."
+            )
+        if (
+            BingoPremioMaterialCosto.objects.select_for_update()
+            .filter(
+                idpartidabingo=partida_bloqueada.pk,
+                estado=BingoPremioMaterialCosto.ESTADO_REGISTRADO,
+            )
+            .exists()
+        ):
+            raise CierreFinancieroError(
+                "Ya existe un costo de premio material registrado para esta partida."
+            )
+
+        return BingoPremioMaterialCosto.objects.create(
+            idbingo=bingo_bloqueado,
+            idpartidabingo=partida_bloqueada.pk,
+            descripcionpremio=descripcion_premio,
+            monto=monto,
+            estado=BingoPremioMaterialCosto.ESTADO_REGISTRADO,
+            observacion=observacion,
+            idusuarioregistro=usuario,
+            fechacreacion=timezone.now(),
+        )
+
+
+def anular_costo_premio_material_bingo(costo, usuario, motivo):
+    motivo = _limpiar_texto(motivo)
+    if not motivo:
+        raise CierreFinancieroError("Debe indicar el motivo de anulación.")
+
+    with transaction.atomic():
+        costo_bloqueado = BingoPremioMaterialCosto.objects.select_for_update().get(
+            pk=costo.pk
+        )
+        bingo_bloqueado = Bingo.objects.select_for_update().get(
+            pk=costo_bloqueado.idbingo_id
+        )
+        if _cierre_financiero_esta_cerrado(bingo_bloqueado):
+            raise CierreFinancieroError(
+                "No se pueden anular costos porque el cierre financiero está cerrado."
+            )
+        if costo_bloqueado.estado == BingoPremioMaterialCosto.ESTADO_ANULADO:
+            raise CierreFinancieroError(
+                "El costo de premio material ya se encuentra anulado."
+            )
+
+        costo_bloqueado.estado = BingoPremioMaterialCosto.ESTADO_ANULADO
+        costo_bloqueado.idusuarioanulacion = usuario
+        costo_bloqueado.fechaanulacion = timezone.now()
+        costo_bloqueado.motivoanulacion = motivo
+        costo_bloqueado.save(
+            update_fields=[
+                "estado",
+                "idusuarioanulacion",
+                "fechaanulacion",
+                "motivoanulacion",
+            ]
+        )
+
+    return costo_bloqueado
 
 
 def generar_codigo_carton(
