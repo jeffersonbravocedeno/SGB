@@ -8,11 +8,20 @@ from collections.abc import Iterable
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from apps.common.ids import assign_next_integer_pk
 
-from .models import Bingo, Carton, CartonPartidaBingo, Partidabingo
+from .models import (
+    Bingo,
+    BingoCierreFinanciero,
+    BingoGastoOperativo,
+    BingoPremioMaterialCosto,
+    Carton,
+    CartonPartidaBingo,
+    Partidabingo,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -137,6 +146,10 @@ class CartonAsignacionError(ValueError):
 
 
 class RondaCreacionError(ValueError):
+    pass
+
+
+class CierreFinancieroError(ValueError):
     pass
 
 
@@ -676,6 +689,157 @@ def construir_preliquidacion_financiera_bingo(
         ),
         "estado_rondas": estado_rondas,
         "alertas": alertas,
+    }
+
+
+def _sumar_monto_registrado(queryset):
+    return queryset.aggregate(total=Sum("monto"))["total"] or Decimal("0.00")
+
+
+def construir_resumen_financiero_real_bingo(bingo):
+    """Calcula el resumen financiero real sin cerrar ni modificar el Bingo."""
+    if bingo is None or getattr(bingo, "pk", None) is None:
+        raise CierreFinancieroError("El Bingo es obligatorio para el resumen.")
+
+    cartones = (
+        Carton.objects.filter(
+            idbingo=bingo,
+            idpartida__isnull=True,
+            estadocarton="Vendido",
+        )
+        .select_related("idjugador", "idbingo")
+        .order_by("idcarton")
+    )
+    cartones_maestros_vendidos = []
+    cartones_vistos = set()
+    for carton in cartones:
+        pk = getattr(carton, "pk", None)
+        if pk in cartones_vistos:
+            continue
+        if not _carton_maestro_vendido_para_bingo(carton, bingo):
+            continue
+        cartones_vistos.add(pk)
+        cartones_maestros_vendidos.append(carton)
+
+    recaudacion_registrada = calcular_recaudacion_registrada(
+        cartones_maestros_vendidos
+    )
+
+    partidas = list(
+        Partidabingo.objects.filter(idbingo=bingo).order_by(
+            "horainicio",
+            "idpartidabingo",
+        )
+    )
+    conteo_estados = Counter()
+    premios_efectivo_finalizados = Decimal("0.00")
+    partidas_finalizadas_con_premio_material = []
+
+    for partida in partidas:
+        estado = normalizar_estado_partida(getattr(partida, "estadopartida", None))
+        conteo_estados[estado] += 1
+        if estado != ESTADO_PARTIDA_FINALIZADA:
+            continue
+
+        premios_efectivo_finalizados += _decimal_o_cero(
+            getattr(partida, "valorefectivo", None)
+        )
+        premio_material = str(getattr(partida, "premiomaterial", "") or "").strip()
+        if premio_material:
+            partidas_finalizadas_con_premio_material.append(
+                (partida, premio_material)
+            )
+
+    costos_registrados = BingoPremioMaterialCosto.objects.filter(
+        idbingo=bingo,
+        estado=BingoPremioMaterialCosto.ESTADO_REGISTRADO,
+    )
+    costos_premios_materiales = _sumar_monto_registrado(costos_registrados)
+
+    gastos_operativos = _sumar_monto_registrado(
+        BingoGastoOperativo.objects.filter(
+            idbingo=bingo,
+            estado=BingoGastoOperativo.ESTADO_REGISTRADO,
+        )
+    )
+
+    ids_partidas_con_premio_material = [
+        partida.pk
+        for partida, _premio_material in partidas_finalizadas_con_premio_material
+    ]
+    ids_partidas_con_costo = set()
+    if ids_partidas_con_premio_material:
+        ids_partidas_con_costo = set(
+            costos_registrados.filter(
+                idpartidabingo__in=ids_partidas_con_premio_material,
+            ).values_list("idpartidabingo", flat=True)
+        )
+
+    premios_materiales_pendientes_de_costo = [
+        {
+            "partida": partida,
+            "idpartidabingo": partida.pk,
+            "ronda": partida.nombreronda,
+            "descripcion": premio_material,
+        }
+        for partida, premio_material in partidas_finalizadas_con_premio_material
+        if partida.pk not in ids_partidas_con_costo
+    ]
+
+    rondas_pendientes = sum(
+        conteo_estados[estado]
+        for estado in ESTADOS_PARTIDA_PENDIENTES_PRELIQUIDACION
+    )
+    cierre_existente = (
+        BingoCierreFinanciero.objects.filter(idbingo=bingo)
+        .order_by("idbingocierrefinanciero")
+        .first()
+    )
+    cierre_esta_cerrado = (
+        cierre_existente is not None
+        and cierre_existente.estado == BingoCierreFinanciero.ESTADO_CERRADO
+    )
+
+    bloqueos_de_cierre = []
+    if rondas_pendientes:
+        bloqueos_de_cierre.append(
+            "No se puede cerrar el Bingo porque existen rondas pendientes."
+        )
+    if premios_materiales_pendientes_de_costo:
+        bloqueos_de_cierre.append(
+            "No se puede cerrar el Bingo porque existen premios materiales "
+            "finalizados sin costo registrado."
+        )
+    if cierre_esta_cerrado:
+        bloqueos_de_cierre.append(
+            "No se puede cerrar el Bingo porque ya existe un cierre Cerrado."
+        )
+
+    resultado_provisional = (
+        recaudacion_registrada - premios_efectivo_finalizados
+    )
+    utilidad_bruta = resultado_provisional - costos_premios_materiales
+    utilidad_neta = utilidad_bruta - gastos_operativos
+
+    return {
+        "cartones_vendidos_unicos": len(cartones_maestros_vendidos),
+        "recaudacion_registrada": recaudacion_registrada,
+        "premios_efectivo_finalizados": premios_efectivo_finalizados,
+        "costos_premios_materiales": costos_premios_materiales,
+        "gastos_operativos": gastos_operativos,
+        "resultado_provisional": resultado_provisional,
+        "utilidad_bruta": utilidad_bruta,
+        "utilidad_neta": utilidad_neta,
+        "total_rondas": len(partidas),
+        "rondas_finalizadas": conteo_estados[ESTADO_PARTIDA_FINALIZADA],
+        "rondas_canceladas": conteo_estados[ESTADO_PARTIDA_CANCELADA],
+        "rondas_pendientes": rondas_pendientes,
+        "premios_materiales_pendientes_de_costo": (
+            premios_materiales_pendientes_de_costo
+        ),
+        "bloqueos_de_cierre": bloqueos_de_cierre,
+        "cierre_existente": cierre_existente,
+        "cierre_esta_cerrado": cierre_esta_cerrado,
     }
 
 
