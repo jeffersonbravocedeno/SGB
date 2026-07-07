@@ -15,7 +15,7 @@ from django.contrib.auth.models import AnonymousUser, User
 from django.contrib.messages import get_messages
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.exceptions import PermissionDenied
-from django.db import DatabaseError, IntegrityError
+from django.db import DatabaseError, IntegrityError, models as django_models
 from django.http import Http404, HttpResponse
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase, override_settings
@@ -31,7 +31,15 @@ from .forms import (
     GenerarCartonBingoForm,
     PartidaBingoForm,
 )
-from .models import Bingo, Carton, CartonPartidaBingo, Partidabingo
+from .models import (
+    Bingo,
+    BingoCierreFinanciero,
+    BingoGastoOperativo,
+    BingoPremioMaterialCosto,
+    Carton,
+    CartonPartidaBingo,
+    Partidabingo,
+)
 from .consumers import PartidaPublicaConsumer
 from .realtime import (
     EVENTOS_REQUIEREN_RECARGA,
@@ -451,6 +459,138 @@ class PatronGanadorPartidaTests(SimpleTestCase):
         )
 
         self.assertEqual(partida.patronganador, "carton_lleno")
+
+
+class CierreFinancieroModelMetadataTests(SimpleTestCase):
+    def test_modelos_financieros_existen_y_apuntan_a_tablas_fisicas(self):
+        casos = (
+            (
+                BingoGastoOperativo,
+                "BingoGastoOperativo",
+                "bingo_gasto_operativo",
+                "idbingogastooperativo",
+            ),
+            (
+                BingoPremioMaterialCosto,
+                "BingoPremioMaterialCosto",
+                "bingo_premio_material_costo",
+                "idbingopremiomaterialcosto",
+            ),
+            (
+                BingoCierreFinanciero,
+                "BingoCierreFinanciero",
+                "bingo_cierre_financiero",
+                "idbingocierrefinanciero",
+            ),
+        )
+
+        for model, nombre, db_table, pk_name in casos:
+            with self.subTest(model=nombre):
+                self.assertEqual(model.__name__, nombre)
+                self.assertFalse(model._meta.managed)
+                self.assertEqual(model._meta.db_table, db_table)
+                self.assertEqual(model._meta.pk.name, pk_name)
+                self.assertIsInstance(model._meta.pk, django_models.AutoField)
+
+    def test_columnas_y_relaciones_relevantes_respetan_nombres_fisicos(self):
+        campos = (
+            (BingoGastoOperativo, "idbingo", "idbingo"),
+            (BingoGastoOperativo, "idusuarioregistro", "idusuarioregistro"),
+            (BingoGastoOperativo, "idusuarioanulacion", "idusuarioanulacion"),
+            (BingoPremioMaterialCosto, "idbingo", "idbingo"),
+            (BingoPremioMaterialCosto, "idpartidabingo", "idpartidabingo"),
+            (
+                BingoPremioMaterialCosto,
+                "idusuarioregistro",
+                "idusuarioregistro",
+            ),
+            (
+                BingoPremioMaterialCosto,
+                "idusuarioanulacion",
+                "idusuarioanulacion",
+            ),
+            (BingoCierreFinanciero, "idbingo", "idbingo"),
+            (BingoCierreFinanciero, "idusuariocierre", "idusuariocierre"),
+        )
+
+        for model, field_name, db_column in campos:
+            with self.subTest(model=model.__name__, field=field_name):
+                field = model._meta.get_field(field_name)
+                self.assertEqual(field.db_column, db_column)
+
+        self.assertIs(
+            BingoGastoOperativo._meta.get_field("idbingo").remote_field.model,
+            Bingo,
+        )
+        self.assertIs(
+            BingoPremioMaterialCosto._meta.get_field("idbingo").remote_field.model,
+            Bingo,
+        )
+        self.assertIs(
+            BingoCierreFinanciero._meta.get_field("idbingo").remote_field.model,
+            Bingo,
+        )
+        self.assertIs(
+            BingoGastoOperativo._meta.get_field(
+                "idusuarioregistro"
+            ).remote_field.model,
+            User,
+        )
+        self.assertIs(
+            BingoCierreFinanciero._meta.get_field(
+                "idusuariocierre"
+            ).remote_field.model,
+            User,
+        )
+
+    def test_idbingo_del_cierre_representa_unicidad_fisica(self):
+        field = BingoCierreFinanciero._meta.get_field("idbingo")
+
+        self.assertIsInstance(field, django_models.OneToOneField)
+        self.assertTrue(field.unique)
+        self.assertEqual(field.db_column, "idbingo")
+
+    def test_idpartidabingo_no_inventa_fk_compuesta_falsa(self):
+        field = BingoPremioMaterialCosto._meta.get_field("idpartidabingo")
+
+        self.assertIsInstance(field, django_models.IntegerField)
+        self.assertNotIsInstance(field, django_models.ForeignKey)
+        self.assertEqual(field.db_column, "idpartidabingo")
+
+    def test_estados_tienen_choices_y_defaults_esperados(self):
+        casos = (
+            (
+                BingoGastoOperativo,
+                {
+                    "Registrado": "Registrado",
+                    "Anulado": "Anulado",
+                },
+                "Registrado",
+            ),
+            (
+                BingoPremioMaterialCosto,
+                {
+                    "Registrado": "Registrado",
+                    "Anulado": "Anulado",
+                },
+                "Registrado",
+            ),
+            (
+                BingoCierreFinanciero,
+                {
+                    "Abierto": "Abierto",
+                    "Cerrado": "Cerrado",
+                },
+                "Abierto",
+            ),
+        )
+
+        for model, choices, default in casos:
+            with self.subTest(model=model.__name__):
+                field = model._meta.get_field("estado")
+                self.assertEqual(dict(field.flatchoices), choices)
+                self.assertEqual(field.default, default)
+                self.assertEqual(model().estado, default)
 
 
 class GeneracionMatrizCartonTests(SimpleTestCase):
