@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Finanzas del Bingo{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Modulo Bingos</p>
+        <h1>Gestión financiera</h1>
+        <p>
+            {{ bingo.titulobingo }} · {{ bingo.fechaprogramadabingo|date:"d/m/Y H:i" }}
+            · Estado operativo:
+            <span class="badge rounded-pill {{ bingo.estadobingo|estado_class }}">{{ bingo.estadobingo }}</span>
+        </p>
+    </div>
+    <div class="d-flex flex-wrap gap-2 justify-content-end">
+        {% if cierre_esta_cerrado %}
+        <span class="badge text-bg-success align-self-center">Cierre financiero cerrado</span>
+        {% else %}
+        <span class="badge text-bg-warning align-self-center">Cierre financiero abierto</span>
+        {% endif %}
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:detalle' bingo.idbingo %}">Volver al detalle</a>
+    </div>
+</section>
+
+<section class="content-panel mb-3">
+    <h2 class="section-subtitle">Resumen financiero</h2>
+    <div class="dashboard-grid">
+        <article class="metric-card">
+            <span>Cartones vendidos únicos</span>
+            <strong>{{ resumen.cartones_vendidos_unicos }}</strong>
+        </article>
+        <article class="metric-card">
+            <span>Recaudación registrada</span>
+            <strong>${{ resumen.recaudacion_registrada|floatformat:2 }}</strong>
+        </article>
+        <article class="metric-card">
+            <span>Premios efectivos finalizados</span>
+            <strong>${{ resumen.premios_efectivo_finalizados|floatformat:2 }}</strong>
+        </article>
+        <article class="metric-card">
+            <span>Costos de premios materiales</span>
+            <strong>${{ resumen.costos_premios_materiales|floatformat:2 }}</strong>
+        </article>
+        <article class="metric-card">
+            <span>Gastos operativos</span>
+            <strong>${{ resumen.gastos_operativos|floatformat:2 }}</strong>
+        </article>
+        <article class="metric-card">
+            <span>Resultado provisional</span>
+            <strong>${{ resumen.resultado_provisional|floatformat:2 }}</strong>
+        </article>
+        <article class="metric-card">
+            <span>Utilidad bruta</span>
+            <strong>${{ resumen.utilidad_bruta|floatformat:2 }}</strong>
+        </article>
+        <article class="metric-card">
+            <span>Utilidad neta</span>
+            <strong>${{ resumen.utilidad_neta|floatformat:2 }}</strong>
+        </article>
+    </div>
+</section>
+
+<section class="content-panel mb-3">
+    <h2 class="section-subtitle">Estado de rondas</h2>
+    <dl class="detail-list">
+        <div><dt>Total de rondas</dt><dd>{{ resumen.total_rondas }}</dd></div>
+        <div><dt>Rondas finalizadas</dt><dd>{{ resumen.rondas_finalizadas }}</dd></div>
+        <div><dt>Rondas canceladas</dt><dd>{{ resumen.rondas_canceladas }}</dd></div>
+        <div><dt>Rondas pendientes</dt><dd>{{ resumen.rondas_pendientes }}</dd></div>
+    </dl>
+</section>
+
+<section class="content-panel mb-3">
+    <h2 class="section-subtitle">Bloqueos de cierre</h2>
+    {% if resumen.bloqueos_de_cierre %}
+    <div class="alert alert-warning mb-0" role="alert">
+        <ul class="mb-0">
+            {% for bloqueo in resumen.bloqueos_de_cierre %}
+            <li>{{ bloqueo }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% elif not cierre_esta_cerrado %}
+    <div class="alert alert-success mb-0" role="status">
+        El Bingo no tiene bloqueos financieros pendientes.
+    </div>
+    {% else %}
+    <div class="alert alert-info mb-0" role="status">
+        El cierre financiero ya fue realizado.
+    </div>
+    {% endif %}
+</section>
+
+<section class="content-panel mb-3">
+    <h2 class="section-subtitle">Premios materiales pendientes de costo</h2>
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead>
+                <tr>
+                    <th>Ronda</th>
+                    <th>Premio material</th>
+                    <th>Estado de la ronda</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for premio in resumen.premios_materiales_pendientes_de_costo %}
+                <tr>
+                    <td>{{ premio.ronda }}</td>
+                    <td>{{ premio.descripcion }}</td>
+                    <td>
+                        <span class="badge rounded-pill {{ premio.partida.estadopartida|estado_class }}">
+                            {{ premio.partida.estadopartida|estado_partida_display }}
+                        </span>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="3" class="text-muted">No hay premios materiales pendientes de costo.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+{% if not cierre_esta_cerrado %}
+<section class="content-panel mb-3">
+    <h2 class="section-subtitle">Registrar gasto operativo</h2>
+    <form method="post" action="{% url 'bingos:bingo_finanzas_gasto_registrar' bingo.idbingo %}" novalidate>
+        {% csrf_token %}
+        {% include "includes/form_errors.html" with form=gasto_form %}
+        <div class="row g-3">
+            <div class="col-md-5">{% include "includes/field.html" with field=gasto_form.concepto %}</div>
+            <div class="col-md-3">{% include "includes/field.html" with field=gasto_form.monto %}</div>
+            <div class="col-md-4">{% include "includes/field.html" with field=gasto_form.fechagasto %}</div>
+            <div class="col-12">{% include "includes/field.html" with field=gasto_form.observacion %}</div>
+        </div>
+        <div class="form-actions">
+            <button class="btn btn-primary" type="submit">Registrar gasto</button>
+        </div>
+    </form>
+</section>
+{% endif %}
+
+<section class="content-panel mb-3">
+    <h2 class="section-subtitle">Gastos operativos</h2>
+    {% if cierre_esta_cerrado %}
+    <div class="alert alert-info" role="note">
+        El cierre financiero está cerrado. Los gastos se muestran solo para consulta.
+    </div>
+    {% endif %}
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead>
+                <tr>
+                    <th>Concepto</th>
+                    <th>Monto</th>
+                    <th>Fecha de gasto</th>
+                    <th>Estado</th>
+                    <th>Observación</th>
+                    <th>Registró</th>
+                    <th>Motivo de anulación</th>
+                    <th>Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for gasto in gastos %}
+                <tr>
+                    <td>{{ gasto.concepto }}</td>
+                    <td>${{ gasto.monto|floatformat:2 }}</td>
+                    <td>{{ gasto.fechagasto|date:"d/m/Y H:i" }}</td>
+                    <td><span class="badge rounded-pill {{ gasto.estado|estado_class }}">{{ gasto.estado }}</span></td>
+                    <td>{{ gasto.observacion|default:"-" }}</td>
+                    <td>{{ gasto.idusuarioregistro|default:"-" }}</td>
+                    <td>{{ gasto.motivoanulacion|default:"-" }}</td>
+                    <td>
+                        {% if not cierre_esta_cerrado and gasto.estado == "Registrado" %}
+                        <form method="post" action="{% url 'bingos:bingo_finanzas_gasto_anular' bingo.idbingo gasto.idbingogastooperativo %}" novalidate>
+                            {% csrf_token %}
+                            <label class="form-label" for="id_motivo_{{ gasto.idbingogastooperativo }}">{{ motivo_anulacion_form.motivo.label }}</label>
+                            <textarea class="form-control form-control-sm" id="id_motivo_{{ gasto.idbingogastooperativo }}" name="{{ motivo_anulacion_form.motivo.html_name }}" rows="2" maxlength="{{ motivo_anulacion_form.motivo.field.max_length }}" required></textarea>
+                            <button class="btn btn-outline-danger btn-sm mt-2" type="submit">Anular</button>
+                        </form>
+                        {% elif gasto.estado == "Anulado" %}
+                        <span class="text-muted">Gasto anulado</span>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="8" class="text-muted">No hay gastos operativos registrados.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="content-panel mb-3">
+    <h2 class="section-subtitle">Costos de premios materiales</h2>
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead>
+                <tr>
+                    <th>Ronda</th>
+                    <th>Descripción del premio</th>
+                    <th>Monto</th>
+                    <th>Estado</th>
+                    <th>Observación</th>
+                    <th>Registró</th>
+                    <th>Motivo de anulación</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in costos_con_partida %}
+                <tr>
+                    <td>
+                        {% if item.partida %}
+                        {{ item.partida.nombreronda }}
+                        {% else %}
+                        Partida {{ item.costo.idpartidabingo }}
+                        {% endif %}
+                    </td>
+                    <td>{{ item.costo.descripcionpremio }}</td>
+                    <td>${{ item.costo.monto|floatformat:2 }}</td>
+                    <td><span class="badge rounded-pill {{ item.costo.estado|estado_class }}">{{ item.costo.estado }}</span></td>
+                    <td>{{ item.costo.observacion|default:"-" }}</td>
+                    <td>{{ item.costo.idusuarioregistro|default:"-" }}</td>
+                    <td>{{ item.costo.motivoanulacion|default:"-" }}</td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="7" class="text-muted">No hay costos de premios materiales registrados.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+{% if cierre_esta_cerrado %}
+<section class="content-panel">
+    <div class="alert alert-info" role="note">
+        El cierre financiero es irreversible en esta versión.
+    </div>
+    <h2 class="section-subtitle">Snapshot de cierre</h2>
+    <dl class="detail-list">
+        <div><dt>Fecha de cierre</dt><dd>{{ cierre.fechacierre|date:"d/m/Y H:i" }}</dd></div>
+        <div><dt>Usuario que cerró</dt><dd>{{ cierre.idusuariocierre|default:"-" }}</dd></div>
+        <div><dt>Observación de cierre</dt><dd>{{ cierre.observacioncierre|default:"-" }}</dd></div>
+        <div><dt>Cartones vendidos únicos</dt><dd>{{ cierre.cartonesvendidosunicos }}</dd></div>
+        <div><dt>Recaudación registrada</dt><dd>${{ cierre.recaudacionregistrada|floatformat:2 }}</dd></div>
+        <div><dt>Premios efectivos finalizados</dt><dd>${{ cierre.premiosefectivofinalizados|floatformat:2 }}</dd></div>
+        <div><dt>Costos de premios materiales</dt><dd>${{ cierre.costospremiosmateriales|floatformat:2 }}</dd></div>
+        <div><dt>Gastos operativos</dt><dd>${{ cierre.gastosoperativos|floatformat:2 }}</dd></div>
+        <div><dt>Resultado provisional</dt><dd>${{ cierre.resultadoprovisional|floatformat:2 }}</dd></div>
+        <div><dt>Utilidad bruta</dt><dd>${{ cierre.utilidadbruta|floatformat:2 }}</dd></div>
+        <div><dt>Utilidad neta</dt><dd>${{ cierre.utilidadneta|floatformat:2 }}</dd></div>
+        <div><dt>Total de rondas</dt><dd>{{ cierre.totalrondas }}</dd></div>
+        <div><dt>Rondas finalizadas</dt><dd>{{ cierre.rondasfinalizadas }}</dd></div>
+        <div><dt>Rondas canceladas</dt><dd>{{ cierre.rondascanceladas }}</dd></div>
+        <div><dt>Rondas pendientes</dt><dd>{{ cierre.rondaspendientes }}</dd></div>
+    </dl>
+</section>
+{% endif %}
+{% endblock %}

@@ -5,6 +5,7 @@ from django.core.exceptions import ValidationError
 
 from apps.common.forms import (
     FriendlyModelForm,
+    apply_bootstrap,
     validate_optional_url,
     validate_optional_url_or_path,
     validate_unique_field,
@@ -289,6 +290,58 @@ class CompraCartonJugadorForm(forms.Form):
             "required": "Confirme la compra para continuar.",
         },
     )
+
+
+class GastoOperativoBingoForm(forms.Form):
+    concepto = forms.CharField(
+        label="Concepto",
+        max_length=150,
+        error_messages={"required": "Ingrese el concepto del gasto."},
+    )
+    monto = forms.DecimalField(
+        label="Monto",
+        max_digits=12,
+        decimal_places=2,
+        error_messages={
+            "required": "Ingrese el monto del gasto.",
+            "invalid": "Ingrese un valor numérico válido.",
+        },
+    )
+    fechagasto = forms.DateTimeField(
+        label="Fecha de gasto",
+        required=False,
+        input_formats=["%Y-%m-%dT%H:%M"],
+        widget=forms.DateTimeInput(
+            attrs={"type": "datetime-local"},
+            format="%Y-%m-%dT%H:%M",
+        ),
+        error_messages={"invalid": "Ingrese una fecha y hora válidas."},
+        help_text="Opcional. Si se deja vacía, se usará la fecha actual.",
+    )
+    observacion = forms.CharField(
+        label="Observación",
+        max_length=300,
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 2}),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["monto"].widget.attrs.update({"step": "0.01"})
+        apply_bootstrap(self)
+
+
+class MotivoAnulacionForm(forms.Form):
+    motivo = forms.CharField(
+        label="Motivo de anulación",
+        max_length=300,
+        widget=forms.Textarea(attrs={"rows": 2}),
+        error_messages={"required": "Ingrese el motivo de anulación."},
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        apply_bootstrap(self)
 
 
 class CartonPartidaForm(CartonForm):

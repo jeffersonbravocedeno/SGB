@@ -11,14 +11,20 @@ from channels.layers import get_channel_layer
 from channels.testing import WebsocketCommunicator
 from openpyxl import load_workbook
 from django import forms
+from django.conf import settings
 from django.contrib.auth.models import AnonymousUser, User
 from django.contrib.messages import get_messages
 from django.contrib.messages.storage.fallback import FallbackStorage
-from django.core.exceptions import PermissionDenied
-from django.db import DatabaseError, IntegrityError, models as django_models
+from django.core.exceptions import ImproperlyConfigured, PermissionDenied
+from django.db import (
+    DatabaseError,
+    IntegrityError,
+    connection,
+    models as django_models,
+)
 from django.http import Http404, HttpResponse
 from django.template.loader import render_to_string
-from django.test import RequestFactory, SimpleTestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import resolve, reverse
 from django.utils import timezone
 
@@ -29,6 +35,8 @@ from .forms import (
     CompraCartonJugadorForm,
     GenerarAsignarCartonForm,
     GenerarCartonBingoForm,
+    GastoOperativoBingoForm,
+    MotivoAnulacionForm,
     PartidaBingoForm,
 )
 from .models import (
@@ -110,6 +118,7 @@ from .services import (
     obtener_etiqueta_patron_ganador,
     normalizar_candidatos_desempate,
     normalizar_candidatos_desempate_participaciones,
+    construir_resumen_financiero_real_bingo,
     obtener_partidas_elegibles_venta_carton,
     obtener_participaciones_hibridas_partida,
     obtener_participacion_carton_en_partida,
@@ -131,6 +140,7 @@ from .services import (
     preparar_resumen_patron_ganador,
     preparar_resumen_partida_publica,
     puede_asignar_cartones,
+    registrar_gasto_operativo_bingo,
     total_casillas_patron_ganador,
     serializar_bolas_cantadas,
     serializar_candidatos_desempate,
@@ -149,6 +159,9 @@ from .views import (
     acceder_carton_publico,
     bingo_carton_nuevo,
     bingo_detalle,
+    bingo_finanzas,
+    bingo_finanzas_gasto_anular,
+    bingo_finanzas_gasto_registrar,
     carton_publico,
     cartones_lista,
     comprar_carton_bingo,
@@ -1424,6 +1437,30 @@ class GenerarAsignarCartonFormTests(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("idjugador", form.errors)
         self.assertIn("preciopagado", form.errors)
+
+
+class GastoOperativoBingoFormTests(SimpleTestCase):
+    def test_formulario_gasto_solo_expone_campos_permitidos(self):
+        form = GastoOperativoBingoForm()
+
+        self.assertEqual(
+            list(form.fields),
+            ["concepto", "monto", "fechagasto", "observacion"],
+        )
+        for campo_no_permitido in (
+            "estado",
+            "idbingo",
+            "idusuarioregistro",
+            "motivoanulacion",
+        ):
+            self.assertNotIn(campo_no_permitido, form.fields)
+
+    def test_formulario_anulacion_solo_expone_motivo_obligatorio(self):
+        form = MotivoAnulacionForm(data={"motivo": ""})
+
+        self.assertEqual(list(form.fields), ["motivo"])
+        self.assertFalse(form.is_valid())
+        self.assertIn("motivo", form.errors)
 
 
 class RutaHeredadaCartonTests(SimpleTestCase):
@@ -8511,4 +8548,694 @@ class PreliquidacionFinancieraVistaTests(SimpleTestCase):
                 "bingos:preliquidacion_financiera",
                 kwargs={"idbingo": self.bingo.pk},
             ),
+        )
+
+    def test_detalle_de_bingo_muestra_enlace_a_finanzas(self):
+        with (
+            patch("apps.bingos.views.get_object_or_404", return_value=self.bingo),
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter",
+                return_value=_CartonesConsultaQuerySet([self.partida]),
+            ),
+            patch(
+                "apps.bingos.views.Carton.objects.filter",
+                return_value=_CartonesConsultaQuerySet([self.carton]),
+            ),
+        ):
+            response = bingo_detalle(
+                self._request("/bingos/130/"),
+                self.bingo.pk,
+            )
+
+        self.assertContains(response, "Gestión financiera")
+        self.assertContains(
+            response,
+            reverse(
+                "bingos:bingo_finanzas",
+                kwargs={"idbingo": self.bingo.pk},
+            ),
+        )
+
+
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class BingoFinanzasVistaTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.ahora = timezone.now()
+        self.admin = User(username="admin_finanzas", is_staff=True)
+        self.usuario_registro = User(username="registro_finanzas", is_staff=True)
+        self.bingo = Bingo(
+            idbingo=140,
+            titulobingo="Bingo finanzas",
+            fechaprogramadabingo=self.ahora,
+            tipobingo="Virtual",
+            preciocarton=Decimal("5.00"),
+            premiomayor=Decimal("50.00"),
+            descripcionpremiomayor="Premio",
+            estadobingo="Programado",
+        )
+        self.partida = Partidabingo(
+            idpartidabingo=1401,
+            idbingo=self.bingo,
+            nombreronda="Ronda material",
+            valorefectivo=Decimal("10.00"),
+            premiomaterial="Canasta",
+            estadopartida=ESTADO_PARTIDA_FINALIZADA,
+            horainicio=self.ahora,
+            horafin=self.ahora,
+        )
+        self.gasto = BingoGastoOperativo(
+            idbingogastooperativo=1,
+            idbingo=self.bingo,
+            concepto="Sonido",
+            monto=Decimal("12.00"),
+            fechagasto=self.ahora,
+            estado=BingoGastoOperativo.ESTADO_REGISTRADO,
+            observacion="Equipo local",
+            idusuarioregistro=self.usuario_registro,
+            fechacreacion=self.ahora,
+        )
+        self.gasto_anulado = BingoGastoOperativo(
+            idbingogastooperativo=2,
+            idbingo=self.bingo,
+            concepto="Transporte duplicado",
+            monto=Decimal("3.00"),
+            fechagasto=self.ahora,
+            estado=BingoGastoOperativo.ESTADO_ANULADO,
+            observacion="",
+            idusuarioregistro=self.usuario_registro,
+            fechacreacion=self.ahora,
+            motivoanulacion="Factura duplicada",
+        )
+        self.costo = BingoPremioMaterialCosto(
+            idbingopremiomaterialcosto=1,
+            idbingo=self.bingo,
+            idpartidabingo=self.partida.pk,
+            descripcionpremio="Canasta familiar",
+            monto=Decimal("8.00"),
+            estado=BingoPremioMaterialCosto.ESTADO_REGISTRADO,
+            observacion="Compra local",
+            idusuarioregistro=self.usuario_registro,
+            fechacreacion=self.ahora,
+        )
+        self.costo_anulado = BingoPremioMaterialCosto(
+            idbingopremiomaterialcosto=2,
+            idbingo=self.bingo,
+            idpartidabingo=self.partida.pk,
+            descripcionpremio="Canasta duplicada",
+            monto=Decimal("7.00"),
+            estado=BingoPremioMaterialCosto.ESTADO_ANULADO,
+            observacion="",
+            idusuarioregistro=self.usuario_registro,
+            fechacreacion=self.ahora,
+            motivoanulacion="Costo duplicado",
+        )
+
+    def _request(self, user=None):
+        request = self.factory.get(
+            reverse("bingos:bingo_finanzas", kwargs={"idbingo": self.bingo.pk})
+        )
+        request.user = user if user is not None else self.admin
+        request.session = {}
+        return request
+
+    def _resumen(self, cierre=None, bloqueos=None, pendientes=None):
+        return {
+            "cartones_vendidos_unicos": 3,
+            "recaudacion_registrada": Decimal("15.00"),
+            "premios_efectivo_finalizados": Decimal("10.00"),
+            "costos_premios_materiales": Decimal("8.00"),
+            "gastos_operativos": Decimal("12.00"),
+            "resultado_provisional": Decimal("5.00"),
+            "utilidad_bruta": Decimal("-3.00"),
+            "utilidad_neta": Decimal("-15.00"),
+            "total_rondas": 1,
+            "rondas_finalizadas": 1,
+            "rondas_canceladas": 0,
+            "rondas_pendientes": 0,
+            "premios_materiales_pendientes_de_costo": pendientes or [],
+            "bloqueos_de_cierre": bloqueos or [],
+            "cierre_existente": cierre,
+            "cierre_esta_cerrado": (
+                cierre is not None
+                and cierre.estado == BingoCierreFinanciero.ESTADO_CERRADO
+            ),
+        }
+
+    def _cierre_cerrado(self):
+        return BingoCierreFinanciero(
+            idbingocierrefinanciero=1,
+            idbingo=self.bingo,
+            estado=BingoCierreFinanciero.ESTADO_CERRADO,
+            cartonesvendidosunicos=3,
+            recaudacionregistrada=Decimal("15.00"),
+            premiosefectivofinalizados=Decimal("10.00"),
+            costospremiosmateriales=Decimal("8.00"),
+            gastosoperativos=Decimal("12.00"),
+            resultadoprovisional=Decimal("5.00"),
+            utilidadbruta=Decimal("-3.00"),
+            utilidadneta=Decimal("-15.00"),
+            totalrondas=1,
+            rondasfinalizadas=1,
+            rondascanceladas=0,
+            rondaspendientes=0,
+            fechacalculo=self.ahora,
+            fechacierre=self.ahora,
+            idusuariocierre=self.admin,
+            observacioncierre="Cierre final",
+            fechacreacion=self.ahora,
+        )
+
+    def _render_finanzas(
+        self,
+        resumen=None,
+        gastos=None,
+        costos=None,
+        partidas=None,
+        user=None,
+    ):
+        resumen = resumen or self._resumen()
+        gastos = _CartonesConsultaQuerySet(
+            gastos if gastos is not None else [self.gasto, self.gasto_anulado]
+        )
+        costos = _CartonesConsultaQuerySet(
+            costos if costos is not None else [self.costo, self.costo_anulado]
+        )
+        partidas = _CartonesConsultaQuerySet(
+            partidas if partidas is not None else [self.partida]
+        )
+        with (
+            patch("apps.bingos.views.get_object_or_404", return_value=self.bingo),
+            patch(
+                "apps.bingos.views.construir_resumen_financiero_real_bingo",
+                return_value=resumen,
+            ) as construir,
+            patch(
+                "apps.bingos.views.Partidabingo.objects.filter",
+                return_value=partidas,
+            ) as partidas_filter,
+            patch(
+                "apps.bingos.views.BingoGastoOperativo.objects.filter",
+                return_value=gastos,
+            ) as gastos_filter,
+            patch(
+                "apps.bingos.views.BingoPremioMaterialCosto.objects.filter",
+                return_value=costos,
+            ) as costos_filter,
+        ):
+            response = bingo_finanzas(self._request(user=user), self.bingo.pk)
+
+        return response, construir, partidas_filter, gastos_filter, costos_filter
+
+    def test_administrador_puede_abrir_panel_financiero(self):
+        response, construir, _partidas, _gastos, _costos = self._render_finanzas()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Gestión financiera")
+        self.assertContains(response, "Resumen financiero")
+        self.assertContains(response, "Cierre financiero abierto")
+        construir.assert_called_once_with(self.bingo)
+
+    def test_usuario_no_administrador_no_puede_acceder(self):
+        with self.assertRaises(PermissionDenied):
+            bingo_finanzas(
+                self._request(
+                    user=User(
+                        username="jugador_finanzas",
+                        is_staff=False,
+                        is_superuser=False,
+                    )
+                ),
+                self.bingo.pk,
+            )
+
+    def test_ruta_financiera_resuelve_vista(self):
+        self.assertIs(resolve("/bingos/140/finanzas/").func, bingo_finanzas)
+        self.assertEqual(
+            reverse("bingos:bingo_finanzas", kwargs={"idbingo": self.bingo.pk}),
+            "/bingos/140/finanzas/",
+        )
+
+    def test_vista_muestra_gastos_y_costos_del_bingo_correcto(self):
+        response, _construir, partidas_filter, gastos_filter, costos_filter = (
+            self._render_finanzas()
+        )
+
+        self.assertContains(response, "Sonido")
+        self.assertContains(response, "Transporte duplicado")
+        self.assertContains(response, "Factura duplicada")
+        self.assertContains(response, "Canasta familiar")
+        self.assertContains(response, "Canasta duplicada")
+        self.assertContains(response, "Costo duplicado")
+        self.assertContains(response, "Ronda material")
+        partidas_filter.assert_called_once_with(idbingo=self.bingo)
+        gastos_filter.assert_called_once_with(idbingo=self.bingo)
+        costos_filter.assert_called_once_with(idbingo=self.bingo)
+
+    def test_vista_muestra_bloqueos_y_premios_pendientes(self):
+        resumen = self._resumen(
+            bloqueos=[
+                "No se puede cerrar el Bingo porque existen premios materiales finalizados sin costo registrado."
+            ],
+            pendientes=[
+                {
+                    "partida": self.partida,
+                    "idpartidabingo": self.partida.pk,
+                    "ronda": self.partida.nombreronda,
+                    "descripcion": "Canasta",
+                }
+            ],
+        )
+
+        response, _construir, _partidas, _gastos, _costos = self._render_finanzas(
+            resumen=resumen
+        )
+
+        self.assertContains(response, "Bloqueos de cierre")
+        self.assertContains(response, "premios materiales finalizados")
+        self.assertContains(response, "Premios materiales pendientes de costo")
+        self.assertContains(response, "Canasta")
+
+    def test_vista_muestra_cierre_cerrado_y_snapshot(self):
+        cierre = self._cierre_cerrado()
+        resumen = self._resumen(
+            cierre=cierre,
+            bloqueos=[
+                "No se puede cerrar el Bingo porque ya existe un cierre Cerrado."
+            ],
+        )
+
+        response, _construir, _partidas, _gastos, _costos = self._render_finanzas(
+            resumen=resumen
+        )
+
+        self.assertContains(response, "Cierre financiero cerrado")
+        self.assertContains(response, "Snapshot de cierre")
+        self.assertContains(response, "Cierre final")
+        self.assertContains(response, "irreversible")
+        self.assertContains(response, "$15,00")
+        self.assertContains(response, "$-15,00")
+
+    def test_vista_no_crea_ni_modifica_datos(self):
+        with (
+            patch("apps.bingos.views.Carton.objects.create") as carton_create,
+            patch(
+                "apps.bingos.views.CartonPartidaBingo.objects.create"
+            ) as participacion_create,
+            patch(
+                "apps.bingos.views.BingoGastoOperativo.objects.create"
+            ) as gasto_create,
+            patch(
+                "apps.bingos.views.BingoPremioMaterialCosto.objects.create"
+            ) as costo_create,
+            patch(
+                "apps.bingos.views.BingoCierreFinanciero.objects.create"
+            ) as cierre_create,
+            patch.object(BingoGastoOperativo, "save") as gasto_save,
+            patch.object(BingoPremioMaterialCosto, "save") as costo_save,
+            patch.object(BingoCierreFinanciero, "save") as cierre_save,
+        ):
+            response, _construir, _partidas, _gastos, _costos = (
+                self._render_finanzas()
+            )
+
+        self.assertEqual(response.status_code, 200)
+        carton_create.assert_not_called()
+        participacion_create.assert_not_called()
+        gasto_create.assert_not_called()
+        costo_create.assert_not_called()
+        cierre_create.assert_not_called()
+        gasto_save.assert_not_called()
+        costo_save.assert_not_called()
+        cierre_save.assert_not_called()
+
+
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
+    databases = {"default"}
+
+    BOOTSTRAP_TABLES = (
+        "bingo",
+        "jugador",
+        "partidabingo",
+        "carton",
+        "carton_partida_bingo",
+        "bingo_gasto_operativo",
+        "bingo_premio_material_costo",
+        "bingo_cierre_financiero",
+    )
+    PROTECTED_DATABASES = {"bingo", "bingo_ensayo_hibridos"}
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._created_bootstrap_tables = False
+        cls._bootstrap_finance_schema()
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            if getattr(cls, "_created_bootstrap_tables", False):
+                cls._drop_finance_schema()
+        finally:
+            super().tearDownClass()
+
+    @classmethod
+    def _bootstrap_finance_schema(cls):
+        cls._validate_test_database()
+        existing_tables = set(connection.introspection.table_names())
+        required_tables = set(cls.BOOTSTRAP_TABLES)
+        existing_required_tables = existing_tables & required_tables
+        if existing_required_tables == required_tables:
+            return
+        if existing_required_tables:
+            raise ImproperlyConfigured(
+                "El esquema financiero de pruebas está incompleto: "
+                + ", ".join(sorted(existing_required_tables))
+            )
+
+        sql_path = Path(settings.BASE_DIR) / "sql/test_schema_bingos_financiero.sql"
+        statements = connection.ops.prepare_sql_script(
+            sql_path.read_text(encoding="utf-8")
+        )
+        with connection.cursor() as cursor:
+            for statement in statements:
+                if statement.strip():
+                    cursor.execute(statement)
+        cls._created_bootstrap_tables = True
+
+    @classmethod
+    def _drop_finance_schema(cls):
+        with connection.cursor() as cursor:
+            for table_name in reversed(cls.BOOTSTRAP_TABLES):
+                quoted_table = connection.ops.quote_name(table_name)
+                cursor.execute(f"DROP TABLE IF EXISTS {quoted_table} CASCADE")
+
+    @classmethod
+    def _validate_test_database(cls):
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT current_database()")
+            database_name = str(cursor.fetchone()[0]).strip()
+        if database_name in cls.PROTECTED_DATABASES:
+            raise ImproperlyConfigured(
+                f"No se pueden preparar pruebas financieras sobre {database_name!r}."
+            )
+        if not database_name.startswith("test_"):
+            raise ImproperlyConfigured(
+                "Las pruebas financieras de vista requieren una base de prueba "
+                f"con prefijo 'test_'; base actual: {database_name!r}."
+            )
+
+    def setUp(self):
+        self.ahora = timezone.now()
+        self.admin = User.objects.create_user(
+            username="admin_gastos_finanzas",
+            password="test",
+            is_staff=True,
+        )
+        self.no_admin = User.objects.create_user(
+            username="usuario_gastos_finanzas",
+            password="test",
+            is_staff=False,
+        )
+        self.bingo = self._crear_bingo(700, "Bingo gastos abierto")
+        self.url_panel = reverse(
+            "bingos:bingo_finanzas",
+            kwargs={"idbingo": self.bingo.pk},
+        )
+        self.url_registrar = reverse(
+            "bingos:bingo_finanzas_gasto_registrar",
+            kwargs={"idbingo": self.bingo.pk},
+        )
+
+    def _crear_bingo(self, pk, titulo):
+        return Bingo.objects.create(
+            idbingo=pk,
+            titulobingo=titulo,
+            fechaprogramadabingo=self.ahora,
+            tipobingo="Virtual",
+            preciocarton=Decimal("5.00"),
+            premiomayor=Decimal("50.00"),
+            descripcionpremiomayor="Premio mayor",
+            estadobingo="Programado",
+        )
+
+    def _crear_gasto(self, concepto="Sonido", monto=Decimal("12.00"), bingo=None):
+        return registrar_gasto_operativo_bingo(
+            bingo or self.bingo,
+            self.admin,
+            concepto,
+            monto,
+        )
+
+    def _crear_cierre_cerrado(self, bingo=None):
+        return BingoCierreFinanciero.objects.create(
+            idbingo=bingo or self.bingo,
+            estado=BingoCierreFinanciero.ESTADO_CERRADO,
+            cartonesvendidosunicos=0,
+            recaudacionregistrada=Decimal("0.00"),
+            premiosefectivofinalizados=Decimal("0.00"),
+            costospremiosmateriales=Decimal("0.00"),
+            gastosoperativos=Decimal("0.00"),
+            resultadoprovisional=Decimal("0.00"),
+            utilidadbruta=Decimal("0.00"),
+            utilidadneta=Decimal("0.00"),
+            totalrondas=0,
+            rondasfinalizadas=0,
+            rondascanceladas=0,
+            rondaspendientes=0,
+            fechacalculo=self.ahora,
+            fechacierre=self.ahora,
+            idusuariocierre=self.admin,
+            observacioncierre="Cierre de prueba",
+            fechacreacion=self.ahora,
+        )
+
+    def _url_anular(self, gasto, bingo=None):
+        return reverse(
+            "bingos:bingo_finanzas_gasto_anular",
+            kwargs={
+                "idbingo": (bingo or self.bingo).pk,
+                "idgasto": gasto.pk,
+            },
+        )
+
+    def test_administrador_puede_ver_formulario_de_gasto_en_bingo_abierto(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.get(self.url_panel)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Registrar gasto operativo")
+        self.assertContains(response, "Registrar gasto")
+        self.assertContains(response, "Cierre financiero abierto")
+        self.assertIsInstance(response.context["gasto_form"], GastoOperativoBingoForm)
+        self.assertFalse(response.context["cierre_esta_cerrado"])
+
+    def test_usuario_no_administrativo_no_puede_acceder_a_rutas_nuevas(self):
+        gasto = self._crear_gasto()
+        self.client.force_login(self.no_admin)
+
+        response_registrar = self.client.post(
+            self.url_registrar,
+            {
+                "concepto": "Transporte",
+                "monto": "4.00",
+                "fechagasto": "",
+                "observacion": "",
+            },
+        )
+        response_anular = self.client.post(
+            self._url_anular(gasto),
+            {"motivo": "No autorizado"},
+        )
+
+        self.assertEqual(response_registrar.status_code, 403)
+        self.assertEqual(response_anular.status_code, 403)
+        self.assertEqual(BingoGastoOperativo.objects.count(), 1)
+        gasto.refresh_from_db()
+        self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
+
+    def test_post_valido_de_registro_crea_gasto_y_muestra_exito(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self.url_registrar,
+            {
+                "concepto": "  Sonido local  ",
+                "monto": "12.50",
+                "fechagasto": "",
+                "observacion": "  Consola principal  ",
+            },
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertEqual(BingoGastoOperativo.objects.count(), 1)
+        gasto = BingoGastoOperativo.objects.get()
+        self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
+        self.assertEqual(gasto.concepto, "Sonido local")
+        self.assertEqual(gasto.monto, Decimal("12.50"))
+        self.assertEqual(gasto.observacion, "Consola principal")
+        self.assertContains(response, "Gasto operativo registrado correctamente.")
+        self.assertContains(response, "Sonido local")
+
+    def test_post_invalido_no_crea_gasto_y_muestra_error(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self.url_registrar,
+            {
+                "concepto": "Transporte",
+                "monto": "valor-invalido",
+                "fechagasto": "",
+                "observacion": "",
+            },
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertEqual(BingoGastoOperativo.objects.count(), 0)
+        self.assertContains(
+            response,
+            "No se pudo registrar el gasto operativo. Revise los datos ingresados.",
+        )
+
+    def test_anulacion_valida_conserva_gasto_y_registra_motivo(self):
+        gasto = self._crear_gasto()
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self._url_anular(gasto),
+            {"motivo": "  Factura duplicada  "},
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertEqual(BingoGastoOperativo.objects.count(), 1)
+        gasto.refresh_from_db()
+        self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_ANULADO)
+        self.assertEqual(gasto.motivoanulacion, "Factura duplicada")
+        self.assertContains(response, "Gasto operativo anulado correctamente.")
+
+    def test_anulacion_de_gasto_de_otro_bingo_devuelve_404_y_no_modifica(self):
+        otro_bingo = self._crear_bingo(701, "Bingo gastos ajeno")
+        gasto_ajeno = self._crear_gasto(
+            concepto="Gasto ajeno",
+            monto=Decimal("8.00"),
+            bingo=otro_bingo,
+        )
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self._url_anular(gasto_ajeno, bingo=self.bingo),
+            {"motivo": "No corresponde"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        gasto_ajeno.refresh_from_db()
+        self.assertEqual(gasto_ajeno.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
+        self.assertEqual(gasto_ajeno.motivoanulacion, None)
+
+    def test_bingo_cerrado_oculta_formularios_y_bloquea_posts(self):
+        gasto = self._crear_gasto()
+        self._crear_cierre_cerrado()
+        self.client.force_login(self.admin)
+
+        response_get = self.client.get(self.url_panel)
+        self.assertNotContains(response_get, "Registrar gasto operativo")
+        self.assertNotContains(response_get, "Anular</button>")
+        self.assertContains(
+            response_get,
+            "El cierre financiero está cerrado. Los gastos se muestran solo para consulta.",
+        )
+
+        response_registrar = self.client.post(
+            self.url_registrar,
+            {
+                "concepto": "Transporte",
+                "monto": "4.00",
+                "fechagasto": "",
+                "observacion": "",
+            },
+            follow=True,
+        )
+        self.assertEqual(BingoGastoOperativo.objects.count(), 1)
+        self.assertContains(
+            response_registrar,
+            "No se pueden registrar gastos porque el cierre financiero está cerrado.",
+        )
+
+        response_anular = self.client.post(
+            self._url_anular(gasto),
+            {"motivo": "Factura duplicada"},
+            follow=True,
+        )
+        gasto.refresh_from_db()
+        self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
+        self.assertEqual(gasto.motivoanulacion, None)
+        self.assertContains(
+            response_anular,
+            "No se pueden anular gastos porque el cierre financiero está cerrado.",
+        )
+
+    def test_operacion_impacta_resumen_real(self):
+        self.client.force_login(self.admin)
+
+        response_registro = self.client.post(
+            self.url_registrar,
+            {
+                "concepto": "Transporte",
+                "monto": "20.00",
+                "fechagasto": "",
+                "observacion": "",
+            },
+            follow=True,
+        )
+        gasto = BingoGastoOperativo.objects.get()
+        resumen_registrado = construir_resumen_financiero_real_bingo(self.bingo)
+
+        self.assertContains(response_registro, "Transporte")
+        self.assertEqual(
+            resumen_registrado["gastos_operativos"],
+            Decimal("20.00"),
+        )
+
+        self.client.post(
+            self._url_anular(gasto),
+            {"motivo": "Registro duplicado"},
+            follow=True,
+        )
+        resumen_anulado = construir_resumen_financiero_real_bingo(self.bingo)
+
+        gasto.refresh_from_db()
+        self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_ANULADO)
+        self.assertEqual(resumen_anulado["gastos_operativos"], Decimal("0.00"))
+
+    def test_rutas_post_de_gastos_resuelven_vistas(self):
+        self.assertIs(
+            resolve("/bingos/700/finanzas/gastos/registrar/").func,
+            bingo_finanzas_gasto_registrar,
+        )
+        self.assertIs(
+            resolve("/bingos/700/finanzas/gastos/5/anular/").func,
+            bingo_finanzas_gasto_anular,
         )

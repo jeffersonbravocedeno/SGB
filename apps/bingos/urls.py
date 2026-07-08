@@ -46,6 +46,21 @@ urlpatterns = [
         name="preliquidacion_financiera",
     ),
     path(
+        "bingos/<int:idbingo>/finanzas/",
+        views.bingo_finanzas,
+        name="bingo_finanzas",
+    ),
+    path(
+        "bingos/<int:idbingo>/finanzas/gastos/registrar/",
+        views.bingo_finanzas_gasto_registrar,
+        name="bingo_finanzas_gasto_registrar",
+    ),
+    path(
+        "bingos/<int:idbingo>/finanzas/gastos/<int:idgasto>/anular/",
+        views.bingo_finanzas_gasto_anular,
+        name="bingo_finanzas_gasto_anular",
+    ),
+    path(
         "bingos/<int:idbingo>/comprar-carton/",
         views.comprar_carton_bingo,
         name="comprar_carton_bingo",

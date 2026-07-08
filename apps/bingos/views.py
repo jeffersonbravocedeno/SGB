@@ -23,9 +23,20 @@ from .forms import (
     CompraCartonJugadorForm,
     GenerarAsignarCartonForm,
     GenerarCartonBingoForm,
+    GastoOperativoBingoForm,
+    MotivoAnulacionForm,
     PartidaBingoForm,
 )
-from .models import Bingo, Carton, CartonPartidaBingo, Partidabingo, Sesionjuego
+from .models import (
+    Bingo,
+    BingoCierreFinanciero,
+    BingoGastoOperativo,
+    BingoPremioMaterialCosto,
+    Carton,
+    CartonPartidaBingo,
+    Partidabingo,
+    Sesionjuego,
+)
 from .realtime import programar_publicacion_partida
 from .reportes import (
     PDF_CONTENT_TYPE,
@@ -60,6 +71,7 @@ from .services import (
     construir_matriz_marcada_carton,
     contar_numeros_marcados_carton,
     construir_preliquidacion_financiera_bingo,
+    construir_resumen_financiero_real_bingo,
     crear_carton_maestro_para_bingo,
     crear_ronda_con_participaciones,
     crear_y_asignar_carton,
@@ -82,9 +94,11 @@ from .services import (
     preparar_resumen_partida_publica,
     preparar_resumen_patron_ganador,
     puede_asignar_cartones,
+    registrar_gasto_operativo_bingo,
     estado_permite_validar_carton,
     preparar_accion_consola,
     sortear_balota_desempate,
+    anular_gasto_operativo_bingo,
     validar_carton_ganador,
     validar_participacion_ganadora,
     validar_asignacion_cartones,
@@ -838,6 +852,123 @@ def preliquidacion_financiera(request, idbingo):
             "preliquidacion": preliquidacion,
         },
     )
+
+
+@admin_required
+@require_GET
+def bingo_finanzas(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    resumen = construir_resumen_financiero_real_bingo(bingo)
+    partidas = list(
+        Partidabingo.objects.filter(idbingo=bingo).order_by(
+            "horainicio",
+            "idpartidabingo",
+        )
+    )
+    partidas_por_id = {partida.pk: partida for partida in partidas}
+    gastos = list(
+        BingoGastoOperativo.objects.filter(idbingo=bingo)
+        .select_related("idusuarioregistro", "idusuarioanulacion")
+        .order_by("-fechagasto", "-idbingogastooperativo")
+    )
+    costos = list(
+        BingoPremioMaterialCosto.objects.filter(idbingo=bingo)
+        .select_related("idusuarioregistro", "idusuarioanulacion")
+        .order_by("-idbingopremiomaterialcosto")
+    )
+    costos_con_partida = [
+        {
+            "costo": costo,
+            "partida": partidas_por_id.get(costo.idpartidabingo),
+        }
+        for costo in costos
+    ]
+    cierre = resumen["cierre_existente"]
+    cierre_esta_cerrado = (
+        cierre is not None
+        and cierre.estado == BingoCierreFinanciero.ESTADO_CERRADO
+    )
+
+    return render(
+        request,
+        "bingos/finanzas.html",
+        {
+            "bingo": bingo,
+            "resumen": resumen,
+            "gastos": gastos,
+            "costos_con_partida": costos_con_partida,
+            "partidas": partidas,
+            "cierre": cierre,
+            "cierre_esta_cerrado": cierre_esta_cerrado,
+            "cierre_estado": (
+                BingoCierreFinanciero.ESTADO_CERRADO
+                if cierre_esta_cerrado
+                else BingoCierreFinanciero.ESTADO_ABIERTO
+            ),
+            "gasto_form": GastoOperativoBingoForm(),
+            "motivo_anulacion_form": MotivoAnulacionForm(),
+        },
+    )
+
+
+@admin_required
+@require_POST
+def bingo_finanzas_gasto_registrar(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    form = GastoOperativoBingoForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "No se pudo registrar el gasto operativo. Revise los datos ingresados.",
+        )
+        return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+    try:
+        registrar_gasto_operativo_bingo(
+            bingo,
+            request.user,
+            form.cleaned_data["concepto"],
+            form.cleaned_data["monto"],
+            form.cleaned_data["fechagasto"],
+            form.cleaned_data["observacion"],
+        )
+    except CierreFinancieroError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(request, "Gasto operativo registrado correctamente.")
+
+    return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+
+@admin_required
+@require_POST
+def bingo_finanzas_gasto_anular(request, idbingo, idgasto):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    gasto = get_object_or_404(
+        BingoGastoOperativo,
+        pk=idgasto,
+        idbingo=bingo,
+    )
+    form = MotivoAnulacionForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "No se pudo anular el gasto operativo. Ingrese el motivo de anulación.",
+        )
+        return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+    try:
+        anular_gasto_operativo_bingo(
+            gasto,
+            request.user,
+            form.cleaned_data["motivo"],
+        )
+    except CierreFinancieroError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(request, "Gasto operativo anulado correctamente.")
+
+    return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
 
 
 @admin_required
