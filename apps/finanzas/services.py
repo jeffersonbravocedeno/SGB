@@ -276,8 +276,15 @@ def validar_garantes_prestamo(*, socio_deudor_id, monto_solicitado, garantes):
         )
 
     garantes_lista = _lista_desde_iterable(garantes)
+    capacidad_requerida = monto_normalizado * PORCENTAJE_GARANTIA_PRESTAMO
     if not garantes_lista:
-        raise PrestamoGarantiaError("Debe seleccionar al menos un garante.")
+        return {
+            "monto_solicitado": monto_normalizado,
+            "porcentaje_requerido": PORCENTAJE_GARANTIA_PRESTAMO,
+            "capacidad_requerida": capacidad_requerida,
+            "capacidad_total": Decimal("0.00"),
+            "garantes_normalizados": [],
+        }
     if len(garantes_lista) > 2:
         raise PrestamoGarantiaError("Un préstamo no puede tener más de dos garantes.")
 
@@ -307,8 +314,6 @@ def validar_garantes_prestamo(*, socio_deudor_id, monto_solicitado, garantes):
         (garante["capacidad"] for garante in garantes_normalizados),
         Decimal("0"),
     )
-    capacidad_requerida = monto_normalizado * PORCENTAJE_GARANTIA_PRESTAMO
-
     if capacidad_total < capacidad_requerida:
         raise PrestamoGarantiaError(
             "La capacidad total de los garantes debe cubrir al menos el 50% del "

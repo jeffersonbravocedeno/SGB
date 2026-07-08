@@ -151,7 +151,7 @@ class PrestamoConGarantesFormTests(SimpleTestCase):
             "fechasolicitud": "2026-07-08",
             "fechavencimiento": "2026-12-08",
             "estadoprestamo": "Solicitado",
-            "garante_1": "2",
+            "garante_1": "",
             "garante_2": "",
         }
         datos.update(overrides)
@@ -167,14 +167,23 @@ class PrestamoConGarantesFormTests(SimpleTestCase):
         with patch.object(Prestamo, "full_clean"):
             return form.is_valid()
 
-    def test_formulario_exige_garante_1(self):
-        form = self._form(garante_1="")
+    def test_formulario_permite_garantes_vacios(self):
+        form = self._form()
 
-        self.assertFalse(self._is_valid(form))
-        self.assertIn("garante_1", form.errors)
+        self.assertTrue(self._is_valid(form), form.errors.as_data())
+        self.assertEqual(form.garantes_seleccionados(), [])
 
-    def test_formulario_permite_un_garante(self):
-        form = self._form(garante_2="")
+    def test_formulario_permite_solo_garante_1(self):
+        form = self._form(garante_1="2", garante_2="")
+
+        self.assertTrue(self._is_valid(form), form.errors.as_data())
+        self.assertEqual(
+            [socio.idsocio for socio in form.garantes_seleccionados()],
+            [2],
+        )
+
+    def test_formulario_permite_solo_garante_2(self):
+        form = self._form(garante_1="", garante_2="2")
 
         self.assertTrue(self._is_valid(form), form.errors.as_data())
         self.assertEqual(
@@ -183,7 +192,7 @@ class PrestamoConGarantesFormTests(SimpleTestCase):
         )
 
     def test_formulario_permite_dos_garantes(self):
-        form = self._form(garante_2="3")
+        form = self._form(garante_1="2", garante_2="3")
 
         self.assertTrue(self._is_valid(form), form.errors.as_data())
         self.assertEqual(
@@ -192,7 +201,7 @@ class PrestamoConGarantesFormTests(SimpleTestCase):
         )
 
     def test_formulario_rechaza_garante_igual_a_socio_deudor(self):
-        form = self._form(garante_1="1")
+        form = self._form(garante_1="1", garante_2="2")
 
         self.assertFalse(self._is_valid(form))
         self.assertIn("garante_1", form.errors)
@@ -576,8 +585,77 @@ class ServiciosGarantesPrestamoTests(SimpleTestCase):
             all(garante["idprestamo"] is prestamo for garante in garantes_creados)
         )
 
-    def test_crear_prestamo_con_garantes_no_crea_si_capacidad_insuficiente(self):
+    def test_crear_prestamo_con_garantes_crea_prestamo_sin_garantes(self):
+        prestamo_creado = Prestamo(idprestamo=101, **self._datos_prestamo())
+        atomic_mock = MagicMock(return_value=nullcontext())
+
+        with (
+            patch("apps.finanzas.services.transaction.atomic", atomic_mock),
+            patch(
+                "apps.finanzas.services.calcular_capacidad_garante"
+            ) as calcular_capacidad,
+            patch.object(
+                Prestamo.objects,
+                "create",
+                return_value=prestamo_creado,
+            ) as prestamo_create,
+            patch.object(PrestamoGarante.objects, "create") as garante_create,
+        ):
+            prestamo = crear_prestamo_con_garantes(
+                datos_prestamo=self._datos_prestamo(),
+                garantes=[],
+            )
+
+        atomic_mock.assert_called_once()
+        self.assertIs(prestamo, prestamo_creado)
+        prestamo_create.assert_called_once()
+        garante_create.assert_not_called()
+        calcular_capacidad.assert_not_called()
+
+    def test_crear_prestamo_con_garantes_crea_prestamo_con_un_garante(self):
         bloqueo_patch, _socios_qs = self._patch_bloqueo_socios([2])
+        prestamo_creado = Prestamo(idprestamo=101, **self._datos_prestamo())
+        garantes_creados = []
+        atomic_mock = MagicMock(return_value=nullcontext())
+
+        def crear_garante(**kwargs):
+            garantes_creados.append(kwargs)
+            return PrestamoGarante(**kwargs)
+
+        with (
+            patch("apps.finanzas.services.transaction.atomic", atomic_mock),
+            bloqueo_patch,
+            patch(
+                "apps.finanzas.services.calcular_capacidad_garante",
+                return_value=Decimal("500.00"),
+            ),
+            patch.object(
+                Prestamo.objects,
+                "create",
+                return_value=prestamo_creado,
+            ) as prestamo_create,
+            patch.object(
+                PrestamoGarante.objects,
+                "create",
+                side_effect=crear_garante,
+            ) as garante_create,
+        ):
+            prestamo = crear_prestamo_con_garantes(
+                datos_prestamo=self._datos_prestamo(),
+                garantes=[Socio(idsocio=2)],
+            )
+
+        atomic_mock.assert_called_once()
+        self.assertIs(prestamo, prestamo_creado)
+        prestamo_create.assert_called_once()
+        garante_create.assert_called_once()
+        self.assertNotIn("idprestamogarante", garantes_creados[0])
+        self.assertEqual(garantes_creados[0]["idgarante"].idsocio, 2)
+        self.assertEqual(garantes_creados[0]["capacidadcalculada"], Decimal("500.00"))
+        self.assertIs(garantes_creados[0]["idprestamo"], prestamo_creado)
+
+    def test_crear_prestamo_con_garantes_no_crea_si_capacidad_insuficiente(self):
+        bloqueo_patch, _socios_qs = self._patch_bloqueo_socios([2, 3])
         atomic_mock = MagicMock(return_value=nullcontext())
 
         with (
@@ -585,7 +663,7 @@ class ServiciosGarantesPrestamoTests(SimpleTestCase):
             bloqueo_patch,
             patch(
                 "apps.finanzas.services.calcular_capacidad_garante",
-                return_value=Decimal("499.99"),
+                side_effect=[Decimal("250.00"), Decimal("249.99")],
             ),
             patch.object(Prestamo.objects, "create") as prestamo_create,
             patch.object(PrestamoGarante.objects, "create") as garante_create,
@@ -597,7 +675,7 @@ class ServiciosGarantesPrestamoTests(SimpleTestCase):
             ):
                 crear_prestamo_con_garantes(
                     datos_prestamo=self._datos_prestamo(),
-                    garantes=[Socio(idsocio=2)],
+                    garantes=[Socio(idsocio=2), Socio(idsocio=3)],
                 )
 
         atomic_mock.assert_called_once()
@@ -632,7 +710,7 @@ class ServiciosGarantesPrestamoTests(SimpleTestCase):
         garante_create.assert_not_called()
 
     def test_crear_prestamo_con_garantes_no_crea_si_garante_es_deudor(self):
-        bloqueo_patch, _socios_qs = self._patch_bloqueo_socios([1])
+        bloqueo_patch, _socios_qs = self._patch_bloqueo_socios([1, 2])
         atomic_mock = MagicMock(return_value=nullcontext())
 
         with (
@@ -640,7 +718,7 @@ class ServiciosGarantesPrestamoTests(SimpleTestCase):
             bloqueo_patch,
             patch(
                 "apps.finanzas.services.calcular_capacidad_garante",
-                return_value=Decimal("500.00"),
+                side_effect=[Decimal("500.00"), Decimal("500.00")],
             ),
             patch.object(Prestamo.objects, "create") as prestamo_create,
             patch.object(PrestamoGarante.objects, "create") as garante_create,
@@ -651,7 +729,42 @@ class ServiciosGarantesPrestamoTests(SimpleTestCase):
             ):
                 crear_prestamo_con_garantes(
                     datos_prestamo=self._datos_prestamo(),
-                    garantes=[Socio(idsocio=1)],
+                    garantes=[Socio(idsocio=1), Socio(idsocio=2)],
+                )
+
+        atomic_mock.assert_called_once()
+        prestamo_create.assert_not_called()
+        garante_create.assert_not_called()
+
+    def test_crear_prestamo_con_garantes_rechaza_mas_de_dos_garantes(self):
+        bloqueo_patch, _socios_qs = self._patch_bloqueo_socios([2, 3, 4])
+        atomic_mock = MagicMock(return_value=nullcontext())
+
+        with (
+            patch("apps.finanzas.services.transaction.atomic", atomic_mock),
+            bloqueo_patch,
+            patch(
+                "apps.finanzas.services.calcular_capacidad_garante",
+                side_effect=[
+                    Decimal("200.00"),
+                    Decimal("200.00"),
+                    Decimal("200.00"),
+                ],
+            ),
+            patch.object(Prestamo.objects, "create") as prestamo_create,
+            patch.object(PrestamoGarante.objects, "create") as garante_create,
+        ):
+            with self.assertRaisesMessage(
+                PrestamoGarantiaError,
+                "Un préstamo no puede tener más de dos garantes.",
+            ):
+                crear_prestamo_con_garantes(
+                    datos_prestamo=self._datos_prestamo(),
+                    garantes=[
+                        Socio(idsocio=2),
+                        Socio(idsocio=3),
+                        Socio(idsocio=4),
+                    ],
                 )
 
         atomic_mock.assert_called_once()
@@ -660,6 +773,18 @@ class ServiciosGarantesPrestamoTests(SimpleTestCase):
 
 
 class ValidarGarantesPrestamoTests(SimpleTestCase):
+    def test_cero_garantes_es_valido(self):
+        resultado = validar_garantes_prestamo(
+            socio_deudor_id=1,
+            monto_solicitado=Decimal("1000"),
+            garantes=[],
+        )
+
+        self.assertEqual(resultado["capacidad_total"], Decimal("0.00"))
+        self.assertEqual(resultado["capacidad_requerida"], Decimal("500.00"))
+        self.assertEqual(resultado["porcentaje_requerido"], Decimal("0.50"))
+        self.assertEqual(resultado["garantes_normalizados"], [])
+
     def test_un_garante_suficiente_es_valido(self):
         resultado = validar_garantes_prestamo(
             socio_deudor_id=1,
@@ -669,6 +794,22 @@ class ValidarGarantesPrestamoTests(SimpleTestCase):
 
         self.assertEqual(resultado["capacidad_total"], Decimal("500"))
         self.assertEqual(resultado["capacidad_requerida"], Decimal("500.00"))
+        self.assertEqual(
+            resultado["garantes_normalizados"],
+            [{"idsocio": 2, "capacidad": Decimal("500")}],
+        )
+
+    def test_un_garante_insuficiente_rechaza_prestamo(self):
+        with self.assertRaisesMessage(
+            PrestamoGarantiaError,
+            "La capacidad total de los garantes debe cubrir al menos el 50% "
+            "del monto solicitado.",
+        ):
+            validar_garantes_prestamo(
+                socio_deudor_id=1,
+                monto_solicitado=Decimal("1000"),
+                garantes=[{"idsocio": 2, "capacidad": Decimal("499.99")}],
+            )
 
     def test_dos_garantes_suman_capacidad(self):
         resultado = validar_garantes_prestamo(
@@ -691,18 +832,10 @@ class ValidarGarantesPrestamoTests(SimpleTestCase):
             validar_garantes_prestamo(
                 socio_deudor_id=1,
                 monto_solicitado=Decimal("1000"),
-                garantes=[{"idsocio": 2, "capacidad": Decimal("499.99")}],
-            )
-
-    def test_cero_garantes_rechaza_prestamo(self):
-        with self.assertRaisesMessage(
-            PrestamoGarantiaError,
-            "Debe seleccionar al menos un garante.",
-        ):
-            validar_garantes_prestamo(
-                socio_deudor_id=1,
-                monto_solicitado=Decimal("1000"),
-                garantes=[],
+                garantes=[
+                    {"idsocio": 2, "capacidad": Decimal("250.00")},
+                    {"idsocio": 3, "capacidad": Decimal("249.99")},
+                ],
             )
 
     def test_mas_de_dos_garantes_rechaza_prestamo(self):
@@ -728,7 +861,10 @@ class ValidarGarantesPrestamoTests(SimpleTestCase):
             validar_garantes_prestamo(
                 socio_deudor_id=1,
                 monto_solicitado=Decimal("1000"),
-                garantes=[{"idsocio": 1, "capacidad": Decimal("500")}],
+                garantes=[
+                    {"idsocio": 1, "capacidad": Decimal("500")},
+                    {"idsocio": 2, "capacidad": Decimal("500")},
+                ],
             )
 
     def test_garante_repetido_rechaza_prestamo(self):
@@ -753,7 +889,10 @@ class ValidarGarantesPrestamoTests(SimpleTestCase):
             validar_garantes_prestamo(
                 socio_deudor_id=1,
                 monto_solicitado=Decimal("1000"),
-                garantes=[{"capacidad": Decimal("500")}],
+                garantes=[
+                    {"capacidad": Decimal("500")},
+                    {"idsocio": 3, "capacidad": Decimal("500")},
+                ],
             )
 
     def test_monto_solicitado_invalido_rechaza_prestamo(self):
@@ -776,7 +915,10 @@ class ValidarGarantesPrestamoTests(SimpleTestCase):
                     validar_garantes_prestamo(
                         socio_deudor_id=1,
                         monto_solicitado=valor,
-                        garantes=[{"idsocio": 2, "capacidad": Decimal("500")}],
+                        garantes=[
+                            {"idsocio": 2, "capacidad": Decimal("250")},
+                            {"idsocio": 3, "capacidad": Decimal("250")},
+                        ],
                     )
 
     def test_capacidad_invalida_rechaza_prestamo(self):
@@ -797,7 +939,10 @@ class ValidarGarantesPrestamoTests(SimpleTestCase):
                     validar_garantes_prestamo(
                         socio_deudor_id=1,
                         monto_solicitado=Decimal("1000"),
-                        garantes=[{"idsocio": 2, "capacidad": valor}],
+                        garantes=[
+                            {"idsocio": 2, "capacidad": valor},
+                            {"idsocio": 3, "capacidad": Decimal("500")},
+                        ],
                     )
 
     def test_capacidad_negativa_se_normaliza_a_cero(self):

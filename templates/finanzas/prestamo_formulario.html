@@ -22,7 +22,7 @@
     {% if form.garante_1 %}
     <hr class="my-4">
     <h2 class="section-subtitle">Garantes del préstamo</h2>
-    <p class="form-text">Los garantes deben cubrir en conjunto al menos el 50% del monto solicitado.</p>
+    <p class="form-text">El préstamo puede registrarse sin garantes o con hasta dos garantes. Si registra garantes, la capacidad total de ellos debe cubrir al menos el 50% del monto solicitado.</p>
     <div class="row g-3">
         <div class="col-md-6">{% include "includes/field.html" with field=form.garante_1 %}</div>
         <div class="col-md-6">{% include "includes/field.html" with field=form.garante_2 %}</div>

@@ -77,9 +77,11 @@ class PrestamoConGarantesForm(PrestamoForm):
             "idsocio",
         ),
         label="Garante 1",
+        required=False,
         help_text=(
-            "Los garantes deben cubrir en conjunto al menos el 50% del monto "
-            "solicitado."
+            "El préstamo puede registrarse sin garantes o con hasta dos "
+            "garantes. Si registra garantes, la capacidad total de ellos debe "
+            "cubrir al menos el 50% del monto solicitado."
         ),
     )
     garante_2 = forms.ModelChoiceField(
@@ -136,7 +138,10 @@ class PrestamoConGarantesForm(PrestamoForm):
         }
 
     def garantes_seleccionados(self):
-        garantes = [self.cleaned_data["garante_1"]]
+        garantes = []
+        garante_1 = self.cleaned_data.get("garante_1")
+        if garante_1:
+            garantes.append(garante_1)
         garante_2 = self.cleaned_data.get("garante_2")
         if garante_2:
             garantes.append(garante_2)
