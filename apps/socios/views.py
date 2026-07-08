@@ -1,6 +1,8 @@
+from decimal import Decimal
+
 from django.contrib import messages
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
@@ -68,6 +70,12 @@ def detalle(request, idsocio):
     socio = get_object_or_404(Socio.objects.select_related("idtiposocio"), idsocio=idsocio)
     cuentas = Cuentabancaria.objects.filter(idsocio=socio).order_by("nombrebanco")
     ahorros = Ahorro.objects.filter(idsocio=socio).select_related("idbingo").order_by("-fechaahorro")[:10]
+    total_ahorro_activo = (
+        Ahorro.objects.filter(idsocio=socio, estado__iexact="Activo")
+        .aggregate(total=Sum("montoahorro"))
+        .get("total")
+        or Decimal("0")
+    )
     aportes = (
         Aportesemanal.objects.filter(idsocio=socio)
         .select_related("idregalo", "idpartida")
@@ -82,6 +90,7 @@ def detalle(request, idsocio):
             "socio": socio,
             "cuentas": cuentas,
             "ahorros": ahorros,
+            "total_ahorro_activo": total_ahorro_activo,
             "aportes": aportes,
             "prestamos": prestamos,
         },
