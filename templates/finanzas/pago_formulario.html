@@ -3,7 +3,7 @@
 {% block title %}SIAB | {{ titulo }}{% endblock %}
 
 {% block content %}
-<section class="page-header"><div><p class="page-kicker">Pagos</p><h1>{{ titulo }}</h1><p>Préstamo de {{ prestamo.idsocio }}</p></div></section>
+<section class="page-header"><div><p class="page-kicker">Pagos de préstamo</p><h1>{{ titulo }}</h1><p>Préstamo de {{ prestamo.idsocio }} · Saldo pendiente ${{ prestamo.saldopendiente|floatformat:2 }}</p></div></section>
 <form class="content-panel" method="post" novalidate>
     {% csrf_token %}
     {% include "includes/form_errors.html" with form=form %}

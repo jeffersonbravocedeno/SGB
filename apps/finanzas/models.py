@@ -75,6 +75,42 @@ class Pago(models.Model):
         verbose_name_plural = 'Pagos'
 
 
+class PagoPrestamo(models.Model):
+    ESTADO_REGISTRADO = 'Registrado'
+    ESTADO_ANULADO = 'Anulado'
+    ESTADO_CHOICES = (
+        (ESTADO_REGISTRADO, 'Registrado'),
+        (ESTADO_ANULADO, 'Anulado'),
+    )
+
+    idpagoprestamo = models.AutoField(
+        primary_key=True,
+        db_column="idpagoprestamo",
+    )
+    idprestamo = models.ForeignKey('finanzas.Prestamo', models.DO_NOTHING, db_column='idprestamo')
+    idmetodopago = models.ForeignKey(
+        'configuracion.Metodopago',
+        models.DO_NOTHING,
+        db_column='idmetodopago',
+        blank=True,
+        null=True,
+    )
+    fechapago = models.DateTimeField()
+    montopagado = models.DecimalField(max_digits=12, decimal_places=2)
+    numeroreferencia = models.CharField(max_length=80, blank=True, null=True)
+    observacion = models.CharField(max_length=255, blank=True, null=True)
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default=ESTADO_REGISTRADO)
+
+    def __str__(self):
+        return f'Pago de prestamo {self.idpagoprestamo}'
+
+    class Meta:
+        managed = False
+        db_table = 'pago_prestamo'
+        verbose_name = 'Pago de prestamo'
+        verbose_name_plural = 'Pagos de prestamos'
+
+
 class Ahorro(models.Model):
     idahorro = models.IntegerField(primary_key=True)
     idsocio = models.ForeignKey('socios.Socio', models.DO_NOTHING, db_column='idsocio')

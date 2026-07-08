@@ -1,10 +1,10 @@
 from django import forms
 
-from apps.common.forms import FriendlyModelForm, validate_unique_field
+from apps.common.forms import FriendlyModelForm
 from apps.configuracion.models import Metodopago
 from apps.socios.models import Socio
 
-from .models import Ahorro, Aportesemanal, Pago, Prestamo
+from .models import Ahorro, Aportesemanal, PagoPrestamo, Prestamo
 
 
 class PrestamoForm(FriendlyModelForm):
@@ -148,62 +148,44 @@ class PrestamoConGarantesForm(PrestamoForm):
         return garantes
 
 
-class PagoForm(FriendlyModelForm):
-    datetime_fields = ("fechapago",)
-    state_fields = ("estadopago",)
-    state_choices = {
-        "estadopago": (
-            ("Pendiente", "Pendiente"),
-            ("Validado", "Validado"),
-            ("Rechazado", "Rechazado"),
-        )
-    }
+class PagoPrestamoForm(FriendlyModelForm):
     non_negative_fields = ("montopagado",)
-    integrity_error_map = (
-        (
-            "numeroreferencia",
-            ("numeroreferencia", "pago_numeroreferencia", "unique"),
-            "Este número de referencia ya existe.",
-        ),
-    )
+    integrity_error_map = ()
 
     class Meta:
-        model = Pago
+        model = PagoPrestamo
         fields = (
             "idmetodopago",
             "montopagado",
             "numeroreferencia",
-            "fechapago",
-            "comprobantepago",
-            "estadopago",
+            "observacion",
         )
         labels = {
             "idmetodopago": "Método de pago",
             "montopagado": "Monto pagado",
             "numeroreferencia": "Número de referencia",
-            "fechapago": "Fecha de pago",
-            "comprobantepago": "Comprobante de pago",
-            "estadopago": "Estado",
-        }
-        error_messages = {
-            "numeroreferencia": {
-                "unique": "Este número de referencia ya existe.",
-            }
+            "observacion": "Observación",
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, metodo_pago_queryset=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["idmetodopago"].queryset = Metodopago.objects.order_by("nombremetodopago")
+        if metodo_pago_queryset is None:
+            metodo_pago_queryset = Metodopago.objects.order_by("nombremetodopago")
+        self.fields["idmetodopago"].queryset = metodo_pago_queryset
+
+    def clean_montopagado(self):
+        value = self.cleaned_data.get("montopagado")
+        if value is None or value <= 0:
+            raise forms.ValidationError("El monto del pago debe ser mayor que cero.")
+        return value
 
     def clean_numeroreferencia(self):
         value = self.cleaned_data.get("numeroreferencia")
-        value = value.strip() if value else None
-        self.cleaned_data["numeroreferencia"] = value
-        return validate_unique_field(
-            self,
-            "numeroreferencia",
-            "Este número de referencia ya existe.",
-        )
+        return value.strip() if value else ""
+
+    def clean_observacion(self):
+        value = self.cleaned_data.get("observacion")
+        return value.strip() if value else ""
 
 
 class AhorroForm(FriendlyModelForm):

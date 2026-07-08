@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from apps.socios.models import Socio
 
-from .models import Ahorro, Prestamo, PrestamoGarante
+from .models import Ahorro, PagoPrestamo, Prestamo, PrestamoGarante
 
 
 PORCENTAJE_GARANTIA_PRESTAMO = Decimal("0.50")
@@ -41,6 +41,10 @@ PRESTAMO_CAMPOS_OBLIGATORIOS = {
 
 
 class PrestamoGarantiaError(ValueError):
+    pass
+
+
+class PrestamoPagoError(ValueError):
     pass
 
 
@@ -105,6 +109,60 @@ def _normalizar_capacidad(valor):
     if capacidad < 0:
         return Decimal("0")
     return capacidad
+
+
+def _normalizar_monto_pago(valor):
+    try:
+        monto = _decimal_seguro(valor)
+    except (InvalidOperation, ValueError):
+        raise PrestamoPagoError(
+            "El monto del pago debe ser mayor que cero."
+        ) from None
+    if monto <= 0:
+        raise PrestamoPagoError("El monto del pago debe ser mayor que cero.")
+    return monto
+
+
+def _normalizar_saldo_pendiente_pago(valor):
+    try:
+        saldo = _decimal_seguro(valor)
+    except (InvalidOperation, ValueError):
+        raise PrestamoPagoError("El préstamo no tiene saldo pendiente.") from None
+    if saldo <= 0:
+        raise PrestamoPagoError("El préstamo no tiene saldo pendiente.")
+    return saldo
+
+
+def _idprestamo_desde_valor(valor):
+    if hasattr(valor, "idprestamo"):
+        valor = valor.idprestamo
+    elif hasattr(valor, "pk") and valor.pk is not None:
+        valor = valor.pk
+
+    if valor is None or isinstance(valor, bool):
+        raise PrestamoPagoError("Debe seleccionar un préstamo válido.")
+    if isinstance(valor, str):
+        valor = valor.strip()
+        if not valor:
+            raise PrestamoPagoError("Debe seleccionar un préstamo válido.")
+    try:
+        return int(valor)
+    except (TypeError, ValueError, InvalidOperation):
+        raise PrestamoPagoError("Debe seleccionar un préstamo válido.") from None
+
+
+def _texto_limpio_pago(valor):
+    if valor is None:
+        return ""
+    return str(valor).strip()
+
+
+def _estado_prestamo_es_final(estado):
+    estado_normalizado = str(estado or "").strip().lower()
+    return any(
+        estado_normalizado == estado_final.lower()
+        for estado_final in ESTADOS_PRESTAMO_SIN_SALDO_GARANTE
+    )
 
 
 def _es_entrada_vacia(valor):
@@ -260,6 +318,64 @@ def crear_prestamo_con_garantes(*, datos_prestamo, garantes, usuario=None):
             )
 
     return prestamo
+
+
+def registrar_pago_prestamo(
+    prestamo,
+    *,
+    monto_pagado,
+    metodo_pago=None,
+    numero_referencia="",
+    observacion="",
+    fecha_pago=None,
+):
+    monto_normalizado = _normalizar_monto_pago(monto_pagado)
+    prestamo_id = _idprestamo_desde_valor(prestamo)
+    referencia_limpia = _texto_limpio_pago(numero_referencia)
+    observacion_limpia = _texto_limpio_pago(observacion)
+    fecha_pago_normalizada = fecha_pago or timezone.now()
+
+    with transaction.atomic():
+        try:
+            prestamo_bloqueado = (
+                Prestamo.objects.select_for_update().get(idprestamo=prestamo_id)
+            )
+        except Prestamo.DoesNotExist:
+            raise PrestamoPagoError("Debe seleccionar un préstamo válido.") from None
+
+        if _estado_prestamo_es_final(prestamo_bloqueado.estadoprestamo):
+            raise PrestamoPagoError(
+                "No se pueden registrar pagos para un préstamo cerrado o liquidado."
+            )
+
+        saldo_pendiente = _normalizar_saldo_pendiente_pago(
+            prestamo_bloqueado.saldopendiente
+        )
+        if monto_normalizado > saldo_pendiente:
+            raise PrestamoPagoError(
+                "El monto del pago no puede superar el saldo pendiente."
+            )
+
+        pago = PagoPrestamo.objects.create(
+            idprestamo=prestamo_bloqueado,
+            idmetodopago=metodo_pago,
+            fechapago=fecha_pago_normalizada,
+            montopagado=monto_normalizado,
+            numeroreferencia=referencia_limpia,
+            observacion=observacion_limpia,
+            estado=PagoPrestamo.ESTADO_REGISTRADO,
+        )
+
+        nuevo_saldo = saldo_pendiente - monto_normalizado
+        prestamo_bloqueado.saldopendiente = nuevo_saldo
+        update_fields = ["saldopendiente"]
+        if nuevo_saldo == Decimal("0"):
+            prestamo_bloqueado.saldopendiente = Decimal("0")
+            prestamo_bloqueado.estadoprestamo = "Liquidado"
+            update_fields.append("estadoprestamo")
+        prestamo_bloqueado.save(update_fields=update_fields)
+
+    return pago
 
 
 def validar_garantes_prestamo(*, socio_deudor_id, monto_solicitado, garantes):
