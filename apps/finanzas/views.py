@@ -10,8 +10,15 @@ from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate, safe_count
 
-from .forms import AhorroForm, AporteSemanalForm, PagoForm, PrestamoForm
-from .models import Ahorro, Aportesemanal, Pago, Prestamo
+from .forms import (
+    AhorroForm,
+    AporteSemanalForm,
+    PagoForm,
+    PrestamoConGarantesForm,
+    PrestamoForm,
+)
+from .models import Ahorro, Aportesemanal, Pago, Prestamo, PrestamoGarante
+from .services import PrestamoGarantiaError, crear_prestamo_con_garantes
 
 
 logger = logging.getLogger(__name__)
@@ -53,26 +60,50 @@ def prestamos_lista(request):
 @admin_required
 def prestamo_nuevo(request):
     if request.method == "POST":
-        form = PrestamoForm(request.POST)
+        form = PrestamoConGarantesForm(request.POST)
         if form.is_valid():
             try:
-                prestamo = save_new_model_form(form)
+                prestamo = crear_prestamo_con_garantes(
+                    datos_prestamo=form.datos_prestamo(),
+                    garantes=form.garantes_seleccionados(),
+                    usuario=request.user,
+                )
+            except PrestamoGarantiaError as exc:
+                mensaje = str(exc)
+                form.add_error(None, mensaje)
+                messages.error(request, mensaje)
             except IntegrityError as exc:
                 form.add_integrity_error(exc)
             else:
-                messages.success(request, "Préstamo registrado correctamente.")
+                messages.success(
+                    request,
+                    "Préstamo registrado correctamente con sus garantes.",
+                )
                 return redirect("finanzas:prestamo_detalle", idprestamo=prestamo.idprestamo)
     else:
         today = timezone.localdate()
-        form = PrestamoForm(initial={"fechasolicitud": today, "estadoprestamo": "Solicitado"})
+        form = PrestamoConGarantesForm(
+            initial={"fechasolicitud": today, "estadoprestamo": "Solicitado"}
+        )
     return render(request, "finanzas/prestamo_formulario.html", {"form": form, "titulo": "Nuevo préstamo"})
 
 
 @admin_required
 def prestamo_detalle(request, idprestamo):
     prestamo = get_object_or_404(Prestamo.objects.select_related("idsocio"), idprestamo=idprestamo)
-    pagos = Pago.objects.filter(idprestamo=prestamo).select_related("idmetodopago").order_by("-fechapago")
-    return render(request, "finanzas/prestamo_detalle.html", {"prestamo": prestamo, "pagos": pagos})
+    garantes = (
+        PrestamoGarante.objects.filter(
+            idprestamo=prestamo,
+            estado=PrestamoGarante.ESTADO_ACTIVO,
+        )
+        .select_related("idgarante")
+        .order_by("idprestamogarante")
+    )
+    return render(
+        request,
+        "finanzas/prestamo_detalle.html",
+        {"prestamo": prestamo, "garantes": garantes},
+    )
 
 
 @admin_required

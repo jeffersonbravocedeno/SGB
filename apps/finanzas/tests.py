@@ -4,12 +4,18 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from django.contrib.auth.models import User
+from django.contrib.messages.storage.fallback import FallbackStorage
 from django.db import models as django_models
-from django.test import SimpleTestCase
+from django.http import HttpResponse
+from django.template.loader import render_to_string
+from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from apps.socios.models import Socio
 
 from . import services as finanzas_services
+from . import views as finanzas_views
+from .forms import PrestamoConGarantesForm
 from .models import Prestamo, PrestamoGarante
 from .services import (
     PrestamoGarantiaError,
@@ -18,6 +24,38 @@ from .services import (
     crear_prestamo_con_garantes,
     validar_garantes_prestamo,
 )
+
+
+class FakeSocioQuerySet:
+    model = Socio
+
+    def __init__(self, socios):
+        self.socios = list(socios)
+
+    def all(self):
+        return self
+
+    def order_by(self, *fields):
+        return self
+
+    def get(self, **kwargs):
+        valor = next(iter(kwargs.values()))
+        for socio in self.socios:
+            if str(socio.idsocio) == str(valor):
+                return socio
+        raise Socio.DoesNotExist
+
+
+def socio_stub(idsocio, nombre=None):
+    return Socio(
+        idsocio=idsocio,
+        primernombresocio=nombre or f"Socio {idsocio}",
+        segundonombresocio="",
+        primerapellidosocio="Prueba",
+        segundoapellidosocio="",
+        cisocio=str(idsocio).zfill(10),
+        estadosocio="Activo",
+    )
 
 
 class PrestamoGaranteModelMetadataTests(SimpleTestCase):
@@ -91,6 +129,259 @@ class PrestamoGaranteModelMetadataTests(SimpleTestCase):
 
         self.assertEqual(field.max_digits, 12)
         self.assertEqual(field.decimal_places, 2)
+
+
+class PrestamoConGarantesFormTests(SimpleTestCase):
+    def setUp(self):
+        self.socios = [
+            socio_stub(1, "Deudor"),
+            socio_stub(2, "Garante Uno"),
+            socio_stub(3, "Garante Dos"),
+        ]
+        self.socio_queryset = FakeSocioQuerySet(self.socios)
+
+    def _datos_formulario(self, **overrides):
+        datos = {
+            "idsocio": "1",
+            "montoprestamosolicitado": "1000.00",
+            "tasainteres": "5.00",
+            "montototalpagar": "1050.00",
+            "saldopendiente": "1050.00",
+            "numerocuotas": "10",
+            "fechasolicitud": "2026-07-08",
+            "fechavencimiento": "2026-12-08",
+            "estadoprestamo": "Solicitado",
+            "garante_1": "2",
+            "garante_2": "",
+        }
+        datos.update(overrides)
+        return datos
+
+    def _form(self, **overrides):
+        return PrestamoConGarantesForm(
+            data=self._datos_formulario(**overrides),
+            socio_queryset=self.socio_queryset,
+        )
+
+    def _is_valid(self, form):
+        with patch.object(Prestamo, "full_clean"):
+            return form.is_valid()
+
+    def test_formulario_exige_garante_1(self):
+        form = self._form(garante_1="")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("garante_1", form.errors)
+
+    def test_formulario_permite_un_garante(self):
+        form = self._form(garante_2="")
+
+        self.assertTrue(self._is_valid(form), form.errors.as_data())
+        self.assertEqual(
+            [socio.idsocio for socio in form.garantes_seleccionados()],
+            [2],
+        )
+
+    def test_formulario_permite_dos_garantes(self):
+        form = self._form(garante_2="3")
+
+        self.assertTrue(self._is_valid(form), form.errors.as_data())
+        self.assertEqual(
+            [socio.idsocio for socio in form.garantes_seleccionados()],
+            [2, 3],
+        )
+
+    def test_formulario_rechaza_garante_igual_a_socio_deudor(self):
+        form = self._form(garante_1="1")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("garante_1", form.errors)
+        self.assertIn(
+            "El garante no puede ser el mismo socio deudor.",
+            form.errors["garante_1"],
+        )
+
+    def test_formulario_rechaza_garante_repetido(self):
+        form = self._form(garante_1="2", garante_2="2")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("garante_2", form.errors)
+        self.assertIn("No puede repetir el mismo garante.", form.errors["garante_2"])
+
+
+class PrestamoConGarantesViewTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.usuario = User(username="admin", is_staff=True)
+
+    def _request_post(self):
+        request = self.factory.post("/finanzas/prestamos/nuevo/", data={"x": "1"})
+        request.user = self.usuario
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def _request_get(self):
+        request = self.factory.get("/finanzas/prestamos/10/")
+        request.user = self.usuario
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def test_prestamo_nuevo_llama_servicio_con_formulario_valido(self):
+        request = self._request_post()
+        datos_prestamo = {
+            "idsocio": socio_stub(1, "Deudor"),
+            "montoprestamosolicitado": Decimal("1000.00"),
+            "tasainteres": Decimal("5.00"),
+            "montototalpagar": Decimal("1050.00"),
+            "saldopendiente": Decimal("1050.00"),
+            "numerocuotas": 10,
+            "fechasolicitud": date(2026, 7, 8),
+            "fechavencimiento": date(2026, 12, 8),
+            "estadoprestamo": "Solicitado",
+        }
+        garantes = [socio_stub(2, "Garante Uno"), socio_stub(3, "Garante Dos")]
+        prestamo = Prestamo(idprestamo=99)
+        form = MagicMock()
+        form.is_valid.return_value = True
+        form.datos_prestamo.return_value = datos_prestamo
+        form.garantes_seleccionados.return_value = garantes
+
+        with (
+            patch(
+                "apps.finanzas.views.PrestamoConGarantesForm",
+                return_value=form,
+            ) as form_class,
+            patch(
+                "apps.finanzas.views.crear_prestamo_con_garantes",
+                return_value=prestamo,
+            ) as crear,
+            patch("apps.finanzas.views.save_new_model_form") as save_directo,
+        ):
+            response = finanzas_views.prestamo_nuevo(request)
+
+        form_class.assert_called_once_with(request.POST)
+        crear.assert_called_once_with(
+            datos_prestamo=datos_prestamo,
+            garantes=garantes,
+            usuario=request.user,
+        )
+        save_directo.assert_not_called()
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/finanzas/prestamos/99/", response["Location"])
+
+    def test_prestamo_nuevo_muestra_error_si_servicio_rechaza(self):
+        request = self._request_post()
+        form = MagicMock()
+        form.is_valid.return_value = True
+        form.datos_prestamo.return_value = {"idsocio": socio_stub(1, "Deudor")}
+        form.garantes_seleccionados.return_value = [socio_stub(2, "Garante")]
+        errores_no_asociados = []
+
+        def add_error(field, error):
+            if field is None:
+                errores_no_asociados.append(error)
+
+        form.add_error.side_effect = add_error
+
+        def render_spy(_request, _template, context):
+            contenido = "\n".join(errores_no_asociados)
+            self.assertIs(context["form"], form)
+            return HttpResponse(contenido)
+
+        with (
+            patch(
+                "apps.finanzas.views.PrestamoConGarantesForm",
+                return_value=form,
+            ),
+            patch(
+                "apps.finanzas.views.crear_prestamo_con_garantes",
+                side_effect=PrestamoGarantiaError(
+                    "La capacidad total de los garantes debe cubrir al menos el 50% del monto solicitado."
+                ),
+            ) as crear,
+            patch("apps.finanzas.views.render", side_effect=render_spy),
+        ):
+            response = finanzas_views.prestamo_nuevo(request)
+
+        crear.assert_called_once()
+        form.add_error.assert_called_once()
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "La capacidad total de los garantes",
+            response.content.decode(),
+        )
+
+    def test_prestamo_detalle_no_consulta_pago_y_carga_garantes_activos(self):
+        request = self._request_get()
+        prestamo = Prestamo(idprestamo=10, idsocio=socio_stub(1, "Deudor"))
+        garantes = [
+            PrestamoGarante(
+                idprestamo=prestamo,
+                idgarante=socio_stub(2, "Garante"),
+                capacidadcalculada=Decimal("500.00"),
+                estado=PrestamoGarante.ESTADO_ACTIVO,
+            )
+        ]
+        garantes_qs = MagicMock()
+        garantes_qs.select_related.return_value.order_by.return_value = garantes
+        contexto = {}
+
+        def render_spy(_request, _template, context):
+            contexto.update(context)
+            return HttpResponse("ok")
+
+        with (
+            patch("apps.finanzas.views.get_object_or_404", return_value=prestamo),
+            patch("apps.finanzas.views.Pago.objects.filter") as pagos_filter,
+            patch(
+                "apps.finanzas.views.PrestamoGarante.objects.filter",
+                return_value=garantes_qs,
+            ) as garantes_filter,
+            patch("apps.finanzas.views.render", side_effect=render_spy),
+        ):
+            response = finanzas_views.prestamo_detalle(request, 10)
+
+        self.assertEqual(response.status_code, 200)
+        garantes_filter.assert_called_once_with(
+            idprestamo=prestamo,
+            estado=PrestamoGarante.ESTADO_ACTIVO,
+        )
+        self.assertEqual(contexto["garantes"], garantes)
+        self.assertNotIn("pagos", contexto)
+        pagos_filter.assert_not_called()
+
+    @override_settings(
+        STORAGES={
+            "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+            "staticfiles": {
+                "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+            },
+        }
+    )
+    def test_template_detalle_renderiza_sin_contexto_de_pagos(self):
+        prestamo = Prestamo(idprestamo=10, idsocio=socio_stub(1, "Deudor"))
+        garantes = [
+            PrestamoGarante(
+                idprestamo=prestamo,
+                idgarante=socio_stub(2, "Garante"),
+                capacidadcalculada=Decimal("500.00"),
+                estado=PrestamoGarante.ESTADO_ACTIVO,
+            )
+        ]
+
+        html = render_to_string(
+            "finanzas/prestamo_detalle.html",
+            {"prestamo": prestamo, "garantes": garantes},
+        )
+
+        self.assertIn("Garantes activos", html)
+        self.assertIn("Garante", html)
+        self.assertIn(
+            "Los pagos de préstamos se normalizarán en la siguiente fase.",
+            html,
+        )
 
 
 class ServiciosGarantesPrestamoTests(SimpleTestCase):
