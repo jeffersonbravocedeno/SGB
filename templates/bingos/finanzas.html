@@ -196,8 +196,35 @@
     </div>
 </section>
 
+{% if not cierre_esta_cerrado %}
+<section class="content-panel mb-3">
+    <h2 class="section-subtitle">Registrar costo de premio material</h2>
+    <form method="post" action="{% url 'bingos:bingo_finanzas_costo_registrar' bingo.idbingo %}" novalidate>
+        {% csrf_token %}
+        {% include "includes/form_errors.html" with form=costo_form %}
+        <div class="alert alert-info" role="note">
+            Un costo de $0,00 requiere una observación que indique que el premio fue donado.
+        </div>
+        <div class="row g-3">
+            <div class="col-md-6">{% include "includes/field.html" with field=costo_form.partida %}</div>
+            <div class="col-md-6">{% include "includes/field.html" with field=costo_form.descripcion_premio %}</div>
+            <div class="col-md-4">{% include "includes/field.html" with field=costo_form.monto %}</div>
+            <div class="col-md-8">{% include "includes/field.html" with field=costo_form.observacion %}</div>
+        </div>
+        <div class="form-actions">
+            <button class="btn btn-primary" type="submit">Registrar costo material</button>
+        </div>
+    </form>
+</section>
+{% endif %}
+
 <section class="content-panel mb-3">
     <h2 class="section-subtitle">Costos de premios materiales</h2>
+    {% if cierre_esta_cerrado %}
+    <div class="alert alert-info" role="note">
+        El cierre financiero está cerrado. Los costos de premios se muestran solo para consulta.
+    </div>
+    {% endif %}
     <div class="table-responsive">
         <table class="table modern-table align-middle">
             <thead>
@@ -209,6 +236,7 @@
                     <th>Observación</th>
                     <th>Registró</th>
                     <th>Motivo de anulación</th>
+                    <th>Acciones</th>
                 </tr>
             </thead>
             <tbody>
@@ -227,9 +255,23 @@
                     <td>{{ item.costo.observacion|default:"-" }}</td>
                     <td>{{ item.costo.idusuarioregistro|default:"-" }}</td>
                     <td>{{ item.costo.motivoanulacion|default:"-" }}</td>
+                    <td>
+                        {% if not cierre_esta_cerrado and item.costo.estado == "Registrado" %}
+                        <form method="post" action="{% url 'bingos:bingo_finanzas_costo_anular' bingo.idbingo item.costo.idbingopremiomaterialcosto %}" novalidate>
+                            {% csrf_token %}
+                            <label class="form-label" for="id_motivo_costo_{{ item.costo.idbingopremiomaterialcosto }}">{{ motivo_anulacion_form.motivo.label }}</label>
+                            <textarea class="form-control form-control-sm" id="id_motivo_costo_{{ item.costo.idbingopremiomaterialcosto }}" name="{{ motivo_anulacion_form.motivo.html_name }}" rows="2" maxlength="{{ motivo_anulacion_form.motivo.field.max_length }}" required></textarea>
+                            <button class="btn btn-outline-danger btn-sm mt-2" type="submit">Anular</button>
+                        </form>
+                        {% elif item.costo.estado == "Anulado" %}
+                        <span class="text-muted">Costo anulado</span>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
                 </tr>
                 {% empty %}
-                <tr><td colspan="7" class="text-muted">No hay costos de premios materiales registrados.</td></tr>
+                <tr><td colspan="8" class="text-muted">No hay costos de premios materiales registrados.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

@@ -33,6 +33,7 @@ from apps.jugadores.models import Jugador
 from .forms import (
     AccesoCartonPublicoForm,
     CompraCartonJugadorForm,
+    CostoPremioMaterialBingoForm,
     GenerarAsignarCartonForm,
     GenerarCartonBingoForm,
     GastoOperativoBingoForm,
@@ -140,6 +141,7 @@ from .services import (
     preparar_resumen_patron_ganador,
     preparar_resumen_partida_publica,
     puede_asignar_cartones,
+    registrar_costo_premio_material_bingo,
     registrar_gasto_operativo_bingo,
     total_casillas_patron_ganador,
     serializar_bolas_cantadas,
@@ -160,6 +162,8 @@ from .views import (
     bingo_carton_nuevo,
     bingo_detalle,
     bingo_finanzas,
+    bingo_finanzas_costo_anular,
+    bingo_finanzas_costo_registrar,
     bingo_finanzas_gasto_anular,
     bingo_finanzas_gasto_registrar,
     carton_publico,
@@ -1461,6 +1465,22 @@ class GastoOperativoBingoFormTests(SimpleTestCase):
         self.assertEqual(list(form.fields), ["motivo"])
         self.assertFalse(form.is_valid())
         self.assertIn("motivo", form.errors)
+
+    def test_formulario_costo_solo_expone_campos_permitidos(self):
+        form = CostoPremioMaterialBingoForm()
+
+        self.assertEqual(
+            list(form.fields),
+            ["partida", "descripcion_premio", "monto", "observacion"],
+        )
+        for campo_no_permitido in (
+            "idbingo",
+            "idusuarioregistro",
+            "estado",
+            "cierre",
+            "motivoanulacion",
+        ):
+            self.assertNotIn(campo_no_permitido, form.fields)
 
 
 class RutaHeredadaCartonTests(SimpleTestCase):
@@ -7138,6 +7158,11 @@ class ReportesHibridosTests(SimpleTestCase):
 
 
 class _CartonesConsultaQuerySet(list):
+    _prefetch_related_lookups = ()
+
+    def all(self):
+        return self
+
     def select_related(self, *fields):
         return self
 
@@ -7149,6 +7174,9 @@ class _CartonesConsultaQuerySet(list):
 
     def annotate(self, *args, **kwargs):
         return self
+
+    def iterator(self):
+        return iter(self)
 
     def count(self):
         return len(self)
@@ -8797,7 +8825,13 @@ class BingoFinanzasVistaTests(SimpleTestCase):
         self.assertContains(response, "Canasta duplicada")
         self.assertContains(response, "Costo duplicado")
         self.assertContains(response, "Ronda material")
-        partidas_filter.assert_called_once_with(idbingo=self.bingo)
+        self.assertEqual(partidas_filter.call_count, 2)
+        partidas_filter.assert_any_call(idbingo=self.bingo)
+        partidas_filter.assert_any_call(
+            idbingo=self.bingo,
+            premiomaterial__isnull=False,
+            premiomaterial__gt="",
+        )
         gastos_filter.assert_called_once_with(idbingo=self.bingo)
         costos_filter.assert_called_once_with(idbingo=self.bingo)
 
@@ -8985,6 +9019,10 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
             "bingos:bingo_finanzas_gasto_registrar",
             kwargs={"idbingo": self.bingo.pk},
         )
+        self.url_costo_registrar = reverse(
+            "bingos:bingo_finanzas_costo_registrar",
+            kwargs={"idbingo": self.bingo.pk},
+        )
 
     def _crear_bingo(self, pk, titulo):
         return Bingo.objects.create(
@@ -9004,6 +9042,45 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
             self.admin,
             concepto,
             monto,
+        )
+
+    def _crear_partida(
+        self,
+        pk=1700,
+        bingo=None,
+        premio_material="Canasta familiar",
+    ):
+        return Partidabingo.objects.create(
+            idpartidabingo=pk,
+            idbingo=bingo or self.bingo,
+            nombreronda=f"Ronda {pk}",
+            valorefectivo=Decimal("0.00"),
+            premiomaterial=premio_material,
+            estadopartida=ESTADO_PARTIDA_FINALIZADA,
+            patronganador="carton_lleno",
+            bolascantadas="[]",
+            ultimabola=0,
+            haydesempate=False,
+            horainicio=self.ahora,
+            horafin=self.ahora,
+        )
+
+    def _crear_costo(
+        self,
+        partida=None,
+        monto=Decimal("12.00"),
+        observacion="Compra local",
+        bingo=None,
+    ):
+        bingo = bingo or self.bingo
+        partida = partida or self._crear_partida()
+        return registrar_costo_premio_material_bingo(
+            bingo,
+            partida,
+            self.admin,
+            partida.premiomaterial,
+            monto,
+            observacion,
         )
 
     def _crear_cierre_cerrado(self, bingo=None):
@@ -9038,6 +9115,15 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
             },
         )
 
+    def _url_anular_costo(self, costo, bingo=None):
+        return reverse(
+            "bingos:bingo_finanzas_costo_anular",
+            kwargs={
+                "idbingo": (bingo or self.bingo).pk,
+                "idcosto": costo.pk,
+            },
+        )
+
     def test_administrador_puede_ver_formulario_de_gasto_en_bingo_abierto(self):
         self.client.force_login(self.admin)
 
@@ -9049,6 +9135,47 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
         self.assertContains(response, "Cierre financiero abierto")
         self.assertIsInstance(response.context["gasto_form"], GastoOperativoBingoForm)
         self.assertFalse(response.context["cierre_esta_cerrado"])
+
+    def test_administrador_puede_ver_formulario_de_costo_en_bingo_abierto(self):
+        self._crear_partida(pk=1701)
+        self.client.force_login(self.admin)
+
+        response = self.client.get(self.url_panel)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Registrar costo de premio material")
+        self.assertContains(response, "Registrar costo material")
+        self.assertContains(
+            response,
+            "Un costo de $0,00 requiere una observación que indique que el premio fue donado.",
+        )
+        self.assertIsInstance(
+            response.context["costo_form"],
+            CostoPremioMaterialBingoForm,
+        )
+        self.assertFalse(response.context["cierre_esta_cerrado"])
+
+    def test_selector_de_partidas_de_costo_limita_bingo_y_premio_material(self):
+        partida_valida = self._crear_partida(
+            pk=1701,
+            premio_material="Canasta familiar",
+        )
+        partida_sin_material = self._crear_partida(pk=1702, premio_material="")
+        otro_bingo = self._crear_bingo(701, "Bingo selector ajeno")
+        partida_otro_bingo = self._crear_partida(
+            pk=1703,
+            bingo=otro_bingo,
+            premio_material="Bono ajeno",
+        )
+        self.client.force_login(self.admin)
+
+        response = self.client.get(self.url_panel)
+        queryset = response.context["costo_form"].fields["partida"].queryset
+
+        self.assertIn(partida_valida, list(queryset))
+        self.assertNotIn(partida_sin_material, list(queryset))
+        self.assertNotIn(partida_otro_bingo, list(queryset))
+        self.assertContains(response, "Ronda 1701 - Canasta familiar")
 
     def test_usuario_no_administrativo_no_puede_acceder_a_rutas_nuevas(self):
         gasto = self._crear_gasto()
@@ -9074,6 +9201,31 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
         gasto.refresh_from_db()
         self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
 
+    def test_usuario_no_administrativo_no_puede_acceder_a_rutas_de_costos(self):
+        partida = self._crear_partida(pk=1701)
+        costo = self._crear_costo(partida=partida)
+        self.client.force_login(self.no_admin)
+
+        response_registrar = self.client.post(
+            self.url_costo_registrar,
+            {
+                "partida": str(partida.pk),
+                "descripcion_premio": "Canasta familiar",
+                "monto": "9.00",
+                "observacion": "Compra local",
+            },
+        )
+        response_anular = self.client.post(
+            self._url_anular_costo(costo),
+            {"motivo": "No autorizado"},
+        )
+
+        self.assertEqual(response_registrar.status_code, 403)
+        self.assertEqual(response_anular.status_code, 403)
+        self.assertEqual(BingoPremioMaterialCosto.objects.count(), 1)
+        costo.refresh_from_db()
+        self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+
     def test_post_valido_de_registro_crea_gasto_y_muestra_exito(self):
         self.client.force_login(self.admin)
 
@@ -9097,6 +9249,133 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
         self.assertEqual(gasto.observacion, "Consola principal")
         self.assertContains(response, "Gasto operativo registrado correctamente.")
         self.assertContains(response, "Sonido local")
+
+    def test_post_valido_de_costo_crea_registrado_y_muestra_exito(self):
+        partida = self._crear_partida(pk=1701)
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self.url_costo_registrar,
+            {
+                "partida": str(partida.pk),
+                "descripcion_premio": "  Canasta familiar  ",
+                "monto": "18.50",
+                "observacion": "  Compra local  ",
+            },
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertEqual(BingoPremioMaterialCosto.objects.count(), 1)
+        costo = BingoPremioMaterialCosto.objects.get()
+        self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+        self.assertEqual(costo.idbingo, self.bingo)
+        self.assertEqual(costo.idpartidabingo, partida.pk)
+        self.assertEqual(costo.idusuarioregistro, self.admin)
+        self.assertEqual(costo.descripcionpremio, "Canasta familiar")
+        self.assertEqual(costo.monto, Decimal("18.50"))
+        self.assertEqual(costo.observacion, "Compra local")
+        self.assertContains(
+            response,
+            "Costo de premio material registrado correctamente.",
+        )
+        self.assertContains(response, "Canasta familiar")
+
+    def test_post_costo_cero_con_observacion_se_registra_correctamente(self):
+        partida = self._crear_partida(pk=1701, premio_material="Bono donado")
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self.url_costo_registrar,
+            {
+                "partida": str(partida.pk),
+                "descripcion_premio": "Bono donado",
+                "monto": "0.00",
+                "observacion": "Premio donado por auspiciante",
+            },
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        costo = BingoPremioMaterialCosto.objects.get()
+        self.assertEqual(costo.monto, Decimal("0.00"))
+        self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+        self.assertContains(
+            response,
+            "Costo de premio material registrado correctamente.",
+        )
+
+    def test_post_costo_cero_sin_observacion_muestra_error_de_dominio(self):
+        partida = self._crear_partida(pk=1701, premio_material="Bono donado")
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self.url_costo_registrar,
+            {
+                "partida": str(partida.pk),
+                "descripcion_premio": "Bono donado",
+                "monto": "0.00",
+                "observacion": "",
+            },
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertEqual(BingoPremioMaterialCosto.objects.count(), 0)
+        self.assertContains(
+            response,
+            "Un costo de cero debe incluir una observación que indique la donación.",
+        )
+
+    def test_post_costo_con_partida_de_otro_bingo_no_crea(self):
+        otro_bingo = self._crear_bingo(701, "Bingo costo ajeno")
+        partida_ajena = self._crear_partida(
+            pk=1701,
+            bingo=otro_bingo,
+            premio_material="Bono ajeno",
+        )
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self.url_costo_registrar,
+            {
+                "partida": str(partida_ajena.pk),
+                "descripcion_premio": "Bono ajeno",
+                "monto": "8.00",
+                "observacion": "Compra ajena",
+            },
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertEqual(BingoPremioMaterialCosto.objects.count(), 0)
+        self.assertContains(
+            response,
+            "No se pudo registrar el costo de premio material. Revise los datos ingresados.",
+        )
+
+    def test_segundo_costo_registrado_para_misma_partida_se_bloquea(self):
+        partida = self._crear_partida(pk=1701)
+        self._crear_costo(partida=partida)
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self.url_costo_registrar,
+            {
+                "partida": str(partida.pk),
+                "descripcion_premio": "Canasta familiar",
+                "monto": "20.00",
+                "observacion": "Segundo registro",
+            },
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertEqual(BingoPremioMaterialCosto.objects.count(), 1)
+        self.assertContains(
+            response,
+            "Ya existe un costo de premio material registrado para esta partida.",
+        )
 
     def test_post_invalido_no_crea_gasto_y_muestra_error(self):
         self.client.force_login(self.admin)
@@ -9136,6 +9415,27 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
         self.assertEqual(gasto.motivoanulacion, "Factura duplicada")
         self.assertContains(response, "Gasto operativo anulado correctamente.")
 
+    def test_anulacion_valida_de_costo_conserva_registro_y_motivo(self):
+        partida = self._crear_partida(pk=1701)
+        costo = self._crear_costo(partida=partida)
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self._url_anular_costo(costo),
+            {"motivo": "  Factura duplicada  "},
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertEqual(BingoPremioMaterialCosto.objects.count(), 1)
+        costo.refresh_from_db()
+        self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_ANULADO)
+        self.assertEqual(costo.motivoanulacion, "Factura duplicada")
+        self.assertContains(
+            response,
+            "Costo de premio material anulado correctamente.",
+        )
+
     def test_anulacion_de_gasto_de_otro_bingo_devuelve_404_y_no_modifica(self):
         otro_bingo = self._crear_bingo(701, "Bingo gastos ajeno")
         gasto_ajeno = self._crear_gasto(
@@ -9154,6 +9454,63 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
         gasto_ajeno.refresh_from_db()
         self.assertEqual(gasto_ajeno.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
         self.assertEqual(gasto_ajeno.motivoanulacion, None)
+
+    def test_anulacion_de_costo_de_otro_bingo_devuelve_404_y_no_modifica(self):
+        otro_bingo = self._crear_bingo(701, "Bingo costo ajeno")
+        partida_ajena = self._crear_partida(
+            pk=1701,
+            bingo=otro_bingo,
+            premio_material="Bono ajeno",
+        )
+        costo_ajeno = self._crear_costo(
+            partida=partida_ajena,
+            bingo=otro_bingo,
+        )
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self._url_anular_costo(costo_ajeno, bingo=self.bingo),
+            {"motivo": "No corresponde"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        costo_ajeno.refresh_from_db()
+        self.assertEqual(costo_ajeno.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+        self.assertEqual(costo_ajeno.motivoanulacion, None)
+
+    def test_despues_de_anular_permite_registrar_reemplazo_misma_partida(self):
+        partida = self._crear_partida(pk=1701)
+        costo = self._crear_costo(partida=partida)
+        self.client.force_login(self.admin)
+        self.client.post(
+            self._url_anular_costo(costo),
+            {"motivo": "Factura duplicada"},
+            follow=True,
+        )
+
+        response = self.client.post(
+            self.url_costo_registrar,
+            {
+                "partida": str(partida.pk),
+                "descripcion_premio": "Canasta familiar",
+                "monto": "19.00",
+                "observacion": "Reemplazo",
+            },
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertEqual(BingoPremioMaterialCosto.objects.count(), 2)
+        self.assertEqual(
+            BingoPremioMaterialCosto.objects.filter(
+                estado=BingoPremioMaterialCosto.ESTADO_REGISTRADO,
+            ).count(),
+            1,
+        )
+        self.assertContains(
+            response,
+            "Costo de premio material registrado correctamente.",
+        )
 
     def test_bingo_cerrado_oculta_formularios_y_bloquea_posts(self):
         gasto = self._crear_gasto()
@@ -9197,6 +9554,50 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
             "No se pueden anular gastos porque el cierre financiero está cerrado.",
         )
 
+    def test_bingo_cerrado_oculta_formulario_costos_y_bloquea_posts(self):
+        partida = self._crear_partida(pk=1701)
+        costo = self._crear_costo(partida=partida)
+        self._crear_cierre_cerrado()
+        self.client.force_login(self.admin)
+
+        response_get = self.client.get(self.url_panel)
+        self.assertNotContains(response_get, "Registrar costo de premio material")
+        self.assertNotContains(response_get, "Registrar costo material")
+        self.assertNotContains(response_get, "Anular</button>")
+        self.assertContains(
+            response_get,
+            "El cierre financiero está cerrado. Los costos de premios se muestran solo para consulta.",
+        )
+
+        response_registrar = self.client.post(
+            self.url_costo_registrar,
+            {
+                "partida": str(partida.pk),
+                "descripcion_premio": "Canasta familiar",
+                "monto": "22.00",
+                "observacion": "Compra posterior",
+            },
+            follow=True,
+        )
+        self.assertEqual(BingoPremioMaterialCosto.objects.count(), 1)
+        self.assertContains(
+            response_registrar,
+            "No se pueden registrar costos porque el cierre financiero está cerrado.",
+        )
+
+        response_anular = self.client.post(
+            self._url_anular_costo(costo),
+            {"motivo": "Factura duplicada"},
+            follow=True,
+        )
+        costo.refresh_from_db()
+        self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+        self.assertEqual(costo.motivoanulacion, None)
+        self.assertContains(
+            response_anular,
+            "No se pueden anular costos porque el cierre financiero está cerrado.",
+        )
+
     def test_operacion_impacta_resumen_real(self):
         self.client.force_login(self.admin)
 
@@ -9230,6 +9631,43 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
         self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_ANULADO)
         self.assertEqual(resumen_anulado["gastos_operativos"], Decimal("0.00"))
 
+    def test_operacion_de_costo_impacta_resumen_real(self):
+        partida = self._crear_partida(pk=1701)
+        self.client.force_login(self.admin)
+
+        response_registro = self.client.post(
+            self.url_costo_registrar,
+            {
+                "partida": str(partida.pk),
+                "descripcion_premio": "Canasta familiar",
+                "monto": "15.00",
+                "observacion": "Compra local",
+            },
+            follow=True,
+        )
+        costo = BingoPremioMaterialCosto.objects.get()
+        resumen_registrado = construir_resumen_financiero_real_bingo(self.bingo)
+
+        self.assertContains(response_registro, "Canasta familiar")
+        self.assertEqual(
+            resumen_registrado["costos_premios_materiales"],
+            Decimal("15.00"),
+        )
+
+        self.client.post(
+            self._url_anular_costo(costo),
+            {"motivo": "Registro duplicado"},
+            follow=True,
+        )
+        resumen_anulado = construir_resumen_financiero_real_bingo(self.bingo)
+
+        costo.refresh_from_db()
+        self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_ANULADO)
+        self.assertEqual(
+            resumen_anulado["costos_premios_materiales"],
+            Decimal("0.00"),
+        )
+
     def test_rutas_post_de_gastos_resuelven_vistas(self):
         self.assertIs(
             resolve("/bingos/700/finanzas/gastos/registrar/").func,
@@ -9238,4 +9676,14 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
         self.assertIs(
             resolve("/bingos/700/finanzas/gastos/5/anular/").func,
             bingo_finanzas_gasto_anular,
+        )
+
+    def test_rutas_post_de_costos_resuelven_vistas(self):
+        self.assertIs(
+            resolve("/bingos/700/finanzas/costos/registrar/").func,
+            bingo_finanzas_costo_registrar,
+        )
+        self.assertIs(
+            resolve("/bingos/700/finanzas/costos/5/anular/").func,
+            bingo_finanzas_costo_anular,
         )

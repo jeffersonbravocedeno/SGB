@@ -21,6 +21,7 @@ from .forms import (
     CartonForm,
     CartonPartidaForm,
     CompraCartonJugadorForm,
+    CostoPremioMaterialBingoForm,
     GenerarAsignarCartonForm,
     GenerarCartonBingoForm,
     GastoOperativoBingoForm,
@@ -94,10 +95,12 @@ from .services import (
     preparar_resumen_partida_publica,
     preparar_resumen_patron_ganador,
     puede_asignar_cartones,
+    registrar_costo_premio_material_bingo,
     registrar_gasto_operativo_bingo,
     estado_permite_validar_carton,
     preparar_accion_consola,
     sortear_balota_desempate,
+    anular_costo_premio_material_bingo,
     anular_gasto_operativo_bingo,
     validar_carton_ganador,
     validar_participacion_ganadora,
@@ -906,6 +909,7 @@ def bingo_finanzas(request, idbingo):
                 else BingoCierreFinanciero.ESTADO_ABIERTO
             ),
             "gasto_form": GastoOperativoBingoForm(),
+            "costo_form": CostoPremioMaterialBingoForm(bingo=bingo),
             "motivo_anulacion_form": MotivoAnulacionForm(),
         },
     )
@@ -967,6 +971,72 @@ def bingo_finanzas_gasto_anular(request, idbingo, idgasto):
         messages.error(request, str(exc))
     else:
         messages.success(request, "Gasto operativo anulado correctamente.")
+
+    return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+
+@admin_required
+@require_POST
+def bingo_finanzas_costo_registrar(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    form = CostoPremioMaterialBingoForm(request.POST, bingo=bingo)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "No se pudo registrar el costo de premio material. Revise los datos ingresados.",
+        )
+        return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+    try:
+        registrar_costo_premio_material_bingo(
+            bingo,
+            form.cleaned_data["partida"],
+            request.user,
+            form.cleaned_data["descripcion_premio"],
+            form.cleaned_data["monto"],
+            form.cleaned_data["observacion"],
+        )
+    except CierreFinancieroError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(
+            request,
+            "Costo de premio material registrado correctamente.",
+        )
+
+    return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+
+@admin_required
+@require_POST
+def bingo_finanzas_costo_anular(request, idbingo, idcosto):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    costo = get_object_or_404(
+        BingoPremioMaterialCosto,
+        pk=idcosto,
+        idbingo=bingo,
+    )
+    form = MotivoAnulacionForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "No se pudo anular el costo de premio material. Ingrese el motivo de anulación.",
+        )
+        return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+    try:
+        anular_costo_premio_material_bingo(
+            costo,
+            request.user,
+            form.cleaned_data["motivo"],
+        )
+    except CierreFinancieroError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(
+            request,
+            "Costo de premio material anulado correctamente.",
+        )
 
     return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
 

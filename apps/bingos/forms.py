@@ -331,6 +331,58 @@ class GastoOperativoBingoForm(forms.Form):
         apply_bootstrap(self)
 
 
+class _PartidaPremioMaterialChoiceField(forms.ModelChoiceField):
+    def label_from_instance(self, obj):
+        ronda = obj.nombreronda or f"Partida {obj.pk}"
+        premio = obj.premiomaterial or "Premio material"
+        return f"{ronda} - {premio}"
+
+
+class CostoPremioMaterialBingoForm(forms.Form):
+    partida = _PartidaPremioMaterialChoiceField(
+        label="Partida",
+        queryset=Partidabingo.objects.none(),
+        empty_label="Seleccione una partida",
+        error_messages={"required": "Seleccione la partida del premio material."},
+    )
+    descripcion_premio = forms.CharField(
+        label="Descripción del premio",
+        max_length=150,
+        error_messages={"required": "Ingrese la descripción del premio."},
+    )
+    monto = forms.DecimalField(
+        label="Monto",
+        max_digits=12,
+        decimal_places=2,
+        error_messages={
+            "required": "Ingrese el monto del costo.",
+            "invalid": "Ingrese un valor numérico válido.",
+        },
+    )
+    observacion = forms.CharField(
+        label="Observación",
+        max_length=300,
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 2}),
+    )
+
+    def __init__(self, *args, bingo=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        queryset = Partidabingo.objects.none()
+        if bingo is not None and getattr(bingo, "pk", None) is not None:
+            queryset = (
+                Partidabingo.objects.filter(
+                    idbingo=bingo,
+                    premiomaterial__isnull=False,
+                    premiomaterial__gt="",
+                )
+                .order_by("horainicio", "idpartidabingo")
+            )
+        self.fields["partida"].queryset = queryset
+        self.fields["monto"].widget.attrs.update({"step": "0.01"})
+        apply_bootstrap(self)
+
+
 class MotivoAnulacionForm(forms.Form):
     motivo = forms.CharField(
         label="Motivo de anulación",
