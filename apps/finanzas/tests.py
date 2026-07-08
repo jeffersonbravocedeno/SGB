@@ -3,7 +3,74 @@ from types import SimpleNamespace
 
 from django.test import SimpleTestCase
 
+from apps.socios.models import Socio
+
+from .models import Prestamo, PrestamoGarante
 from .services import PrestamoGarantiaError, validar_garantes_prestamo
+
+
+class PrestamoGaranteModelMetadataTests(SimpleTestCase):
+    def test_modelo_existe_y_no_es_gestionado(self):
+        self.assertEqual(PrestamoGarante.__name__, "PrestamoGarante")
+        self.assertFalse(PrestamoGarante._meta.managed)
+
+    def test_tabla_fisica_correcta(self):
+        self.assertEqual(PrestamoGarante._meta.db_table, "prestamo_garante")
+
+    def test_primary_key_correcta(self):
+        pk = PrestamoGarante._meta.pk
+
+        self.assertEqual(pk.name, "idprestamogarante")
+        self.assertEqual(pk.column, "idprestamogarante")
+        self.assertTrue(pk.primary_key)
+
+    def test_columnas_fisicas_correctas(self):
+        columnas = {
+            field.name: field.column
+            for field in PrestamoGarante._meta.fields
+        }
+
+        self.assertEqual(
+            columnas,
+            {
+                "idprestamogarante": "idprestamogarante",
+                "idprestamo": "idprestamo",
+                "idgarante": "idgarante",
+                "capacidadcalculada": "capacidadcalculada",
+                "fecharegistro": "fecharegistro",
+                "estado": "estado",
+            },
+        )
+
+    def test_foreign_key_a_prestamo_usa_idprestamo(self):
+        field = PrestamoGarante._meta.get_field("idprestamo")
+
+        self.assertIs(field.remote_field.model, Prestamo)
+        self.assertEqual(field.column, "idprestamo")
+
+    def test_foreign_key_a_socio_usa_idgarante(self):
+        field = PrestamoGarante._meta.get_field("idgarante")
+
+        self.assertIs(field.remote_field.model, Socio)
+        self.assertEqual(field.column, "idgarante")
+
+    def test_estado_tiene_choices_activo_inactivo(self):
+        field = PrestamoGarante._meta.get_field("estado")
+
+        self.assertEqual(
+            tuple(field.choices),
+            (
+                ("Activo", "Activo"),
+                ("Inactivo", "Inactivo"),
+            ),
+        )
+        self.assertEqual(field.default, "Activo")
+
+    def test_capacidadcalculada_precision_decimal(self):
+        field = PrestamoGarante._meta.get_field("capacidadcalculada")
+
+        self.assertEqual(field.max_digits, 12)
+        self.assertEqual(field.decimal_places, 2)
 
 
 class ValidarGarantesPrestamoTests(SimpleTestCase):

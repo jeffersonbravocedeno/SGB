@@ -23,6 +23,31 @@ class Prestamo(models.Model):
         verbose_name_plural = 'Prestamos'
 
 
+class PrestamoGarante(models.Model):
+    ESTADO_ACTIVO = 'Activo'
+    ESTADO_INACTIVO = 'Inactivo'
+    ESTADO_CHOICES = (
+        (ESTADO_ACTIVO, 'Activo'),
+        (ESTADO_INACTIVO, 'Inactivo'),
+    )
+
+    idprestamogarante = models.IntegerField(primary_key=True)
+    idprestamo = models.ForeignKey('finanzas.Prestamo', models.DO_NOTHING, db_column='idprestamo')
+    idgarante = models.ForeignKey('socios.Socio', models.DO_NOTHING, db_column='idgarante')
+    capacidadcalculada = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    fecharegistro = models.DateTimeField()
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default=ESTADO_ACTIVO)
+
+    def __str__(self):
+        return f'Garante {self.idgarante_id} para prestamo {self.idprestamo_id}'
+
+    class Meta:
+        managed = False
+        db_table = 'prestamo_garante'
+        verbose_name = 'Garante de prestamo'
+        verbose_name_plural = 'Garantes de prestamos'
+
+
 class Pago(models.Model):
     idpago = models.IntegerField(primary_key=True)
     idprestamo = models.ForeignKey('finanzas.Prestamo', models.DO_NOTHING, db_column='idprestamo')
