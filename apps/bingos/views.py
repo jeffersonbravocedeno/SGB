@@ -113,6 +113,16 @@ from .services import (
 logger = logging.getLogger(__name__)
 
 ESTADOS_BINGO_SIN_COMPRA = {"Finalizado", "Cancelado"}
+MENSAJE_CREACION_CARTON_DIRECTA_DESHABILITADA = (
+    "Use la venta por Bingo para crear cartones y participaciones correctamente."
+)
+MENSAJE_EDICION_CARTON_DIRECTA_DESHABILITADA = (
+    "La edición directa de cartones está deshabilitada para proteger las "
+    "participaciones."
+)
+MENSAJE_EDICION_CARTON_PARTIDA_DESHABILITADA = (
+    "La edición directa del cartón por partida está deshabilitada."
+)
 
 
 def _estado_bingo_bloquea_compra(bingo):
@@ -1336,32 +1346,14 @@ def partida_carton_editar(request, idpartidabingo, idcarton):
         Partidabingo.objects.select_related("idbingo"),
         idpartidabingo=idpartidabingo,
     )
-    carton = get_object_or_404(Carton, idcarton=idcarton, idpartida=partida)
+    del idcarton
     if request.method == "POST":
-        form = CartonPartidaForm(request.POST, instance=carton)
-        if form.is_valid():
-            try:
-                with transaction.atomic():
-                    carton = form.save(commit=False)
-                    carton.idpartida = partida
-                    carton.save()
-                    form.save_m2m()
-            except IntegrityError as exc:
-                form.add_integrity_error(exc)
-            else:
-                messages.success(request, "Cartón actualizado correctamente.")
-                return redirect("bingos:partida_detalle", idpartidabingo=partida.idpartidabingo)
+        messages.error(request, MENSAJE_EDICION_CARTON_PARTIDA_DESHABILITADA)
     else:
-        form = CartonPartidaForm(instance=carton)
-    return render(
-        request,
-        "bingos/partida_carton_formulario.html",
-        {
-            "form": form,
-            "partida": partida,
-            "carton": carton,
-            "titulo": "Editar cartón de partida",
-        },
+        messages.info(request, MENSAJE_EDICION_CARTON_PARTIDA_DESHABILITADA)
+    return redirect(
+        "bingos:partida_detalle",
+        idpartidabingo=partida.idpartidabingo,
     )
 
 
@@ -1785,37 +1777,20 @@ def cartones_lista(request):
 @admin_required
 def carton_nuevo(request):
     if request.method == "POST":
-        form = CartonForm(request.POST)
-        if form.is_valid():
-            try:
-                carton = save_new_model_form(form)
-            except IntegrityError as exc:
-                form.add_integrity_error(exc)
-            else:
-                messages.success(request, "Cartón registrado correctamente.")
-                return redirect("bingos:cartones_lista")
+        messages.error(request, MENSAJE_CREACION_CARTON_DIRECTA_DESHABILITADA)
     else:
-        form = CartonForm(initial={"estadocarton": "Disponible", "fechacompra": timezone.now()})
-    return render(request, "bingos/carton_formulario.html", {"form": form, "titulo": "Nuevo cartón"})
+        messages.info(request, MENSAJE_CREACION_CARTON_DIRECTA_DESHABILITADA)
+    return redirect("bingos:cartones_lista")
 
 
 @admin_required
 def carton_editar(request, idcarton):
-    carton = get_object_or_404(Carton, idcarton=idcarton)
+    del idcarton
     if request.method == "POST":
-        form = CartonForm(request.POST, instance=carton)
-        if form.is_valid():
-            try:
-                with transaction.atomic():
-                    form.save()
-            except IntegrityError as exc:
-                form.add_integrity_error(exc)
-            else:
-                messages.success(request, "Cartón actualizado correctamente.")
-                return redirect("bingos:cartones_lista")
+        messages.error(request, MENSAJE_EDICION_CARTON_DIRECTA_DESHABILITADA)
     else:
-        form = CartonForm(instance=carton)
-    return render(request, "bingos/carton_formulario.html", {"form": form, "carton": carton, "titulo": "Editar cartón"})
+        messages.info(request, MENSAJE_EDICION_CARTON_DIRECTA_DESHABILITADA)
+    return redirect("bingos:cartones_lista")
 
 
 @admin_required

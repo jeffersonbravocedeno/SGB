@@ -169,6 +169,8 @@ from .views import (
     bingo_finanzas_gasto_anular,
     bingo_finanzas_gasto_registrar,
     carton_publico,
+    carton_editar,
+    carton_nuevo,
     cartones_lista,
     comprar_carton_bingo,
     consola_operador,
@@ -177,6 +179,7 @@ from .views import (
     bingo_resumen_excel,
     partida_cartones_excel,
     partida_carton_nuevo,
+    partida_carton_editar,
     partida_detalle,
     partida_reporte_pdf,
     partidas_lista,
@@ -1632,6 +1635,298 @@ class RutaHeredadaCartonTests(SimpleTestCase):
             )
 
         get_object_mock.assert_not_called()
+
+
+@override_settings(
+    STORAGES={
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+)
+class RutasGenericasCartonBloqueadasTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.usuario_admin = User(username="admin", is_staff=True)
+        self.bingo = Bingo(
+            idbingo=7,
+            titulobingo="Bingo seguro",
+            preciocarton=Decimal("5.00"),
+        )
+        self.partida = Partidabingo(
+            idpartidabingo=21,
+            idbingo=self.bingo,
+            nombreronda="Ronda segura",
+            valorefectivo=Decimal("25.00"),
+            premiomaterial="Canasta",
+            estadopartida=ESTADO_PARTIDA_PROGRAMADA,
+            patronganador="carton_lleno",
+            bolascantadas="[]",
+            ultimabola=0,
+            haydesempate=False,
+            horainicio=timezone.now(),
+        )
+        self.carton = Carton(
+            idcarton=31,
+            idbingo=self.bingo,
+            idjugador=Jugador(idjugador=4, aliasjugador="jugador4"),
+            idpartida=self.partida,
+            codigocarton="CARTON-BLOQUEADO",
+            matriznumeros=serializar_matriz_carton_bingo(matriz_carton_prueba()),
+            indicevictoria=0,
+            preciopagado=Decimal("5.00"),
+            fechacompra=timezone.now(),
+            estadocarton="Vendido",
+        )
+
+    def _request(self, path, method="get", data=None):
+        request = getattr(self.factory, method)(path, data or {})
+        request.user = self.usuario_admin
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def test_get_carton_nuevo_redirige_sin_mostrar_formulario(self):
+        request = self._request(reverse("bingos:carton_nuevo"))
+
+        with (
+            patch("apps.bingos.views.CartonForm") as form_mock,
+            patch("apps.bingos.views.render") as render_mock,
+        ):
+            response = carton_nuevo(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("bingos:cartones_lista"))
+        form_mock.assert_not_called()
+        render_mock.assert_not_called()
+        self.assertIn(
+            "venta por Bingo",
+            " ".join(mensaje.message for mensaje in get_messages(request)),
+        )
+
+    def test_post_carton_nuevo_no_crea_carton(self):
+        request = self._request(
+            reverse("bingos:carton_nuevo"),
+            method="post",
+            data={"codigocarton": "MANUAL", "preciopagado": "1.00"},
+        )
+
+        with (
+            patch("apps.bingos.views.CartonForm") as form_mock,
+            patch("apps.bingos.views.save_new_model_form") as save_mock,
+            patch("apps.bingos.views.Carton.objects.create") as create_mock,
+        ):
+            response = carton_nuevo(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("bingos:cartones_lista"))
+        form_mock.assert_not_called()
+        save_mock.assert_not_called()
+        create_mock.assert_not_called()
+
+    def test_get_carton_editar_redirige_sin_mostrar_formulario(self):
+        request = self._request(
+            reverse("bingos:carton_editar", kwargs={"idcarton": self.carton.pk})
+        )
+
+        with (
+            patch("apps.bingos.views.get_object_or_404") as get_mock,
+            patch("apps.bingos.views.CartonForm") as form_mock,
+            patch("apps.bingos.views.render") as render_mock,
+        ):
+            response = carton_editar(request, self.carton.pk)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("bingos:cartones_lista"))
+        get_mock.assert_not_called()
+        form_mock.assert_not_called()
+        render_mock.assert_not_called()
+
+    def test_post_carton_editar_no_modifica_carton(self):
+        request = self._request(
+            reverse("bingos:carton_editar", kwargs={"idcarton": self.carton.pk}),
+            method="post",
+            data={"preciopagado": "999.00", "estadocarton": "Disponible"},
+        )
+
+        with (
+            patch("apps.bingos.views.get_object_or_404") as get_mock,
+            patch("apps.bingos.views.CartonForm") as form_mock,
+            patch("apps.bingos.views.transaction.atomic") as atomic_mock,
+            patch.object(Carton, "save") as save_mock,
+        ):
+            response = carton_editar(request, self.carton.pk)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("bingos:cartones_lista"))
+        get_mock.assert_not_called()
+        form_mock.assert_not_called()
+        atomic_mock.assert_not_called()
+        save_mock.assert_not_called()
+
+    def test_get_partida_carton_editar_redirige_sin_mostrar_formulario(self):
+        request = self._request(
+            reverse(
+                "bingos:partida_carton_editar",
+                kwargs={
+                    "idpartidabingo": self.partida.pk,
+                    "idcarton": self.carton.pk,
+                },
+            )
+        )
+
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.partida,
+            ),
+            patch("apps.bingos.views.CartonPartidaForm") as form_mock,
+            patch("apps.bingos.views.render") as render_mock,
+        ):
+            response = partida_carton_editar(
+                request,
+                self.partida.pk,
+                self.carton.pk,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse(
+                "bingos:partida_detalle",
+                kwargs={"idpartidabingo": self.partida.pk},
+            ),
+        )
+        form_mock.assert_not_called()
+        render_mock.assert_not_called()
+
+    def test_post_partida_carton_editar_no_modifica_carton(self):
+        request = self._request(
+            reverse(
+                "bingos:partida_carton_editar",
+                kwargs={
+                    "idpartidabingo": self.partida.pk,
+                    "idcarton": self.carton.pk,
+                },
+            ),
+            method="post",
+            data={"preciopagado": "999.00", "estadocarton": "Disponible"},
+        )
+
+        with (
+            patch(
+                "apps.bingos.views.get_object_or_404",
+                return_value=self.partida,
+            ),
+            patch("apps.bingos.views.CartonPartidaForm") as form_mock,
+            patch("apps.bingos.views.transaction.atomic") as atomic_mock,
+            patch.object(Carton, "save") as save_mock,
+        ):
+            response = partida_carton_editar(
+                request,
+                self.partida.pk,
+                self.carton.pk,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            reverse(
+                "bingos:partida_detalle",
+                kwargs={"idpartidabingo": self.partida.pk},
+            ),
+        )
+        form_mock.assert_not_called()
+        atomic_mock.assert_not_called()
+        save_mock.assert_not_called()
+
+    def test_cartones_lista_no_enlaza_creacion_ni_edicion_generica(self):
+        html = render_to_string(
+            "bingos/cartones_lista.html",
+            {"page_obj": [self.carton], "busqueda": "", "total": 1},
+            request=self._request(reverse("bingos:cartones_lista")),
+        )
+
+        self.assertIn("deben venderse desde el detalle del Bingo", html)
+        self.assertNotIn(reverse("bingos:carton_nuevo"), html)
+        self.assertNotIn(
+            reverse("bingos:carton_editar", kwargs={"idcarton": self.carton.pk}),
+            html,
+        )
+        self.assertNotIn("+ Nuevo cartón", html)
+
+    def test_partida_detalle_no_enlaza_edicion_directa_por_partida(self):
+        html = render_to_string(
+            "bingos/partida_detalle.html",
+            {
+                "partida": self.partida,
+                "cartones": [self.carton],
+                "participaciones_hibridas": [],
+                "bolas_cantadas": [],
+            },
+            request=self._request(
+                reverse(
+                    "bingos:partida_detalle",
+                    kwargs={"idpartidabingo": self.partida.pk},
+                )
+            ),
+        )
+
+        self.assertNotIn(
+            reverse(
+                "bingos:partida_carton_editar",
+                kwargs={
+                    "idpartidabingo": self.partida.pk,
+                    "idcarton": self.carton.pk,
+                },
+            ),
+            html,
+        )
+
+    def test_consola_operador_no_enlaza_edicion_directa_por_partida(self):
+        html = render_to_string(
+            "bingos/consola_operador.html",
+            {
+                "partida": self.partida,
+                "acciones_consola": [],
+                "actualizacion_estados_pendiente": False,
+                "cartones": [self.carton],
+                "participaciones_hibridas": [],
+                "participaciones_hibridas_validacion": [],
+                "error_participaciones_hibridas": None,
+                "puede_asignar_cartones": False,
+                "puede_validar_cartones": False,
+                "cartones_validacion": [],
+                "candidatos_desempate": [],
+                "ultima_bola_codigo": None,
+                "total_bolas_extraidas": 0,
+                "total_bolas_faltantes": 75,
+                "hay_bolas_disponibles": True,
+                "puede_sacar_bola": False,
+                "historial_bolas": [],
+                "tablero_bingo": [],
+            },
+            request=self._request(
+                reverse(
+                    "bingos:consola_operador",
+                    kwargs={"idpartidabingo": self.partida.pk},
+                )
+            ),
+        )
+
+        self.assertNotIn(
+            reverse(
+                "bingos:partida_carton_editar",
+                kwargs={
+                    "idpartidabingo": self.partida.pk,
+                    "idcarton": self.carton.pk,
+                },
+            ),
+            html,
+        )
 
 
 @override_settings(

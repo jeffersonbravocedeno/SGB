@@ -347,7 +347,7 @@
     </div>
     <div class="table-responsive">
         <table class="table modern-table align-middle">
-            <thead><tr><th>Código</th><th>Jugador</th><th>Precio</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
+            <thead><tr><th>Código</th><th>Jugador</th><th>Precio</th><th>Estado</th></tr></thead>
             <tbody>
                 {% for carton in cartones %}
                 <tr>
@@ -355,7 +355,6 @@
                     <td>{{ carton.idjugador|default:"Sin jugador" }}</td>
                     <td>${{ carton.preciopagado|floatformat:2 }}</td>
                     <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
-                    <td class="text-end"><a class="btn btn-outline-secondary btn-sm" href="{% url 'bingos:partida_carton_editar' partida.idpartidabingo carton.idcarton %}">Editar</a></td>
                 </tr>
                 {% endfor %}
             </tbody>
