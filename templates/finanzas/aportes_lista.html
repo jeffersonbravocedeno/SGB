@@ -8,12 +8,12 @@
 <section class="content-panel">
     <div class="table-responsive">
         <table class="table modern-table align-middle">
-            <thead><tr><th>Socio</th><th>Semana</th><th>Regalo</th><th>Planificada</th><th>Entrega real</th><th>Estado</th></tr></thead>
+            <thead><tr><th>Socio</th><th>Semana</th><th>Regalo</th><th>Valor del regalo asociado</th><th>Estado</th><th>Planificada</th><th>Entrega real</th></tr></thead>
             <tbody>
                 {% for aporte in page_obj %}
-                <tr><td>{{ aporte.idsocio }}</td><td>{{ aporte.numerosemana|default_dash }}</td><td>{{ aporte.idregalo }}</td><td>{{ aporte.fechaplanificadada|date:"d/m/Y H:i" }}</td><td>{{ aporte.fechaentregareal|date:"d/m/Y H:i"|default_dash }}</td><td><span class="badge rounded-pill {{ aporte.estadoaporte|estado_class }}">{{ aporte.estadoaporte|default_dash }}</span></td></tr>
+                <tr><td>{{ aporte.idsocio }}</td><td>{{ aporte.numerosemana|default_dash }}</td><td>{{ aporte.idregalo }}</td><td>{% if aporte.idregalo.valorregalo != None %}${{ aporte.idregalo.valorregalo|floatformat:2 }}{% else %}-{% endif %}</td><td><span class="badge rounded-pill {{ aporte.estadoaporte|estado_class }}">{{ aporte.estadoaporte|default_dash }}</span></td><td>{{ aporte.fechaplanificadada|date:"d/m/Y H:i" }}</td><td>{{ aporte.fechaentregareal|date:"d/m/Y H:i"|default_dash }}</td></tr>
                 {% empty %}
-                <tr><td colspan="6" class="text-muted">No hay aportes registrados.</td></tr>
+                <tr><td colspan="7" class="text-muted">No hay aportes registrados.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

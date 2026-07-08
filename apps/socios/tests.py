@@ -34,6 +34,21 @@ def ahorro_stub(monto, estado="Activo", tipo="Obligatorio"):
     )
 
 
+class RegaloStub(SimpleNamespace):
+    def __str__(self):
+        return self.nombreregalo
+
+
+def aporte_stub(valor=Decimal("12.50")):
+    return SimpleNamespace(
+        numerosemana=3,
+        idregalo=RegaloStub(nombreregalo="Regalo semanal", valorregalo=valor),
+        fechaplanificadada=datetime(2026, 7, 8, 10, 30),
+        fechaentregareal=None,
+        estadoaporte="Al Dia",
+    )
+
+
 class SocioDetalleAhorrosTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -154,3 +169,15 @@ class SocioDetalleAhorrosTests(SimpleTestCase):
         self.assertIn("<th>Monto</th>", html)
         self.assertIn("Voluntario", html)
         self.assertIn("$25,00", html)
+
+    def test_template_aportes_muestra_valor_regalo_asociado(self):
+        html = render_to_string(
+            "socios/includes/tabla_aportes.html",
+            {"aportes": [aporte_stub(Decimal("12.50"))]},
+        )
+
+        self.assertIn("Valor del regalo asociado", html)
+        self.assertIn("Regalo semanal", html)
+        self.assertIn("$12,50", html)
+        self.assertIn("<th>Semana</th>", html)
+        self.assertIn("<th>Regalo</th>", html)

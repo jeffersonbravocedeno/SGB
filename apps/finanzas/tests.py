@@ -11,18 +11,19 @@ from django.http import HttpResponse
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
-from apps.configuracion.models import Metodopago
+from apps.configuracion.models import Metodopago, Regalo
 from apps.socios.models import Socio
 
 from . import services as finanzas_services
 from . import views as finanzas_views
 from .forms import (
     AhorroForm,
+    AporteSemanalForm,
     PagoPrestamoForm,
     PrestamoConGarantesForm,
     PrestamoEdicionForm,
 )
-from .models import Ahorro, Pago, PagoPrestamo, Prestamo, PrestamoGarante
+from .models import Ahorro, Aportesemanal, Pago, PagoPrestamo, Prestamo, PrestamoGarante
 from .services import (
     PrestamoGarantiaError,
     PrestamoPagoError,
@@ -89,6 +90,40 @@ def socio_stub(idsocio, nombre=None):
 def bingo_stub(idbingo=1):
     bingo_model = Ahorro._meta.get_field("idbingo").remote_field.model
     return bingo_model(idbingo=idbingo, titulobingo=f"Bingo {idbingo}")
+
+
+def regalo_stub(idregalo=1, valor=Decimal("12.50")):
+    return Regalo(
+        idregalo=idregalo,
+        nombreregalo=f"Regalo {idregalo}",
+        descripcionregalo="",
+        valorregalo=valor,
+        estadoregalo="Activo",
+        fechaultimaactualizacion=datetime(2026, 7, 8, 10, 30),
+        urlimagen="regalo.png",
+    )
+
+
+def aporte_stub(valor=Decimal("12.50")):
+    return SimpleNamespace(
+        idsocio=socio_stub(1, "Socio Aporte"),
+        numerosemana=3,
+        idregalo=regalo_stub(valor=valor),
+        fechaplanificadada=datetime(2026, 7, 8, 10, 30),
+        fechaentregareal=None,
+        estadoaporte="Al Dia",
+    )
+
+
+class FakePage(list):
+    number = 1
+    paginator = SimpleNamespace(num_pages=1)
+
+    def has_previous(self):
+        return False
+
+    def has_next(self):
+        return False
 
 
 class PrestamoGaranteModelMetadataTests(SimpleTestCase):
@@ -593,6 +628,118 @@ class AhorroFormTests(SimpleTestCase):
         )
 
 
+class AporteSemanalFormTests(SimpleTestCase):
+    def setUp(self):
+        self.socio = socio_stub(1, "Socio Aporte")
+        self.regalo = regalo_stub(1, Decimal("12.50"))
+
+    def _datos_formulario(self, **overrides):
+        datos = {
+            "idsocio": "1",
+            "idregalo": "1",
+            "idpartida": "",
+            "numerosemana": "3",
+            "fechaplanificadada": "2026-07-08T10:30",
+            "fechaentregareal": "",
+            "metodoingreso": "Efectivo",
+            "referenciaingreso": "",
+            "estadoaporte": "Al Dia",
+        }
+        datos.update(overrides)
+        return datos
+
+    def _form(self, *, regalo=None, **overrides):
+        form = AporteSemanalForm(data=self._datos_formulario(**overrides))
+        form.fields["idsocio"].queryset = FakeModelChoiceQuerySet(
+            Socio,
+            [self.socio],
+        )
+        form.fields["idregalo"].queryset = FakeModelChoiceQuerySet(
+            Regalo,
+            [regalo or self.regalo],
+        )
+        return form
+
+    def _is_valid(self, form):
+        with patch.object(Aportesemanal, "full_clean"):
+            return form.is_valid()
+
+    def test_formulario_acepta_aporte_valido(self):
+        form = self._form()
+
+        self.assertTrue(self._is_valid(form), form.errors.as_data())
+        self.assertEqual(form.cleaned_data["numerosemana"], 3)
+        self.assertEqual(form.cleaned_data["idregalo"].valorregalo, Decimal("12.50"))
+
+    def test_formulario_rechaza_numero_semana_cero(self):
+        form = self._form(numerosemana="0")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("numerosemana", form.errors)
+        self.assertIn(
+            "El número de semana debe ser mayor que cero.",
+            form.errors["numerosemana"],
+        )
+
+    def test_formulario_rechaza_numero_semana_negativo(self):
+        form = self._form(numerosemana="-1")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("numerosemana", form.errors)
+        self.assertIn(
+            "El número de semana debe ser mayor que cero.",
+            form.errors["numerosemana"],
+        )
+
+    def test_formulario_exige_socio(self):
+        form = self._form(idsocio="")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("idsocio", form.errors)
+        self.assertIn("Este campo es obligatorio.", form.errors["idsocio"])
+
+    def test_formulario_exige_regalo(self):
+        form = self._form(idregalo="")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("idregalo", form.errors)
+        self.assertIn("Este campo es obligatorio.", form.errors["idregalo"])
+
+    def test_formulario_exige_fecha_planificada(self):
+        form = self._form(fechaplanificadada="")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("fechaplanificadada", form.errors)
+        self.assertIn("Este campo es obligatorio.", form.errors["fechaplanificadada"])
+
+    def test_formulario_exige_estado(self):
+        form = self._form(estadoaporte="")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("estadoaporte", form.errors)
+        self.assertIn("Este campo es obligatorio.", form.errors["estadoaporte"])
+
+    def test_formulario_rechaza_regalo_con_valor_cero(self):
+        form = self._form(regalo=regalo_stub(1, Decimal("0.00")))
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("idregalo", form.errors)
+        self.assertIn(
+            "El regalo asociado al aporte debe tener un valor mayor que cero.",
+            form.errors["idregalo"],
+        )
+
+    def test_formulario_rechaza_regalo_con_valor_negativo(self):
+        form = self._form(regalo=regalo_stub(1, Decimal("-1.00")))
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("idregalo", form.errors)
+        self.assertIn(
+            "El regalo asociado al aporte debe tener un valor mayor que cero.",
+            form.errors["idregalo"],
+        )
+
+
 class PrestamoConGarantesViewTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -632,6 +779,25 @@ class PrestamoConGarantesViewTests(SimpleTestCase):
         }
         datos.update(overrides)
         request = self.factory.post("/finanzas/ahorros/nuevo/", data=datos)
+        request.user = self.usuario
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def _request_aporte_post(self, **overrides):
+        datos = {
+            "idsocio": "1",
+            "idregalo": "1",
+            "idpartida": "",
+            "numerosemana": "3",
+            "fechaplanificadada": "2026-07-08T10:30",
+            "fechaentregareal": "",
+            "metodoingreso": "Efectivo",
+            "referenciaingreso": "",
+            "estadoaporte": "Al Dia",
+        }
+        datos.update(overrides)
+        request = self.factory.post("/finanzas/aportes/nuevo/", data=datos)
         request.user = self.usuario
         request.session = {}
         request._messages = FallbackStorage(request)
@@ -688,6 +854,33 @@ class PrestamoConGarantesViewTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIs(contexto["form"], form)
         self.assertEqual(contexto["titulo"], "Nuevo ahorro")
+
+    def test_aporte_nuevo_no_guarda_si_formulario_invalido(self):
+        request = self._request_aporte_post(numerosemana="0")
+        form = MagicMock()
+        form.is_valid.return_value = False
+        contexto = {}
+
+        def render_spy(_request, _template, context):
+            contexto.update(context)
+            return HttpResponse("form invalido")
+
+        with (
+            patch(
+                "apps.finanzas.views.AporteSemanalForm",
+                return_value=form,
+            ) as form_class,
+            patch("apps.finanzas.views.save_new_model_form") as save_directo,
+            patch("apps.finanzas.views.render", side_effect=render_spy),
+        ):
+            response = finanzas_views.aporte_nuevo(request)
+
+        form_class.assert_called_once_with(request.POST)
+        form.is_valid.assert_called_once()
+        save_directo.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(contexto["form"], form)
+        self.assertEqual(contexto["titulo"], "Nuevo aporte semanal")
 
     def test_prestamo_nuevo_llama_servicio_con_formulario_valido(self):
         request = self._request_post()
@@ -1126,6 +1319,27 @@ class PrestamoConGarantesViewTests(SimpleTestCase):
             idprestamo=prestamo,
             estado=PagoPrestamo.ESTADO_REGISTRADO,
         )
+
+    @override_settings(
+        STORAGES={
+            "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+            "staticfiles": {
+                "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+            },
+        }
+    )
+    def test_template_aportes_lista_muestra_valor_regalo_asociado(self):
+        html = render_to_string(
+            "finanzas/aportes_lista.html",
+            {
+                "page_obj": FakePage([aporte_stub(Decimal("12.50"))]),
+                "total": 1,
+            },
+        )
+
+        self.assertIn("Valor del regalo asociado", html)
+        self.assertIn("Regalo 1", html)
+        self.assertIn("$12,50", html)
 
     @override_settings(
         STORAGES={

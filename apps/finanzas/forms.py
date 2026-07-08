@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from django import forms
 
@@ -395,6 +396,15 @@ class AporteSemanalForm(FriendlyModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        for field_name in (
+            "idsocio",
+            "idregalo",
+            "numerosemana",
+            "fechaplanificadada",
+            "estadoaporte",
+        ):
+            self.fields[field_name].required = True
+        self.fields["numerosemana"].widget.attrs["min"] = "1"
         self.fields["metodoingreso"].widget = forms.Select(
             choices=(
                 ("Efectivo", "Efectivo"),
@@ -419,3 +429,27 @@ class AporteSemanalForm(FriendlyModelForm):
         if not normalized:
             raise forms.ValidationError("Seleccione un método de ingreso válido.")
         return normalized
+
+    def clean_numerosemana(self):
+        value = self.cleaned_data.get("numerosemana")
+        if value is None or value <= 0:
+            raise forms.ValidationError("El número de semana debe ser mayor que cero.")
+        return value
+
+    def clean_idregalo(self):
+        regalo = self.cleaned_data.get("idregalo")
+        if regalo is None:
+            return regalo
+
+        valor = getattr(regalo, "valorregalo", None)
+        try:
+            valor = Decimal(str(valor))
+        except (InvalidOperation, TypeError, ValueError):
+            raise forms.ValidationError(
+                "El regalo asociado al aporte debe tener un valor mayor que cero."
+            ) from None
+        if not valor.is_finite() or valor <= 0:
+            raise forms.ValidationError(
+                "El regalo asociado al aporte debe tener un valor mayor que cero."
+            )
+        return regalo
