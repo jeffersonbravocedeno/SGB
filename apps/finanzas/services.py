@@ -33,11 +33,13 @@ PRESTAMO_CAMPOS_OBLIGATORIOS = {
     "idsocio",
     "montoprestamosolicitado",
     "montototalpagar",
-    "saldopendiente",
     "fechasolicitud",
     "fechavencimiento",
     "estadoprestamo",
 }
+MENSAJE_TOTAL_MENOR_MONTO_SOLICITADO = (
+    "El total a pagar no puede ser menor que el monto solicitado."
+)
 
 
 class PrestamoGarantiaError(ValueError):
@@ -256,7 +258,37 @@ def _normalizar_datos_prestamo(datos_prestamo):
         if campo in datos:
             datos_normalizados[campo] = datos[campo]
 
+    _normalizar_montos_creacion_prestamo(datos_normalizados)
+
     return datos_normalizados, socio_id
+
+
+def _normalizar_montos_creacion_prestamo(datos_prestamo):
+    try:
+        monto_solicitado = _decimal_seguro(datos_prestamo["montoprestamosolicitado"])
+    except (InvalidOperation, ValueError):
+        raise PrestamoGarantiaError(
+            "El monto solicitado del préstamo debe ser mayor que cero."
+        ) from None
+
+    if monto_solicitado <= 0:
+        raise PrestamoGarantiaError(
+            "El monto solicitado del préstamo debe ser mayor que cero."
+        )
+
+    try:
+        monto_total = _decimal_seguro(datos_prestamo["montototalpagar"])
+    except (InvalidOperation, ValueError):
+        raise PrestamoGarantiaError(
+            "El total a pagar del préstamo debe ser un valor numérico válido."
+        ) from None
+
+    if monto_total < monto_solicitado:
+        raise PrestamoGarantiaError(MENSAJE_TOTAL_MENOR_MONTO_SOLICITADO)
+
+    datos_prestamo["montoprestamosolicitado"] = monto_solicitado
+    datos_prestamo["montototalpagar"] = monto_total
+    datos_prestamo["saldopendiente"] = monto_total
 
 
 def _ids_garantes_limpios(garantes):

@@ -16,6 +16,7 @@ from .forms import (
     AporteSemanalForm,
     PagoPrestamoForm,
     PrestamoConGarantesForm,
+    PrestamoEdicionForm,
     PrestamoForm,
 )
 from .models import Ahorro, Aportesemanal, PagoPrestamo, Prestamo, PrestamoGarante
@@ -69,9 +70,11 @@ def prestamo_nuevo(request):
     if request.method == "POST":
         form = PrestamoConGarantesForm(request.POST)
         if form.is_valid():
+            datos_prestamo = form.datos_prestamo()
+            datos_prestamo["saldopendiente"] = datos_prestamo["montototalpagar"]
             try:
                 prestamo = crear_prestamo_con_garantes(
-                    datos_prestamo=form.datos_prestamo(),
+                    datos_prestamo=datos_prestamo,
                     garantes=form.garantes_seleccionados(),
                     usuario=request.user,
                 )
@@ -136,20 +139,49 @@ def prestamo_detalle(request, idprestamo):
 @admin_required
 def prestamo_editar(request, idprestamo):
     prestamo = get_object_or_404(Prestamo, idprestamo=idprestamo)
+    if _prestamo_tiene_estado_final(prestamo):
+        messages.error(request, "No se puede editar un préstamo cerrado o liquidado.")
+        return redirect("finanzas:prestamo_detalle", idprestamo=prestamo.idprestamo)
+
+    tiene_pagos_registrados = PagoPrestamo.objects.filter(
+        idprestamo=prestamo,
+        estado=PagoPrestamo.ESTADO_REGISTRADO,
+    ).exists()
+
     if request.method == "POST":
-        form = PrestamoForm(request.POST, instance=prestamo)
+        form = PrestamoEdicionForm(request.POST, instance=prestamo)
         if form.is_valid():
-            try:
-                with transaction.atomic():
-                    form.save()
-            except IntegrityError as exc:
-                form.add_integrity_error(exc)
+            campos_bloqueados = _campos_bloqueados_edicion_en_post(
+                request.POST,
+                tiene_pagos_registrados,
+            )
+            if campos_bloqueados:
+                form.add_error(
+                    None,
+                    "No se permite modificar saldo pendiente ni montos base "
+                    "desde la edición del préstamo.",
+                )
             else:
-                messages.success(request, "Préstamo actualizado correctamente.")
-                return redirect("finanzas:prestamo_detalle", idprestamo=prestamo.idprestamo)
+                try:
+                    with transaction.atomic():
+                        form.save()
+                except IntegrityError as exc:
+                    form.add_integrity_error(exc)
+                else:
+                    messages.success(request, "Préstamo actualizado correctamente.")
+                    return redirect("finanzas:prestamo_detalle", idprestamo=prestamo.idprestamo)
     else:
-        form = PrestamoForm(instance=prestamo)
-    return render(request, "finanzas/prestamo_formulario.html", {"form": form, "prestamo": prestamo, "titulo": "Editar préstamo"})
+        form = PrestamoEdicionForm(instance=prestamo)
+    return render(
+        request,
+        "finanzas/prestamo_formulario.html",
+        {
+            "form": form,
+            "prestamo": prestamo,
+            "titulo": "Editar préstamo",
+            "tiene_pagos_registrados": tiene_pagos_registrados,
+        },
+    )
 
 
 @admin_required
@@ -196,14 +228,33 @@ def pagos_lista(request):
 
 
 def _prestamo_permite_registrar_pago(prestamo):
-    estado = str(prestamo.estadoprestamo or "").strip().lower()
-    if any(estado == estado_final.lower() for estado_final in ESTADOS_PRESTAMO_SIN_SALDO_GARANTE):
+    if _prestamo_tiene_estado_final(prestamo):
         return False
     try:
         saldo = Decimal(str(prestamo.saldopendiente))
     except (InvalidOperation, TypeError, ValueError):
         return False
     return saldo > 0
+
+
+def _prestamo_tiene_estado_final(prestamo):
+    estado = str(prestamo.estadoprestamo or "").strip().lower()
+    return any(
+        estado == estado_final.lower()
+        for estado_final in ESTADOS_PRESTAMO_SIN_SALDO_GARANTE
+    )
+
+
+def _campos_bloqueados_edicion_en_post(post_data, tiene_pagos_registrados):
+    campos_bloqueados = {"saldopendiente"}
+    if tiene_pagos_registrados:
+        campos_bloqueados.update(
+            {
+                "montoprestamosolicitado",
+                "montototalpagar",
+            }
+        )
+    return sorted(campo for campo in campos_bloqueados if campo in post_data)
 
 
 @admin_required

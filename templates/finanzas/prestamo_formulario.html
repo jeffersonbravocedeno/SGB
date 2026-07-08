@@ -8,16 +8,38 @@
     {% csrf_token %}
     {% include "includes/form_errors.html" with form=form %}
     <h2 class="section-subtitle">Datos del préstamo</h2>
+    <p class="form-text">El vencimiento debe estar dentro del mismo período anual, máximo hasta el 31 de diciembre del año de solicitud.</p>
+    {% if not prestamo %}
+    <p class="form-text">El saldo pendiente inicial se genera automáticamente con el total a pagar.</p>
+    {% endif %}
     <div class="row g-3">
+        {% if form.idsocio %}
         <div class="col-md-6">{% include "includes/field.html" with field=form.idsocio %}</div>
+        {% endif %}
+        {% if form.montoprestamosolicitado %}
         <div class="col-md-6">{% include "includes/field.html" with field=form.montoprestamosolicitado %}</div>
+        {% endif %}
+        {% if form.tasainteres %}
         <div class="col-md-6">{% include "includes/field.html" with field=form.tasainteres %}</div>
+        {% endif %}
+        {% if form.montototalpagar %}
         <div class="col-md-6">{% include "includes/field.html" with field=form.montototalpagar %}</div>
+        {% endif %}
+        {% if form.saldopendiente and prestamo %}
         <div class="col-md-6">{% include "includes/field.html" with field=form.saldopendiente %}</div>
+        {% endif %}
+        {% if form.numerocuotas %}
         <div class="col-md-6">{% include "includes/field.html" with field=form.numerocuotas %}</div>
+        {% endif %}
+        {% if form.fechasolicitud %}
         <div class="col-md-6">{% include "includes/field.html" with field=form.fechasolicitud %}</div>
+        {% endif %}
+        {% if form.fechavencimiento %}
         <div class="col-md-6">{% include "includes/field.html" with field=form.fechavencimiento %}</div>
+        {% endif %}
+        {% if form.estadoprestamo %}
         <div class="col-md-6">{% include "includes/field.html" with field=form.estadoprestamo %}</div>
+        {% endif %}
     </div>
     {% if form.garante_1 %}
     <hr class="my-4">

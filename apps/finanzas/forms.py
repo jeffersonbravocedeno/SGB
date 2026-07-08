@@ -1,3 +1,5 @@
+from datetime import date
+
 from django import forms
 
 from apps.common.forms import FriendlyModelForm
@@ -5,6 +7,38 @@ from apps.configuracion.models import Metodopago
 from apps.socios.models import Socio
 
 from .models import Ahorro, Aportesemanal, PagoPrestamo, Prestamo
+
+
+MENSAJE_VENCIMIENTO_ANTERIOR = (
+    "La fecha de vencimiento no puede ser anterior a la fecha de solicitud."
+)
+MENSAJE_VENCIMIENTO_FUERA_PERIODO = (
+    "El préstamo debe vencer dentro del mismo período anual, máximo hasta el 31 "
+    "de diciembre."
+)
+AYUDA_PERIODO_ANUAL_PRESTAMO = (
+    "El vencimiento debe estar dentro del mismo período anual, máximo hasta el "
+    "31 de diciembre del año de solicitud."
+)
+MENSAJE_TOTAL_MENOR_MONTO_SOLICITADO = (
+    "El total a pagar no puede ser menor que el monto solicitado."
+)
+
+
+def validar_periodo_anual_prestamo(fechasolicitud, fechavencimiento):
+    if not fechasolicitud or not fechavencimiento:
+        return
+
+    if fechavencimiento < fechasolicitud:
+        raise forms.ValidationError(
+            {"fechavencimiento": MENSAJE_VENCIMIENTO_ANTERIOR}
+        )
+
+    fecha_maxima = date(fechasolicitud.year, 12, 31)
+    if fechavencimiento > fecha_maxima:
+        raise forms.ValidationError(
+            {"fechavencimiento": MENSAJE_VENCIMIENTO_FUERA_PERIODO}
+        )
 
 
 class PrestamoForm(FriendlyModelForm):
@@ -55,6 +89,27 @@ class PrestamoForm(FriendlyModelForm):
             "estadoprestamo": "Estado",
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if "fechavencimiento" in self.fields:
+            self.fields["fechavencimiento"].help_text = AYUDA_PERIODO_ANUAL_PRESTAMO
+
+    def clean(self):
+        cleaned_data = super().clean()
+        validar_periodo_anual_prestamo(
+            cleaned_data.get("fechasolicitud"),
+            cleaned_data.get("fechavencimiento"),
+        )
+        monto_solicitado = cleaned_data.get("montoprestamosolicitado")
+        monto_total = cleaned_data.get("montototalpagar")
+        if (
+            monto_solicitado is not None
+            and monto_total is not None
+            and monto_total < monto_solicitado
+        ):
+            self.add_error("montototalpagar", MENSAJE_TOTAL_MENOR_MONTO_SOLICITADO)
+        return cleaned_data
+
     def clean_numerocuotas(self):
         value = self.cleaned_data.get("numerocuotas")
         if value is not None and value < 1:
@@ -94,6 +149,18 @@ class PrestamoConGarantesForm(PrestamoForm):
         label="Garante 2",
         required=False,
     )
+
+    class Meta(PrestamoForm.Meta):
+        fields = (
+            "idsocio",
+            "montoprestamosolicitado",
+            "tasainteres",
+            "montototalpagar",
+            "numerocuotas",
+            "fechasolicitud",
+            "fechavencimiento",
+            "estadoprestamo",
+        )
 
     def __init__(self, *args, socio_queryset=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -146,6 +213,37 @@ class PrestamoConGarantesForm(PrestamoForm):
         if garante_2:
             garantes.append(garante_2)
         return garantes
+
+
+class PrestamoEdicionForm(PrestamoForm):
+    state_choices = {
+        "estadoprestamo": (
+            ("Solicitado", "Solicitado"),
+            ("Aprobado", "Aprobado"),
+            ("En espera", "En espera"),
+        )
+    }
+    non_negative_fields = (
+        "tasainteres",
+        "numerocuotas",
+    )
+
+    class Meta:
+        model = Prestamo
+        fields = (
+            "tasainteres",
+            "numerocuotas",
+            "fechasolicitud",
+            "fechavencimiento",
+            "estadoprestamo",
+        )
+        labels = {
+            "tasainteres": "Tasa de interés",
+            "numerocuotas": "Número de cuotas",
+            "fechasolicitud": "Fecha de solicitud",
+            "fechavencimiento": "Fecha de vencimiento",
+            "estadoprestamo": "Estado",
+        }
 
 
 class PagoPrestamoForm(FriendlyModelForm):
