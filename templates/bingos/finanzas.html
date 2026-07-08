@@ -278,8 +278,12 @@
     </div>
 </section>
 
-{% if cierre_esta_cerrado %}
 <section class="content-panel">
+    <h2 class="section-subtitle">Cierre financiero</h2>
+    {% if cierre_esta_cerrado %}
+    <div class="alert alert-info" role="note">
+        El cierre financiero ya fue realizado y es solo de consulta.
+    </div>
     <div class="alert alert-info" role="note">
         El cierre financiero es irreversible en esta versión.
     </div>
@@ -301,6 +305,29 @@
         <div><dt>Rondas canceladas</dt><dd>{{ cierre.rondascanceladas }}</dd></div>
         <div><dt>Rondas pendientes</dt><dd>{{ cierre.rondaspendientes }}</dd></div>
     </dl>
+    {% elif resumen.bloqueos_de_cierre %}
+    <div class="alert alert-warning" role="alert">
+        <p>No se puede cerrar hasta resolver los bloqueos financieros.</p>
+        <ul class="mb-0">
+            {% for bloqueo in resumen.bloqueos_de_cierre %}
+            <li>{{ bloqueo }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% else %}
+    <div class="alert alert-warning" role="alert">
+        Este cierre es irreversible en esta versión.
+    </div>
+    <form method="post" action="{% url 'bingos:bingo_finanzas_cerrar' bingo.idbingo %}" novalidate>
+        {% csrf_token %}
+        {% include "includes/form_errors.html" with form=cierre_form %}
+        <div class="row g-3">
+            <div class="col-12">{% include "includes/field.html" with field=cierre_form.observacion_cierre %}</div>
+        </div>
+        <div class="form-actions">
+            <button class="btn btn-danger" type="submit">Cerrar financieramente Bingo</button>
+        </div>
+    </form>
+    {% endif %}
 </section>
-{% endif %}
 {% endblock %}

@@ -21,6 +21,7 @@ from .forms import (
     CartonForm,
     CartonPartidaForm,
     CompraCartonJugadorForm,
+    CierreFinancieroBingoForm,
     CostoPremioMaterialBingoForm,
     GenerarAsignarCartonForm,
     GenerarCartonBingoForm,
@@ -69,6 +70,7 @@ from .services import (
     ValidacionCartonError,
     acciones_disponibles_consola,
     confirmar_y_finalizar_desempate,
+    cerrar_financieramente_bingo,
     construir_matriz_marcada_carton,
     contar_numeros_marcados_carton,
     construir_preliquidacion_financiera_bingo,
@@ -910,6 +912,7 @@ def bingo_finanzas(request, idbingo):
             ),
             "gasto_form": GastoOperativoBingoForm(),
             "costo_form": CostoPremioMaterialBingoForm(bingo=bingo),
+            "cierre_form": CierreFinancieroBingoForm(),
             "motivo_anulacion_form": MotivoAnulacionForm(),
         },
     )
@@ -1036,6 +1039,35 @@ def bingo_finanzas_costo_anular(request, idbingo, idcosto):
         messages.success(
             request,
             "Costo de premio material anulado correctamente.",
+        )
+
+    return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+
+@admin_required
+@require_POST
+def bingo_finanzas_cerrar(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    form = CierreFinancieroBingoForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "No se pudo cerrar financieramente el Bingo. Revise los datos ingresados.",
+        )
+        return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+    try:
+        cerrar_financieramente_bingo(
+            bingo,
+            request.user,
+            form.cleaned_data["observacion_cierre"],
+        )
+    except CierreFinancieroError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(
+            request,
+            "Bingo cerrado financieramente correctamente.",
         )
 
     return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)

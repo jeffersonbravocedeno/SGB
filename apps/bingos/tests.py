@@ -33,6 +33,7 @@ from apps.jugadores.models import Jugador
 from .forms import (
     AccesoCartonPublicoForm,
     CompraCartonJugadorForm,
+    CierreFinancieroBingoForm,
     CostoPremioMaterialBingoForm,
     GenerarAsignarCartonForm,
     GenerarCartonBingoForm,
@@ -162,6 +163,7 @@ from .views import (
     bingo_carton_nuevo,
     bingo_detalle,
     bingo_finanzas,
+    bingo_finanzas_cerrar,
     bingo_finanzas_costo_anular,
     bingo_finanzas_costo_registrar,
     bingo_finanzas_gasto_anular,
@@ -1479,6 +1481,22 @@ class GastoOperativoBingoFormTests(SimpleTestCase):
             "estado",
             "cierre",
             "motivoanulacion",
+        ):
+            self.assertNotIn(campo_no_permitido, form.fields)
+
+    def test_formulario_cierre_solo_expone_observacion_opcional(self):
+        form = CierreFinancieroBingoForm(data={"observacion_cierre": ""})
+
+        self.assertEqual(list(form.fields), ["observacion_cierre"])
+        self.assertTrue(form.is_valid())
+        for campo_no_permitido in (
+            "estado",
+            "idbingo",
+            "idusuariocierre",
+            "fechacierre",
+            "recaudacionregistrada",
+            "utilidadneta",
+            "cartonesvendidosunicos",
         ):
             self.assertNotIn(campo_no_permitido, form.fields)
 
@@ -9023,6 +9041,10 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
             "bingos:bingo_finanzas_costo_registrar",
             kwargs={"idbingo": self.bingo.pk},
         )
+        self.url_cerrar = reverse(
+            "bingos:bingo_finanzas_cerrar",
+            kwargs={"idbingo": self.bingo.pk},
+        )
 
     def _crear_bingo(self, pk, titulo):
         return Bingo.objects.create(
@@ -9049,6 +9071,7 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
         pk=1700,
         bingo=None,
         premio_material="Canasta familiar",
+        estado=ESTADO_PARTIDA_FINALIZADA,
     ):
         return Partidabingo.objects.create(
             idpartidabingo=pk,
@@ -9056,13 +9079,13 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
             nombreronda=f"Ronda {pk}",
             valorefectivo=Decimal("0.00"),
             premiomaterial=premio_material,
-            estadopartida=ESTADO_PARTIDA_FINALIZADA,
+            estadopartida=estado,
             patronganador="carton_lleno",
             bolascantadas="[]",
             ultimabola=0,
             haydesempate=False,
             horainicio=self.ahora,
-            horafin=self.ahora,
+            horafin=self.ahora if estado == ESTADO_PARTIDA_FINALIZADA else None,
         )
 
     def _crear_costo(
@@ -9155,6 +9178,21 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
         )
         self.assertFalse(response.context["cierre_esta_cerrado"])
 
+    def test_administrador_ve_seccion_de_cierre_en_bingo_abierto(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.get(self.url_panel)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Cierre financiero")
+        self.assertContains(response, "Cerrar financieramente Bingo")
+        self.assertContains(response, "Este cierre es irreversible en esta versión.")
+        self.assertIsInstance(
+            response.context["cierre_form"],
+            CierreFinancieroBingoForm,
+        )
+        self.assertFalse(response.context["cierre_esta_cerrado"])
+
     def test_selector_de_partidas_de_costo_limita_bingo_y_premio_material(self):
         partida_valida = self._crear_partida(
             pk=1701,
@@ -9225,6 +9263,34 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
         self.assertEqual(BingoPremioMaterialCosto.objects.count(), 1)
         costo.refresh_from_db()
         self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+
+    def test_usuario_no_administrativo_no_puede_acceder_a_ruta_de_cierre(self):
+        self.client.force_login(self.no_admin)
+
+        response = self.client.post(
+            self.url_cerrar,
+            {"observacion_cierre": "No autorizado"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(BingoCierreFinanciero.objects.count(), 0)
+
+    def test_si_hay_bloqueos_no_muestra_boton_activo_de_cierre(self):
+        self._crear_partida(
+            pk=1704,
+            premio_material="",
+            estado=ESTADO_PARTIDA_EN_ESPERA,
+        )
+        self.client.force_login(self.admin)
+
+        response = self.client.get(self.url_panel)
+
+        self.assertContains(
+            response,
+            "No se puede cerrar hasta resolver los bloqueos financieros.",
+        )
+        self.assertContains(response, "existen rondas pendientes")
+        self.assertNotContains(response, "Cerrar financieramente Bingo</button>")
 
     def test_post_valido_de_registro_crea_gasto_y_muestra_exito(self):
         self.client.force_login(self.admin)
@@ -9376,6 +9442,124 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
             response,
             "Ya existe un costo de premio material registrado para esta partida.",
         )
+
+    def test_cierre_exitoso_crea_cierre_y_deja_panel_solo_lectura(self):
+        self._crear_partida(pk=1705, premio_material="")
+        self._crear_gasto(monto=Decimal("12.00"))
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self.url_cerrar,
+            {"observacion_cierre": "  cierre validado  "},
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertEqual(BingoCierreFinanciero.objects.count(), 1)
+        cierre = BingoCierreFinanciero.objects.get()
+        self.assertEqual(cierre.estado, BingoCierreFinanciero.ESTADO_CERRADO)
+        self.assertEqual(cierre.idbingo, self.bingo)
+        self.assertEqual(cierre.idusuariocierre, self.admin)
+        self.assertEqual(cierre.observacioncierre, "cierre validado")
+        self.assertEqual(cierre.gastosoperativos, Decimal("12.00"))
+        self.assertContains(
+            response,
+            "Bingo cerrado financieramente correctamente.",
+        )
+        self.assertContains(response, "Cierre financiero cerrado")
+        self.assertContains(
+            response,
+            "El cierre financiero ya fue realizado y es solo de consulta.",
+        )
+        self.assertNotContains(response, "Registrar gasto operativo")
+        self.assertNotContains(response, "Registrar costo de premio material")
+        self.assertNotContains(response, "Cerrar financieramente Bingo</button>")
+
+    def test_cierre_bloqueado_por_ronda_pendiente_muestra_error_de_dominio(self):
+        self._crear_partida(
+            pk=1706,
+            premio_material="",
+            estado=ESTADO_PARTIDA_EN_ESPERA,
+        )
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self.url_cerrar,
+            {"observacion_cierre": "Intento con bloqueo"},
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertFalse(
+            BingoCierreFinanciero.objects.filter(
+                estado=BingoCierreFinanciero.ESTADO_CERRADO,
+            ).exists()
+        )
+        self.assertContains(
+            response,
+            "No se puede cerrar financieramente el Bingo:",
+        )
+        self.assertContains(response, "rondas pendientes")
+
+    def test_segundo_cierre_no_modifica_snapshot_y_muestra_error(self):
+        self._crear_partida(pk=1707, premio_material="")
+        self._crear_gasto(monto=Decimal("9.00"))
+        self.client.force_login(self.admin)
+        self.client.post(
+            self.url_cerrar,
+            {"observacion_cierre": "Cierre original"},
+            follow=True,
+        )
+        cierre = BingoCierreFinanciero.objects.get()
+        campos_snapshot = (
+            "recaudacionregistrada",
+            "gastosoperativos",
+            "utilidadneta",
+            "totalrondas",
+            "fechacalculo",
+            "fechacierre",
+            "observacioncierre",
+        )
+        snapshot_original = {
+            campo: getattr(cierre, campo) for campo in campos_snapshot
+        }
+
+        response = self.client.post(
+            self.url_cerrar,
+            {"observacion_cierre": "Intento posterior"},
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        self.assertEqual(BingoCierreFinanciero.objects.count(), 1)
+        cierre.refresh_from_db()
+        for campo, valor in snapshot_original.items():
+            self.assertEqual(getattr(cierre, campo), valor)
+        self.assertContains(response, "El cierre financiero ya está cerrado.")
+
+    def test_cierre_ignora_totales_manipulados_y_usa_snapshot_real(self):
+        self._crear_partida(pk=1708, premio_material="")
+        self._crear_gasto(monto=Decimal("7.50"))
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            self.url_cerrar,
+            {
+                "observacion_cierre": "Cierre con datos manipulados",
+                "recaudacionregistrada": "999.99",
+                "costospremiosmateriales": "888.88",
+                "utilidadneta": "777.77",
+            },
+            follow=True,
+        )
+
+        self.assertRedirects(response, self.url_panel)
+        cierre = BingoCierreFinanciero.objects.get()
+        self.assertEqual(cierre.recaudacionregistrada, Decimal("0.00"))
+        self.assertEqual(cierre.costospremiosmateriales, Decimal("0.00"))
+        self.assertEqual(cierre.gastosoperativos, Decimal("7.50"))
+        self.assertEqual(cierre.utilidadneta, Decimal("-7.50"))
+        self.assertNotEqual(cierre.utilidadneta, Decimal("777.77"))
 
     def test_post_invalido_no_crea_gasto_y_muestra_error(self):
         self.client.force_login(self.admin)
@@ -9598,6 +9782,41 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
             "No se pueden anular costos porque el cierre financiero está cerrado.",
         )
 
+    def test_despues_del_cierre_oculta_formularios_y_muestra_solo_consulta(self):
+        gasto = self._crear_gasto()
+        partida = self._crear_partida(pk=1709)
+        costo = self._crear_costo(partida=partida)
+        self.client.force_login(self.admin)
+        self.client.post(
+            self.url_cerrar,
+            {"observacion_cierre": "Cierre definitivo"},
+            follow=True,
+        )
+
+        response = self.client.get(self.url_panel)
+
+        self.assertEqual(response.status_code, 200)
+        gasto.refresh_from_db()
+        costo.refresh_from_db()
+        self.assertEqual(gasto.estado, BingoGastoOperativo.ESTADO_REGISTRADO)
+        self.assertEqual(costo.estado, BingoPremioMaterialCosto.ESTADO_REGISTRADO)
+        self.assertNotContains(response, "Registrar gasto operativo")
+        self.assertNotContains(response, "Registrar costo de premio material")
+        self.assertNotContains(response, "Cerrar financieramente Bingo</button>")
+        self.assertNotContains(response, "Anular</button>")
+        self.assertContains(
+            response,
+            "El cierre financiero está cerrado. Los gastos se muestran solo para consulta.",
+        )
+        self.assertContains(
+            response,
+            "El cierre financiero está cerrado. Los costos de premios se muestran solo para consulta.",
+        )
+        self.assertContains(
+            response,
+            "El cierre financiero ya fue realizado y es solo de consulta.",
+        )
+
     def test_operacion_impacta_resumen_real(self):
         self.client.force_login(self.admin)
 
@@ -9686,4 +9905,10 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
         self.assertIs(
             resolve("/bingos/700/finanzas/costos/5/anular/").func,
             bingo_finanzas_costo_anular,
+        )
+
+    def test_ruta_post_de_cierre_resuelve_vista(self):
+        self.assertIs(
+            resolve("/bingos/700/finanzas/cerrar/").func,
+            bingo_finanzas_cerrar,
         )

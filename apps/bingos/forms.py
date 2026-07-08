@@ -396,6 +396,19 @@ class MotivoAnulacionForm(forms.Form):
         apply_bootstrap(self)
 
 
+class CierreFinancieroBingoForm(forms.Form):
+    observacion_cierre = forms.CharField(
+        label="Observación de cierre",
+        max_length=300,
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 2}),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        apply_bootstrap(self)
+
+
 class CartonPartidaForm(CartonForm):
     class Meta(CartonForm.Meta):
         fields = (

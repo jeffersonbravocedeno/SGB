@@ -71,6 +71,11 @@ urlpatterns = [
         name="bingo_finanzas_costo_anular",
     ),
     path(
+        "bingos/<int:idbingo>/finanzas/cerrar/",
+        views.bingo_finanzas_cerrar,
+        name="bingo_finanzas_cerrar",
+    ),
+    path(
         "bingos/<int:idbingo>/comprar-carton/",
         views.comprar_carton_bingo,
         name="comprar_carton_bingo",
