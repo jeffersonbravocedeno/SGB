@@ -4,6 +4,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from django.contrib import admin as django_admin
 from django.contrib.auth.models import User
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.db import models as django_models
@@ -14,6 +15,7 @@ from django.test import RequestFactory, SimpleTestCase, override_settings
 from apps.configuracion.models import Metodopago, Regalo
 from apps.socios.models import Socio
 
+from . import admin as finanzas_admin
 from . import services as finanzas_services
 from . import views as finanzas_views
 from .forms import (
@@ -273,6 +275,69 @@ class PagoPrestamoModelMetadataTests(SimpleTestCase):
                 "comprobantepago": "comprobantepago",
                 "estadopago": "estadopago",
             },
+        )
+
+
+class PagoPrestamoAdminTests(SimpleTestCase):
+    def setUp(self):
+        self.admin = django_admin.site._registry[PagoPrestamo]
+        self.request = RequestFactory().get("/admin/finanzas/pagoprestamo/")
+        self.request.user = SimpleNamespace(has_perm=lambda permission: False)
+
+    def test_pago_legacy_no_esta_registrado_en_admin(self):
+        self.assertNotIn(Pago, django_admin.site._registry)
+
+    def test_pago_prestamo_esta_registrado_en_admin(self):
+        self.assertIn(PagoPrestamo, django_admin.site._registry)
+        self.assertIsInstance(self.admin, finanzas_admin.PagoPrestamoAdmin)
+
+    def test_pago_prestamo_admin_no_permite_add(self):
+        self.assertFalse(self.admin.has_add_permission(self.request))
+
+    def test_pago_prestamo_admin_no_permite_change(self):
+        self.assertFalse(self.admin.has_change_permission(self.request))
+
+    def test_pago_prestamo_admin_no_permite_delete(self):
+        self.assertFalse(self.admin.has_delete_permission(self.request))
+
+    def test_pago_prestamo_admin_todos_los_campos_son_readonly(self):
+        campos_modelo = tuple(field.name for field in PagoPrestamo._meta.fields)
+
+        self.assertEqual(tuple(self.admin.readonly_fields), campos_modelo)
+
+    def test_pago_prestamo_admin_permiso_view_se_mantiene_disponible(self):
+        self.request.user = SimpleNamespace(
+            has_perm=lambda permission: permission == "finanzas.view_pagoprestamo"
+        )
+
+        self.assertTrue(self.admin.has_view_permission(self.request))
+
+    def test_pago_prestamo_admin_configura_listas_busqueda_y_filtros(self):
+        self.assertEqual(
+            self.admin.list_display,
+            (
+                "idpagoprestamo",
+                "idprestamo",
+                "montopagado",
+                "fechapago",
+                "estado",
+                "idmetodopago",
+            ),
+        )
+        self.assertEqual(
+            self.admin.search_fields,
+            (
+                "numeroreferencia",
+                "observacion",
+            ),
+        )
+        self.assertEqual(
+            self.admin.list_filter,
+            (
+                "estado",
+                "fechapago",
+                "idmetodopago",
+            ),
         )
 
 
