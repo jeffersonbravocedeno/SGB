@@ -2,7 +2,10 @@ from django.db import models
 
 
 class Prestamo(models.Model):
-    idprestamo = models.IntegerField(primary_key=True)
+    idprestamo = models.AutoField(
+        primary_key=True,
+        db_column="idprestamo",
+    )
     idsocio = models.ForeignKey('socios.Socio', models.DO_NOTHING, db_column='idsocio')
     montoprestamosolicitado = models.DecimalField(max_digits=12, decimal_places=2)
     tasainteres = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
@@ -31,7 +34,10 @@ class PrestamoGarante(models.Model):
         (ESTADO_INACTIVO, 'Inactivo'),
     )
 
-    idprestamogarante = models.IntegerField(primary_key=True)
+    idprestamogarante = models.AutoField(
+        primary_key=True,
+        db_column="idprestamogarante",
+    )
     idprestamo = models.ForeignKey('finanzas.Prestamo', models.DO_NOTHING, db_column='idprestamo')
     idgarante = models.ForeignKey('socios.Socio', models.DO_NOTHING, db_column='idgarante')
     capacidadcalculada = models.DecimalField(max_digits=12, decimal_places=2, default=0)
