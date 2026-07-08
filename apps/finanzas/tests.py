@@ -16,8 +16,13 @@ from apps.socios.models import Socio
 
 from . import services as finanzas_services
 from . import views as finanzas_views
-from .forms import PagoPrestamoForm, PrestamoConGarantesForm, PrestamoEdicionForm
-from .models import Pago, PagoPrestamo, Prestamo, PrestamoGarante
+from .forms import (
+    AhorroForm,
+    PagoPrestamoForm,
+    PrestamoConGarantesForm,
+    PrestamoEdicionForm,
+)
+from .models import Ahorro, Pago, PagoPrestamo, Prestamo, PrestamoGarante
 from .services import (
     PrestamoGarantiaError,
     PrestamoPagoError,
@@ -49,6 +54,26 @@ class FakeSocioQuerySet:
         raise Socio.DoesNotExist
 
 
+class FakeModelChoiceQuerySet:
+    def __init__(self, model, objects):
+        self.model = model
+        self.objects = list(objects)
+
+    def all(self):
+        return self
+
+    def get(self, **kwargs):
+        field_name, value = next(iter(kwargs.items()))
+        for obj in self.objects:
+            candidates = {
+                str(getattr(obj, "pk", "")),
+                str(getattr(obj, field_name, "")),
+            }
+            if str(value) in candidates:
+                return obj
+        raise self.model.DoesNotExist
+
+
 def socio_stub(idsocio, nombre=None):
     return Socio(
         idsocio=idsocio,
@@ -59,6 +84,11 @@ def socio_stub(idsocio, nombre=None):
         cisocio=str(idsocio).zfill(10),
         estadosocio="Activo",
     )
+
+
+def bingo_stub(idbingo=1):
+    bingo_model = Ahorro._meta.get_field("idbingo").remote_field.model
+    return bingo_model(idbingo=idbingo, titulobingo=f"Bingo {idbingo}")
 
 
 class PrestamoGaranteModelMetadataTests(SimpleTestCase):
@@ -465,6 +495,104 @@ class PagoPrestamoFormTests(SimpleTestCase):
         self.assertEqual(form.cleaned_data["observacion"], "Pago de cuota")
 
 
+class AhorroFormTests(SimpleTestCase):
+    def setUp(self):
+        self.socio = socio_stub(1, "Socio Ahorro")
+        self.bingo = bingo_stub(10)
+
+    def _datos_formulario(self, **overrides):
+        datos = {
+            "idsocio": "1",
+            "idbingo": "10",
+            "tipoahorro": "Obligatorio",
+            "montoahorro": "25.00",
+            "fechaahorro": "2026-07-08T10:30",
+            "comentarioahorro": "",
+            "estado": "Activo",
+        }
+        datos.update(overrides)
+        return datos
+
+    def _form(self, **overrides):
+        form = AhorroForm(data=self._datos_formulario(**overrides))
+        form.fields["idsocio"].queryset = FakeModelChoiceQuerySet(
+            Socio,
+            [self.socio],
+        )
+        form.fields["idbingo"].queryset = FakeModelChoiceQuerySet(
+            self.bingo.__class__,
+            [self.bingo],
+        )
+        return form
+
+    def _is_valid(self, form):
+        with patch.object(Ahorro, "full_clean"):
+            return form.is_valid()
+
+    def test_formulario_acepta_monto_positivo(self):
+        form = self._form(montoahorro="25.00")
+
+        self.assertTrue(self._is_valid(form), form.errors.as_data())
+        self.assertEqual(form.cleaned_data["montoahorro"], Decimal("25.00"))
+
+    def test_formulario_rechaza_monto_cero(self):
+        form = self._form(montoahorro="0")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("montoahorro", form.errors)
+        self.assertIn(
+            "El monto del ahorro debe ser mayor que cero.",
+            form.errors["montoahorro"],
+        )
+
+    def test_formulario_rechaza_monto_negativo(self):
+        form = self._form(montoahorro="-1.00")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("montoahorro", form.errors)
+        self.assertIn(
+            "El monto del ahorro debe ser mayor que cero.",
+            form.errors["montoahorro"],
+        )
+
+    def test_formulario_exige_socio(self):
+        form = self._form(idsocio="")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("idsocio", form.errors)
+        self.assertIn("Este campo es obligatorio.", form.errors["idsocio"])
+
+    def test_formulario_exige_fecha(self):
+        form = self._form(fechaahorro="")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("fechaahorro", form.errors)
+        self.assertIn("Este campo es obligatorio.", form.errors["fechaahorro"])
+
+    def test_formulario_rechaza_estado_invalido(self):
+        form = self._form(estado="Pendiente")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("estado", form.errors)
+        self.assertIn("Seleccione un estado válido.", form.errors["estado"])
+
+    def test_formulario_mantiene_campos_esperados(self):
+        form = self._form()
+
+        self.assertEqual(
+            list(form.fields),
+            [
+                "idsocio",
+                "idbingo",
+                "tipoahorro",
+                "montoahorro",
+                "fechaahorro",
+                "comentarioahorro",
+                "estado",
+            ],
+        )
+
+
 class PrestamoConGarantesViewTests(SimpleTestCase):
     def setUp(self):
         self.factory = RequestFactory()
@@ -487,6 +615,23 @@ class PrestamoConGarantesViewTests(SimpleTestCase):
                 "observacion": " Pago inicial ",
             },
         )
+        request.user = self.usuario
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def _request_ahorro_post(self, **overrides):
+        datos = {
+            "idsocio": "1",
+            "idbingo": "10",
+            "tipoahorro": "Obligatorio",
+            "montoahorro": "25.00",
+            "fechaahorro": "2026-07-08T10:30",
+            "comentarioahorro": "",
+            "estado": "Activo",
+        }
+        datos.update(overrides)
+        request = self.factory.post("/finanzas/ahorros/nuevo/", data=datos)
         request.user = self.usuario
         request.session = {}
         request._messages = FallbackStorage(request)
@@ -519,6 +664,30 @@ class PrestamoConGarantesViewTests(SimpleTestCase):
         request.session = {}
         request._messages = FallbackStorage(request)
         return request
+
+    def test_ahorro_nuevo_no_guarda_si_formulario_invalido(self):
+        request = self._request_ahorro_post(montoahorro="0")
+        form = MagicMock()
+        form.is_valid.return_value = False
+        contexto = {}
+
+        def render_spy(_request, _template, context):
+            contexto.update(context)
+            return HttpResponse("form invalido")
+
+        with (
+            patch("apps.finanzas.views.AhorroForm", return_value=form) as form_class,
+            patch("apps.finanzas.views.save_new_model_form") as save_directo,
+            patch("apps.finanzas.views.render", side_effect=render_spy),
+        ):
+            response = finanzas_views.ahorro_nuevo(request)
+
+        form_class.assert_called_once_with(request.POST)
+        form.is_valid.assert_called_once()
+        save_directo.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(contexto["form"], form)
+        self.assertEqual(contexto["titulo"], "Nuevo ahorro")
 
     def test_prestamo_nuevo_llama_servicio_con_formulario_valido(self):
         request = self._request_post()

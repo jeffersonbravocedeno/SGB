@@ -346,6 +346,12 @@ class AhorroForm(FriendlyModelForm):
             raise forms.ValidationError("Seleccione un tipo de ahorro válido.")
         return normalized
 
+    def clean_montoahorro(self):
+        value = self.cleaned_data.get("montoahorro")
+        if value is None or value <= 0:
+            raise forms.ValidationError("El monto del ahorro debe ser mayor que cero.")
+        return value
+
 
 class AporteSemanalForm(FriendlyModelForm):
     datetime_fields = ("fechaplanificadada", "fechaentregareal")
