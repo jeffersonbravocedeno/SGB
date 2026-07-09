@@ -11,7 +11,10 @@ from .services import (
     mensaje_estado_carton_publico,
     mensaje_estado_tablero_publico,
     normalizar_estado_partida,
+    normalizar_patron_ganador,
+    obtener_etiqueta_patron_ganador,
     parsear_bolas_cantadas,
+    total_casillas_patron_ganador,
 )
 
 
@@ -41,6 +44,9 @@ def construir_payload_publico_partida(
     bolas = parsear_bolas_cantadas(partida.bolascantadas)
     ultima_bola = bolas[-1] if bolas else None
     estado = normalizar_estado_partida(partida.estadopartida)
+    patron_ganador = normalizar_patron_ganador(
+        getattr(partida, "patronganador", None)
+    )
     finalizada = estado == ESTADO_PARTIDA_FINALIZADA
     ganador_confirmado = finalizada and bool(
         partida.idjugadorganador_id or ganador_publico
@@ -56,6 +62,13 @@ def construir_payload_publico_partida(
             "estado_visible": estado_partida_mostrar(estado),
             "mensaje_estado": mensaje_estado_tablero_publico(estado),
             "mensaje_estado_carton": mensaje_estado_carton_publico(estado),
+            "patron_ganador": patron_ganador,
+            "patron_ganador_label": obtener_etiqueta_patron_ganador(
+                patron_ganador
+            ),
+            "total_requeridos_patron": total_casillas_patron_ganador(
+                patron_ganador
+            ),
             "total_extraidas": len(bolas),
             "cantidad_extraida": len(bolas),
             "restantes": 75 - len(bolas),

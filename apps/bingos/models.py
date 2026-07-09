@@ -34,6 +34,20 @@ class Partidabingo(models.Model):
     valorefectivo = models.DecimalField(max_digits=10, decimal_places=2)
     premiomaterial = models.CharField(max_length=150)
     estadopartida = models.CharField(max_length=20)
+    patronganador = models.CharField(
+        max_length=20,
+        db_column='patronganador',
+        choices=(
+            ('carton_lleno', 'Cartón lleno'),
+            ('linea_horizontal', 'Línea horizontal'),
+            ('linea_vertical', 'Línea vertical'),
+            ('diagonal', 'Diagonal'),
+            ('cuatro_esquinas', 'Cuatro esquinas'),
+            ('cruz', 'Cruz'),
+            ('x', 'Letra X'),
+        ),
+        default='carton_lleno',
+    )
     bolascantadas = models.TextField()
     ultimabola = models.IntegerField()
     haydesempate = models.BooleanField(blank=True, null=True)
@@ -124,6 +138,137 @@ class CartonPartidaBingo(models.Model):
         managed = False
         db_table = 'carton_partida_bingo'
         unique_together = (('idcarton', 'idpartida'),)
+
+
+class BingoGastoOperativo(models.Model):
+    ESTADO_REGISTRADO = 'Registrado'
+    ESTADO_ANULADO = 'Anulado'
+
+    ESTADOS = (
+        (ESTADO_REGISTRADO, ESTADO_REGISTRADO),
+        (ESTADO_ANULADO, ESTADO_ANULADO),
+    )
+
+    idbingogastooperativo = models.AutoField(primary_key=True)
+    idbingo = models.ForeignKey('bingos.Bingo', models.DO_NOTHING, db_column='idbingo')
+    concepto = models.CharField(max_length=150)
+    monto = models.DecimalField(max_digits=12, decimal_places=2)
+    fechagasto = models.DateTimeField()
+    estado = models.CharField(max_length=20, choices=ESTADOS, default=ESTADO_REGISTRADO)
+    observacion = models.CharField(max_length=300, blank=True, null=True)
+    idusuarioregistro = models.ForeignKey(
+        'auth.User',
+        models.DO_NOTHING,
+        db_column='idusuarioregistro',
+        related_name='bingos_gastos_operativos_registrados',
+    )
+    fechacreacion = models.DateTimeField()
+    idusuarioanulacion = models.ForeignKey(
+        'auth.User',
+        models.DO_NOTHING,
+        db_column='idusuarioanulacion',
+        related_name='bingos_gastos_operativos_anulados',
+        blank=True,
+        null=True,
+    )
+    fechaanulacion = models.DateTimeField(blank=True, null=True)
+    motivoanulacion = models.CharField(max_length=300, blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'bingo_gasto_operativo'
+        verbose_name = 'Gasto operativo de bingo'
+        verbose_name_plural = 'Gastos operativos de bingo'
+
+
+class BingoPremioMaterialCosto(models.Model):
+    ESTADO_REGISTRADO = 'Registrado'
+    ESTADO_ANULADO = 'Anulado'
+
+    ESTADOS = (
+        (ESTADO_REGISTRADO, ESTADO_REGISTRADO),
+        (ESTADO_ANULADO, ESTADO_ANULADO),
+    )
+
+    idbingopremiomaterialcosto = models.AutoField(primary_key=True)
+    idbingo = models.ForeignKey('bingos.Bingo', models.DO_NOTHING, db_column='idbingo')
+    # La tabla física valida (idpartidabingo, idbingo) con una FK compuesta.
+    idpartidabingo = models.IntegerField(db_column='idpartidabingo')
+    descripcionpremio = models.CharField(max_length=150)
+    monto = models.DecimalField(max_digits=12, decimal_places=2)
+    estado = models.CharField(max_length=20, choices=ESTADOS, default=ESTADO_REGISTRADO)
+    observacion = models.CharField(max_length=300, blank=True, null=True)
+    idusuarioregistro = models.ForeignKey(
+        'auth.User',
+        models.DO_NOTHING,
+        db_column='idusuarioregistro',
+        related_name='bingos_costos_premios_materiales_registrados',
+    )
+    fechacreacion = models.DateTimeField()
+    idusuarioanulacion = models.ForeignKey(
+        'auth.User',
+        models.DO_NOTHING,
+        db_column='idusuarioanulacion',
+        related_name='bingos_costos_premios_materiales_anulados',
+        blank=True,
+        null=True,
+    )
+    fechaanulacion = models.DateTimeField(blank=True, null=True)
+    motivoanulacion = models.CharField(max_length=300, blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'bingo_premio_material_costo'
+        verbose_name = 'Costo de premio material de bingo'
+        verbose_name_plural = 'Costos de premios materiales de bingo'
+
+
+class BingoCierreFinanciero(models.Model):
+    ESTADO_ABIERTO = 'Abierto'
+    ESTADO_CERRADO = 'Cerrado'
+
+    ESTADOS = (
+        (ESTADO_ABIERTO, ESTADO_ABIERTO),
+        (ESTADO_CERRADO, ESTADO_CERRADO),
+    )
+
+    idbingocierrefinanciero = models.AutoField(primary_key=True)
+    idbingo = models.OneToOneField(
+        'bingos.Bingo',
+        models.DO_NOTHING,
+        db_column='idbingo',
+    )
+    estado = models.CharField(max_length=20, choices=ESTADOS, default=ESTADO_ABIERTO)
+    cartonesvendidosunicos = models.IntegerField()
+    recaudacionregistrada = models.DecimalField(max_digits=12, decimal_places=2)
+    premiosefectivofinalizados = models.DecimalField(max_digits=12, decimal_places=2)
+    costospremiosmateriales = models.DecimalField(max_digits=12, decimal_places=2)
+    gastosoperativos = models.DecimalField(max_digits=12, decimal_places=2)
+    resultadoprovisional = models.DecimalField(max_digits=12, decimal_places=2)
+    utilidadbruta = models.DecimalField(max_digits=12, decimal_places=2)
+    utilidadneta = models.DecimalField(max_digits=12, decimal_places=2)
+    totalrondas = models.IntegerField()
+    rondasfinalizadas = models.IntegerField()
+    rondascanceladas = models.IntegerField()
+    rondaspendientes = models.IntegerField()
+    fechacalculo = models.DateTimeField()
+    fechacierre = models.DateTimeField(blank=True, null=True)
+    idusuariocierre = models.ForeignKey(
+        'auth.User',
+        models.DO_NOTHING,
+        db_column='idusuariocierre',
+        related_name='bingos_cierres_financieros',
+        blank=True,
+        null=True,
+    )
+    observacioncierre = models.CharField(max_length=500, blank=True, null=True)
+    fechacreacion = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'bingo_cierre_financiero'
+        verbose_name = 'Cierre financiero de bingo'
+        verbose_name_plural = 'Cierres financieros de bingo'
 
 
 class Sesionjuego(models.Model):

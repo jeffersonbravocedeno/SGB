@@ -1,0 +1,477 @@
+from decimal import Decimal, InvalidOperation
+
+from django.db import transaction
+from django.db.models import Q, Sum
+from django.utils import timezone
+
+from apps.socios.models import Socio
+
+from .models import Ahorro, PagoPrestamo, Prestamo, PrestamoGarante
+
+
+PORCENTAJE_GARANTIA_PRESTAMO = Decimal("0.50")
+ESTADOS_PRESTAMO_SIN_SALDO_GARANTE = (
+    "Liquidado",
+    "Pagado",
+    "Cerrado",
+    "Cancelado",
+    "Rechazado",
+    "Anulado",
+)
+PRESTAMO_CAMPOS_PERMITIDOS = {
+    "idsocio",
+    "montoprestamosolicitado",
+    "tasainteres",
+    "montototalpagar",
+    "saldopendiente",
+    "numerocuotas",
+    "fechasolicitud",
+    "fechavencimiento",
+    "estadoprestamo",
+}
+PRESTAMO_CAMPOS_OBLIGATORIOS = {
+    "idsocio",
+    "montoprestamosolicitado",
+    "montototalpagar",
+    "fechasolicitud",
+    "fechavencimiento",
+    "estadoprestamo",
+}
+MENSAJE_TOTAL_MENOR_MONTO_SOLICITADO = (
+    "El total a pagar no puede ser menor que el monto solicitado."
+)
+
+
+class PrestamoGarantiaError(ValueError):
+    pass
+
+
+class PrestamoPagoError(ValueError):
+    pass
+
+
+_MISSING = object()
+
+
+def _lista_desde_iterable(valores):
+    if valores is None:
+        return []
+    return list(valores)
+
+
+def _decimal_seguro(valor):
+    if valor is None or isinstance(valor, bool):
+        raise InvalidOperation
+    if isinstance(valor, Decimal):
+        decimal = valor
+    else:
+        texto = str(valor).strip()
+        if not texto:
+            raise InvalidOperation
+        decimal = Decimal(texto)
+    if not decimal.is_finite():
+        raise InvalidOperation
+    return decimal
+
+
+def _obtener_campo(garante, campo):
+    if isinstance(garante, dict):
+        return garante.get(campo, _MISSING)
+    return getattr(garante, campo, _MISSING)
+
+
+def _normalizar_idsocio(valor):
+    if valor is _MISSING or valor is None or isinstance(valor, bool):
+        raise PrestamoGarantiaError("Debe seleccionar un garante válido.")
+    if isinstance(valor, str):
+        valor = valor.strip()
+        if not valor:
+            raise PrestamoGarantiaError("Debe seleccionar un garante válido.")
+    try:
+        return int(valor)
+    except (TypeError, ValueError, InvalidOperation):
+        raise PrestamoGarantiaError("Debe seleccionar un garante válido.") from None
+
+
+def _idsocio_desde_valor(valor):
+    if hasattr(valor, "idsocio"):
+        return _normalizar_idsocio(valor.idsocio)
+    if hasattr(valor, "pk") and valor.pk is not None:
+        return _normalizar_idsocio(valor.pk)
+    return _normalizar_idsocio(valor)
+
+
+def _normalizar_capacidad(valor):
+    try:
+        capacidad = _decimal_seguro(valor)
+    except (InvalidOperation, ValueError):
+        raise PrestamoGarantiaError(
+            "La capacidad del garante debe ser un valor numérico válido."
+        ) from None
+    if capacidad < 0:
+        return Decimal("0")
+    return capacidad
+
+
+def _normalizar_monto_pago(valor):
+    try:
+        monto = _decimal_seguro(valor)
+    except (InvalidOperation, ValueError):
+        raise PrestamoPagoError(
+            "El monto del pago debe ser mayor que cero."
+        ) from None
+    if monto <= 0:
+        raise PrestamoPagoError("El monto del pago debe ser mayor que cero.")
+    return monto
+
+
+def _normalizar_saldo_pendiente_pago(valor):
+    try:
+        saldo = _decimal_seguro(valor)
+    except (InvalidOperation, ValueError):
+        raise PrestamoPagoError("El préstamo no tiene saldo pendiente.") from None
+    if saldo <= 0:
+        raise PrestamoPagoError("El préstamo no tiene saldo pendiente.")
+    return saldo
+
+
+def _idprestamo_desde_valor(valor):
+    if hasattr(valor, "idprestamo"):
+        valor = valor.idprestamo
+    elif hasattr(valor, "pk") and valor.pk is not None:
+        valor = valor.pk
+
+    if valor is None or isinstance(valor, bool):
+        raise PrestamoPagoError("Debe seleccionar un préstamo válido.")
+    if isinstance(valor, str):
+        valor = valor.strip()
+        if not valor:
+            raise PrestamoPagoError("Debe seleccionar un préstamo válido.")
+    try:
+        return int(valor)
+    except (TypeError, ValueError, InvalidOperation):
+        raise PrestamoPagoError("Debe seleccionar un préstamo válido.") from None
+
+
+def _texto_limpio_pago(valor):
+    if valor is None:
+        return ""
+    return str(valor).strip()
+
+
+def _estado_prestamo_es_final(estado):
+    estado_normalizado = str(estado or "").strip().lower()
+    return any(
+        estado_normalizado == estado_final.lower()
+        for estado_final in ESTADOS_PRESTAMO_SIN_SALDO_GARANTE
+    )
+
+
+def _es_entrada_vacia(valor):
+    return valor is None or (isinstance(valor, str) and not valor.strip())
+
+
+def _sumar_decimal_agregado(queryset, campo):
+    total = queryset.aggregate(total=Sum(campo)).get("total")
+    return total or Decimal("0")
+
+
+def _q_estados_prestamo_finales():
+    filtros = Q()
+    for estado in ESTADOS_PRESTAMO_SIN_SALDO_GARANTE:
+        filtros |= Q(estadoprestamo__iexact=estado)
+    return filtros
+
+
+def calcular_capacidad_garante(socio):
+    socio_id = _idsocio_desde_valor(socio)
+    total_ahorros = _sumar_decimal_agregado(
+        Ahorro.objects.filter(idsocio_id=socio_id, estado__iexact="Activo"),
+        "montoahorro",
+    )
+    total_pendiente = _sumar_decimal_agregado(
+        Prestamo.objects.filter(idsocio_id=socio_id)
+        .exclude(_q_estados_prestamo_finales()),
+        "saldopendiente",
+    )
+
+    capacidad = total_ahorros - total_pendiente
+    if capacidad < 0:
+        return Decimal("0")
+    return capacidad
+
+
+def construir_datos_garantes(garantes):
+    datos = []
+    for garante in _lista_desde_iterable(garantes):
+        if _es_entrada_vacia(garante):
+            continue
+        idsocio = _idsocio_desde_valor(garante)
+        datos.append(
+            {
+                "idsocio": idsocio,
+                "capacidad": calcular_capacidad_garante(garante),
+            }
+        )
+    return datos
+
+
+def _datos_prestamo_desde_objeto(datos_prestamo):
+    if hasattr(datos_prestamo, "items"):
+        return dict(datos_prestamo)
+    if datos_prestamo is None:
+        return {}
+    return {
+        campo: getattr(datos_prestamo, campo)
+        for campo in PRESTAMO_CAMPOS_PERMITIDOS
+        if hasattr(datos_prestamo, campo)
+    }
+
+
+def _normalizar_datos_prestamo(datos_prestamo):
+    datos = _datos_prestamo_desde_objeto(datos_prestamo)
+    campos_no_permitidos = set(datos) - PRESTAMO_CAMPOS_PERMITIDOS
+    if campos_no_permitidos:
+        campo = sorted(campos_no_permitidos)[0]
+        raise PrestamoGarantiaError(f"Dato de préstamo no permitido: {campo}.")
+
+    for campo in sorted(PRESTAMO_CAMPOS_OBLIGATORIOS):
+        valor = datos.get(campo, _MISSING)
+        if valor is _MISSING or valor is None:
+            raise PrestamoGarantiaError(
+                f"Falta el dato obligatorio del préstamo: {campo}."
+            )
+        if isinstance(valor, str) and not valor.strip():
+            raise PrestamoGarantiaError(
+                f"Falta el dato obligatorio del préstamo: {campo}."
+            )
+
+    socio = datos["idsocio"]
+    socio_id = _idsocio_desde_valor(socio)
+    datos_normalizados = {}
+    if isinstance(socio, Socio):
+        datos_normalizados["idsocio"] = socio
+    else:
+        datos_normalizados["idsocio_id"] = socio_id
+
+    for campo in PRESTAMO_CAMPOS_PERMITIDOS - {"idsocio"}:
+        if campo in datos:
+            datos_normalizados[campo] = datos[campo]
+
+    _normalizar_montos_creacion_prestamo(datos_normalizados)
+
+    return datos_normalizados, socio_id
+
+
+def _normalizar_montos_creacion_prestamo(datos_prestamo):
+    try:
+        monto_solicitado = _decimal_seguro(datos_prestamo["montoprestamosolicitado"])
+    except (InvalidOperation, ValueError):
+        raise PrestamoGarantiaError(
+            "El monto solicitado del préstamo debe ser mayor que cero."
+        ) from None
+
+    if monto_solicitado <= 0:
+        raise PrestamoGarantiaError(
+            "El monto solicitado del préstamo debe ser mayor que cero."
+        )
+
+    try:
+        monto_total = _decimal_seguro(datos_prestamo["montototalpagar"])
+    except (InvalidOperation, ValueError):
+        raise PrestamoGarantiaError(
+            "El total a pagar del préstamo debe ser un valor numérico válido."
+        ) from None
+
+    if monto_total < monto_solicitado:
+        raise PrestamoGarantiaError(MENSAJE_TOTAL_MENOR_MONTO_SOLICITADO)
+
+    datos_prestamo["montoprestamosolicitado"] = monto_solicitado
+    datos_prestamo["montototalpagar"] = monto_total
+    datos_prestamo["saldopendiente"] = monto_total
+
+
+def _ids_garantes_limpios(garantes):
+    ids = []
+    for garante in _lista_desde_iterable(garantes):
+        if _es_entrada_vacia(garante):
+            continue
+        ids.append(_idsocio_desde_valor(garante))
+    return ids
+
+
+def _bloquear_socios_garantes(ids_garantes):
+    if not ids_garantes:
+        return []
+
+    ids_unicos = list(dict.fromkeys(ids_garantes))
+    socios_bloqueados = list(
+        Socio.objects.select_for_update().filter(idsocio__in=ids_unicos)
+    )
+    ids_bloqueados = {_idsocio_desde_valor(socio) for socio in socios_bloqueados}
+    if ids_bloqueados != set(ids_unicos):
+        raise PrestamoGarantiaError("Debe seleccionar un garante válido.")
+    return socios_bloqueados
+
+
+def crear_prestamo_con_garantes(*, datos_prestamo, garantes, usuario=None):
+    datos_normalizados, socio_deudor_id = _normalizar_datos_prestamo(datos_prestamo)
+    garantes_lista = _lista_desde_iterable(garantes)
+    del usuario
+
+    with transaction.atomic():
+        ids_garantes = _ids_garantes_limpios(garantes_lista)
+        socios_garantes = _bloquear_socios_garantes(ids_garantes)
+        socios_garantes_por_id = {
+            _idsocio_desde_valor(socio): socio
+            for socio in socios_garantes
+        }
+        datos_garantes = construir_datos_garantes(garantes_lista)
+        validacion = validar_garantes_prestamo(
+            socio_deudor_id=socio_deudor_id,
+            monto_solicitado=datos_normalizados["montoprestamosolicitado"],
+            garantes=datos_garantes,
+        )
+
+        datos_normalizados["montoprestamosolicitado"] = validacion[
+            "monto_solicitado"
+        ]
+        prestamo = Prestamo.objects.create(**datos_normalizados)
+
+        fecha_registro = timezone.now()
+        for garante in validacion["garantes_normalizados"]:
+            socio_garante = socios_garantes_por_id[garante["idsocio"]]
+            PrestamoGarante.objects.create(
+                idprestamo=prestamo,
+                idgarante=socio_garante,
+                capacidadcalculada=garante["capacidad"],
+                fecharegistro=fecha_registro,
+                estado=PrestamoGarante.ESTADO_ACTIVO,
+            )
+
+    return prestamo
+
+
+def registrar_pago_prestamo(
+    prestamo,
+    *,
+    monto_pagado,
+    metodo_pago=None,
+    numero_referencia="",
+    observacion="",
+    fecha_pago=None,
+):
+    monto_normalizado = _normalizar_monto_pago(monto_pagado)
+    prestamo_id = _idprestamo_desde_valor(prestamo)
+    referencia_limpia = _texto_limpio_pago(numero_referencia)
+    observacion_limpia = _texto_limpio_pago(observacion)
+    fecha_pago_normalizada = fecha_pago or timezone.now()
+
+    with transaction.atomic():
+        try:
+            prestamo_bloqueado = (
+                Prestamo.objects.select_for_update().get(idprestamo=prestamo_id)
+            )
+        except Prestamo.DoesNotExist:
+            raise PrestamoPagoError("Debe seleccionar un préstamo válido.") from None
+
+        if _estado_prestamo_es_final(prestamo_bloqueado.estadoprestamo):
+            raise PrestamoPagoError(
+                "No se pueden registrar pagos para un préstamo cerrado o liquidado."
+            )
+
+        saldo_pendiente = _normalizar_saldo_pendiente_pago(
+            prestamo_bloqueado.saldopendiente
+        )
+        if monto_normalizado > saldo_pendiente:
+            raise PrestamoPagoError(
+                "El monto del pago no puede superar el saldo pendiente."
+            )
+
+        pago = PagoPrestamo.objects.create(
+            idprestamo=prestamo_bloqueado,
+            idmetodopago=metodo_pago,
+            fechapago=fecha_pago_normalizada,
+            montopagado=monto_normalizado,
+            numeroreferencia=referencia_limpia,
+            observacion=observacion_limpia,
+            estado=PagoPrestamo.ESTADO_REGISTRADO,
+        )
+
+        nuevo_saldo = saldo_pendiente - monto_normalizado
+        prestamo_bloqueado.saldopendiente = nuevo_saldo
+        update_fields = ["saldopendiente"]
+        if nuevo_saldo == Decimal("0"):
+            prestamo_bloqueado.saldopendiente = Decimal("0")
+            prestamo_bloqueado.estadoprestamo = "Liquidado"
+            update_fields.append("estadoprestamo")
+        prestamo_bloqueado.save(update_fields=update_fields)
+
+    return pago
+
+
+def validar_garantes_prestamo(*, socio_deudor_id, monto_solicitado, garantes):
+    try:
+        monto_normalizado = _decimal_seguro(monto_solicitado)
+    except (InvalidOperation, ValueError):
+        raise PrestamoGarantiaError(
+            "El monto solicitado del préstamo debe ser mayor que cero."
+        ) from None
+
+    if monto_normalizado <= 0:
+        raise PrestamoGarantiaError(
+            "El monto solicitado del préstamo debe ser mayor que cero."
+        )
+
+    garantes_lista = _lista_desde_iterable(garantes)
+    capacidad_requerida = monto_normalizado * PORCENTAJE_GARANTIA_PRESTAMO
+    if not garantes_lista:
+        return {
+            "monto_solicitado": monto_normalizado,
+            "porcentaje_requerido": PORCENTAJE_GARANTIA_PRESTAMO,
+            "capacidad_requerida": capacidad_requerida,
+            "capacidad_total": Decimal("0.00"),
+            "garantes_normalizados": [],
+        }
+    if len(garantes_lista) > 2:
+        raise PrestamoGarantiaError("Un préstamo no puede tener más de dos garantes.")
+
+    socio_deudor_normalizado = _normalizar_idsocio(socio_deudor_id)
+    ids_garantes = set()
+    garantes_normalizados = []
+
+    for garante in garantes_lista:
+        idsocio = _normalizar_idsocio(_obtener_campo(garante, "idsocio"))
+        if idsocio == socio_deudor_normalizado:
+            raise PrestamoGarantiaError(
+                "El garante no puede ser el mismo socio deudor."
+            )
+        if idsocio in ids_garantes:
+            raise PrestamoGarantiaError("No puede repetir el mismo garante.")
+        ids_garantes.add(idsocio)
+
+        capacidad = _normalizar_capacidad(_obtener_campo(garante, "capacidad"))
+        garantes_normalizados.append(
+            {
+                "idsocio": idsocio,
+                "capacidad": capacidad,
+            }
+        )
+
+    capacidad_total = sum(
+        (garante["capacidad"] for garante in garantes_normalizados),
+        Decimal("0"),
+    )
+    if capacidad_total < capacidad_requerida:
+        raise PrestamoGarantiaError(
+            "La capacidad total de los garantes debe cubrir al menos el 50% del "
+            "monto solicitado."
+        )
+
+    return {
+        "monto_solicitado": monto_normalizado,
+        "porcentaje_requerido": PORCENTAJE_GARANTIA_PRESTAMO,
+        "capacidad_requerida": capacidad_requerida,
+        "capacidad_total": capacidad_total,
+        "garantes_normalizados": garantes_normalizados,
+    }

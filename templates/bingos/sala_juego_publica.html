@@ -31,6 +31,9 @@
             <div><dt>Última bola</dt><dd>{{ item.ultima_bola_codigo|default:"Aún no disponible" }}</dd></div>
         </dl>
         <a class="btn btn-primary w-100" href="{% url 'bingos:tablero_publico' item.partida.idpartidabingo %}">Ver tablero</a>
+        {% if item.mostrar_compra_carton and request.user|has_group:"Jugador" and not request.user.is_staff and not request.user.is_superuser %}
+        <a class="btn btn-outline-primary w-100 mt-2" href="{% url 'bingos:comprar_carton_bingo' item.partida.idbingo_id %}">Comprar cartón para este Bingo</a>
+        {% endif %}
     </article>
     {% endfor %}
 </div>

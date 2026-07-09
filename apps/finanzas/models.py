@@ -2,7 +2,10 @@ from django.db import models
 
 
 class Prestamo(models.Model):
-    idprestamo = models.IntegerField(primary_key=True)
+    idprestamo = models.AutoField(
+        primary_key=True,
+        db_column="idprestamo",
+    )
     idsocio = models.ForeignKey('socios.Socio', models.DO_NOTHING, db_column='idsocio')
     montoprestamosolicitado = models.DecimalField(max_digits=12, decimal_places=2)
     tasainteres = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
@@ -21,6 +24,34 @@ class Prestamo(models.Model):
         db_table = 'prestamo'
         verbose_name = 'Prestamo'
         verbose_name_plural = 'Prestamos'
+
+
+class PrestamoGarante(models.Model):
+    ESTADO_ACTIVO = 'Activo'
+    ESTADO_INACTIVO = 'Inactivo'
+    ESTADO_CHOICES = (
+        (ESTADO_ACTIVO, 'Activo'),
+        (ESTADO_INACTIVO, 'Inactivo'),
+    )
+
+    idprestamogarante = models.AutoField(
+        primary_key=True,
+        db_column="idprestamogarante",
+    )
+    idprestamo = models.ForeignKey('finanzas.Prestamo', models.DO_NOTHING, db_column='idprestamo')
+    idgarante = models.ForeignKey('socios.Socio', models.DO_NOTHING, db_column='idgarante')
+    capacidadcalculada = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    fecharegistro = models.DateTimeField()
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default=ESTADO_ACTIVO)
+
+    def __str__(self):
+        return f'Garante {self.idgarante_id} para prestamo {self.idprestamo_id}'
+
+    class Meta:
+        managed = False
+        db_table = 'prestamo_garante'
+        verbose_name = 'Garante de prestamo'
+        verbose_name_plural = 'Garantes de prestamos'
 
 
 class Pago(models.Model):
@@ -42,6 +73,42 @@ class Pago(models.Model):
         db_table = 'pago'
         verbose_name = 'Pago'
         verbose_name_plural = 'Pagos'
+
+
+class PagoPrestamo(models.Model):
+    ESTADO_REGISTRADO = 'Registrado'
+    ESTADO_ANULADO = 'Anulado'
+    ESTADO_CHOICES = (
+        (ESTADO_REGISTRADO, 'Registrado'),
+        (ESTADO_ANULADO, 'Anulado'),
+    )
+
+    idpagoprestamo = models.AutoField(
+        primary_key=True,
+        db_column="idpagoprestamo",
+    )
+    idprestamo = models.ForeignKey('finanzas.Prestamo', models.DO_NOTHING, db_column='idprestamo')
+    idmetodopago = models.ForeignKey(
+        'configuracion.Metodopago',
+        models.DO_NOTHING,
+        db_column='idmetodopago',
+        blank=True,
+        null=True,
+    )
+    fechapago = models.DateTimeField()
+    montopagado = models.DecimalField(max_digits=12, decimal_places=2)
+    numeroreferencia = models.CharField(max_length=80, blank=True, null=True)
+    observacion = models.CharField(max_length=255, blank=True, null=True)
+    estado = models.CharField(max_length=20, choices=ESTADO_CHOICES, default=ESTADO_REGISTRADO)
+
+    def __str__(self):
+        return f'Pago de prestamo {self.idpagoprestamo}'
+
+    class Meta:
+        managed = False
+        db_table = 'pago_prestamo'
+        verbose_name = 'Pago de prestamo'
+        verbose_name_plural = 'Pagos de prestamos'
 
 
 class Ahorro(models.Model):

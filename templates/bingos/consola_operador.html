@@ -1,31 +1,29 @@
 {% extends "base.html" %}
-{% load siab_tags %}
+{% load static siab_tags %}
 
 {% block title %}SIAB | Consola de operador{% endblock %}
 
 {% block content %}
+<div data-realtime-bingo data-realtime-mode="operador" data-partida-id="{{ partida.idpartidabingo }}">
 <section class="page-header">
     <div>
         <p class="page-kicker">Consola del operador</p>
         <h1>{{ partida.nombreronda }}</h1>
-        <p>{{ partida.idbingo.titulobingo }} · Estado: {{ partida.estadopartida|estado_partida_display }}</p>
+        <p>{{ partida.idbingo.titulobingo }} · Estado: <span data-realtime-estado>{{ partida.estadopartida|estado_partida_display }}</span></p>
     </div>
     <div class="d-flex flex-wrap gap-2">
+        {% include "bingos/includes/control_sonido.html" %}
         <a class="btn btn-outline-light" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Detalle</a>
         {% if partida.estadopartida == "Desempate" %}
         <a class="btn btn-warning" href="{% url 'bingos:desempate_operador' partida.idpartidabingo %}">Ir al desempate</a>
         {% endif %}
-        {% if puede_asignar_cartones %}
-        <a class="btn btn-primary" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">Generar cartón</a>
-        {% else %}
-        <span class="btn btn-outline-light disabled" aria-disabled="true" title="Solo disponible en Programada o En espera">Generación bloqueada</span>
-        {% endif %}
+        <a class="btn btn-primary" href="{% url 'bingos:detalle' partida.idbingo_id %}">Administrar cartones del Bingo</a>
     </div>
 </section>
 
 {% if partida.estadopartida == "Desempate" %}
 <div class="alert alert-warning d-flex flex-wrap justify-content-between align-items-center gap-3" role="alert">
-    <span>El modo Desempate está activo. La extracción normal, la validación de cartones, la generación y la finalización genérica están bloqueadas.</span>
+    <span>El modo Desempate está activo. La extracción normal, la validación de cartones y la finalización genérica están bloqueadas.</span>
     <a class="btn btn-warning" href="{% url 'bingos:desempate_operador' partida.idpartidabingo %}">Ir al desempate</a>
 </div>
 {% endif %}
@@ -82,7 +80,8 @@
         <div class="col-lg-4">
             <h2 class="section-subtitle">Estado operativo</h2>
             <dl class="detail-list mt-3">
-                <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></dd></div>
+                <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}" data-realtime-estado>{{ partida.estadopartida|estado_partida_display }}</span></dd></div>
+                <div><dt>Patrón ganador</dt><dd>{{ partida.get_patronganador_display }}</dd></div>
                 <div><dt>Inicio</dt><dd>{{ partida.horainicio|date:"d/m/Y H:i" }}</dd></div>
                 <div><dt>Finalización</dt><dd>{{ partida.horafin|date:"d/m/Y H:i"|default_dash }}</dd></div>
             </dl>
@@ -107,27 +106,51 @@
         <div class="col-lg-4">
             <div class="last-ball-card h-100">
                 <span>Última bola</span>
-                {% if ultima_bola_codigo %}
-                <strong>{{ ultima_bola_codigo }}</strong>
-                {% else %}
-                <strong class="last-ball-empty">—</strong>
-                <small>Aún no se han extraído bolas</small>
-                {% endif %}
+                <strong class="{% if not ultima_bola_codigo %}last-ball-empty{% endif %}" data-realtime-ultima-bola>{% if ultima_bola_codigo %}{{ ultima_bola_codigo }}{% else %}—{% endif %}</strong>
+                <small data-realtime-sin-bolas{% if ultima_bola_codigo %} hidden{% endif %}>Aún no se han extraído bolas</small>
             </div>
         </div>
         <div class="col-lg-8">
             <div class="draw-controls h-100">
                 <div>
                     <p class="page-kicker text-primary mb-1">Bolillero manual</p>
-                    <h2 class="section-subtitle">{{ total_bolas_extraidas }} de 75 bolas extraídas</h2>
-                    <p class="text-muted mb-0">Faltan {{ total_bolas_faltantes }} bola{{ total_bolas_faltantes|pluralize }}.</p>
+                    <h2 class="section-subtitle"><span data-realtime-total-extraidas>{{ total_bolas_extraidas }}</span> de 75 bolas extraídas</h2>
+                    <p class="text-muted mb-0">Faltan <span data-realtime-restantes>{{ total_bolas_faltantes }}</span> bola{{ total_bolas_faltantes|pluralize }}.</p>
                 </div>
-                <form method="post" action="{% url 'bingos:sacar_bola' partida.idpartidabingo %}">
+                <form method="post" action="{% url 'bingos:sacar_bola' partida.idpartidabingo %}" data-bolillero-manual-form>
                     {% csrf_token %}
-                    <button class="btn btn-primary btn-lg w-100" type="submit" {% if not puede_sacar_bola %}disabled{% endif %}>
+                    <button class="btn btn-primary btn-lg w-100" type="submit" data-bolillero-manual-button {% if not puede_sacar_bola %}disabled{% endif %}>
                         Sacar siguiente bola
                     </button>
                 </form>
+                <div
+                    class="border rounded-3 p-3"
+                    data-bolillero-automatico
+                    data-partida-id="{{ partida.idpartidabingo }}"
+                    data-estado-partida="{{ partida.estadopartida }}"
+                    data-bolas-faltantes="{{ total_bolas_faltantes|default:0 }}"
+                    data-puede-sacar-bola="{{ puede_sacar_bola|yesno:'true,false' }}"
+                >
+                    <p class="page-kicker text-primary mb-1">Bolillero automático</p>
+                    <div class="row g-3 align-items-end">
+                        <div class="col-md-4">
+                            <label class="form-label" for="bolillero-intervalo-{{ partida.idpartidabingo }}">Intervalo</label>
+                            <select class="form-select" id="bolillero-intervalo-{{ partida.idpartidabingo }}" data-bolillero-intervalo>
+                                <option value="3">3 segundos</option>
+                                <option value="5" selected>5 segundos</option>
+                                <option value="8">8 segundos</option>
+                                <option value="10">10 segundos</option>
+                            </select>
+                        </div>
+                        <div class="col-md-8">
+                            <div class="d-flex flex-wrap gap-2">
+                                <button class="btn btn-success" type="button" data-bolillero-iniciar {% if not puede_sacar_bola %}disabled{% endif %}>Iniciar extracción automática</button>
+                                <button class="btn btn-outline-secondary" type="button" data-bolillero-detener disabled>Detener extracción automática</button>
+                            </div>
+                        </div>
+                    </div>
+                    <p class="small text-muted mt-3 mb-0" data-bolillero-estado aria-live="polite">Automático detenido</p>
+                </div>
                 {% if not puede_sacar_bola %}
                 <p class="small text-muted mb-0">
                     {% if not hay_bolas_disponibles %}
@@ -149,15 +172,14 @@
             <p>Orden de extracción registrado para esta partida</p>
         </div>
     </div>
-    {% if historial_bolas %}
-    <div class="ball-history">
+    <div class="ball-history{% if not historial_bolas %} d-none{% endif %}" data-realtime-history role="list" aria-label="Bolas extraídas">
+        {% if historial_bolas %}
         {% for bola in historial_bolas %}
-        <span class="ball-history-item" title="Bola número {{ bola.numero }}">{{ bola.codigo }}</span>
+        <span class="ball-history-item" title="Bola número {{ bola.numero }}" role="listitem">{{ bola.codigo }}</span>
         {% endfor %}
+        {% endif %}
     </div>
-    {% else %}
-    <div class="empty-state"><strong>No hay bolas registradas</strong><span>Usa “Sacar siguiente bola” cuando la partida esté En curso.</span></div>
-    {% endif %}
+    <div class="empty-state{% if historial_bolas %} d-none{% endif %}" data-realtime-history-empty><strong>No hay bolas registradas</strong><span>Usa “Sacar siguiente bola” cuando la partida esté En curso.</span></div>
 </section>
 
 <section class="content-panel mb-3">
@@ -173,7 +195,7 @@
             <div class="bingo-board-column">
                 <div class="bingo-board-letter">{{ columna.letra }}</div>
                 {% for bola in columna.bolas %}
-                <div class="bingo-board-number{% if bola.extraida %} is-drawn{% endif %}" title="{{ bola.codigo }}{% if bola.extraida %} extraída{% else %} disponible{% endif %}">
+                <div class="bingo-board-number{% if bola.extraida %} is-drawn{% endif %}" data-bola-numero="{{ bola.numero }}" title="{{ bola.codigo }}{% if bola.extraida %} extraída{% else %} disponible{% endif %}">
                     {{ bola.numero }}
                 </div>
                 {% endfor %}
@@ -194,11 +216,11 @@
         {% endif %}
     </div>
 
+    {% if cartones_validacion %}
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h3 class="section-subtitle mb-0">Cartones históricos de la partida</h3>
         <span class="badge rounded-pill text-bg-secondary">Histórico por partida</span>
     </div>
-    {% if cartones_validacion %}
     <div class="winner-validation-grid">
         {% for item in cartones_validacion %}
         <article class="winner-validation-card{% if item.completo %} is-complete{% endif %}">
@@ -232,9 +254,9 @@
             {% if item.error %}
             <div class="alert alert-danger py-2 mb-0" role="alert">{{ item.error }}</div>
             {% elif item.completo %}
-            <div class="validation-count is-complete">24 de 24 números marcados</div>
+            <div class="validation-count is-complete">{{ item.total_requeridos|default:24 }} de {{ item.total_requeridos|default:24 }} números marcados</div>
             {% else %}
-            <div class="validation-count">Faltan {{ item.faltantes|length }} número{{ item.faltantes|length|pluralize }}</div>
+            <div class="validation-count">{{ item.cantidad_marcados }} de {{ item.total_requeridos|default:24 }} números marcados · {{ item.progreso }}%</div>
             <div class="pending-ball-list">
                 {% for codigo in item.faltantes_codigos %}<span>{{ codigo }}</span>{% endfor %}
             </div>
@@ -247,8 +269,6 @@
         </article>
         {% endfor %}
     </div>
-    {% else %}
-    <div class="empty-state"><strong>No hay cartones históricos para validar</strong><span>Los cartones del flujo heredado aparecerán aquí.</span></div>
     {% endif %}
 
     <div class="d-flex justify-content-between align-items-center mt-4 mb-3">
@@ -297,9 +317,9 @@
             {% if item.error %}
             <div class="alert alert-danger py-2 mb-0" role="alert">{{ item.error }}</div>
             {% elif item.completo %}
-            <div class="validation-count is-complete">24 de 24 números marcados · 100%</div>
+            <div class="validation-count is-complete">{{ item.total_requeridos|default:24 }} de {{ item.total_requeridos|default:24 }} números marcados · 100%</div>
             {% else %}
-            <div class="validation-count">{{ item.cantidad_marcados }} de 24 números marcados · {{ item.progreso }}%</div>
+            <div class="validation-count">{{ item.cantidad_marcados }} de {{ item.total_requeridos|default:24 }} números marcados · {{ item.progreso }}%</div>
             <div class="pending-ball-list">
                 {% for codigo in item.faltantes_codigos %}<span>{{ codigo }}</span>{% endfor %}
             </div>
@@ -317,21 +337,17 @@
     {% endif %}
 </section>
 
+{% if cartones %}
 <section class="content-panel">
     <div class="section-heading">
         <div>
             <h2>Cartones históricos de la partida</h2>
             <p>Registros que conservan la relación heredada mediante Carton.idpartida</p>
         </div>
-        {% if puede_asignar_cartones %}
-        <a class="btn btn-primary btn-sm" href="{% url 'bingos:partida_carton_nuevo' partida.idpartidabingo %}">+ Generar cartón</a>
-        {% else %}
-        <span class="btn btn-outline-secondary btn-sm disabled" aria-disabled="true">Generación bloqueada</span>
-        {% endif %}
     </div>
     <div class="table-responsive">
         <table class="table modern-table align-middle">
-            <thead><tr><th>Código</th><th>Jugador</th><th>Precio</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
+            <thead><tr><th>Código</th><th>Jugador</th><th>Precio</th><th>Estado</th></tr></thead>
             <tbody>
                 {% for carton in cartones %}
                 <tr>
@@ -339,15 +355,13 @@
                     <td>{{ carton.idjugador|default:"Sin jugador" }}</td>
                     <td>${{ carton.preciopagado|floatformat:2 }}</td>
                     <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
-                    <td class="text-end"><a class="btn btn-outline-secondary btn-sm" href="{% url 'bingos:partida_carton_editar' partida.idpartidabingo carton.idcarton %}">Editar</a></td>
                 </tr>
-                {% empty %}
-                <tr><td colspan="5" class="text-muted">No hay cartones asignados a esta partida.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
 </section>
+{% endif %}
 
 <section class="content-panel mt-3">
     <div class="section-heading">
@@ -381,4 +395,7 @@
     <div class="empty-state"><strong>No hay cartones de Bingo en esta ronda</strong><span>Las participaciones híbridas se mostrarán sin duplicar matriz, código ni precio.</span></div>
     {% endif %}
 </section>
+</div>
+<script src="{% static 'js/realtime_bingo.js' %}" defer></script>
+<script src="{% static 'js/bolillero_automatico.js' %}" defer></script>
 {% endblock %}

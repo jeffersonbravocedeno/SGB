@@ -15,6 +15,8 @@
         <a class="btn btn-outline-secondary" href="{% url 'bingos:partidas_lista' %}">Partidas</a>
         <a class="btn btn-outline-secondary" href="{% url 'bingos:bingo_resumen_excel' bingo.idbingo %}">Exportar resumen</a>
         {% if request.user.is_staff or request.user.is_superuser %}
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:preliquidacion_financiera' bingo.idbingo %}">Ver preliquidación financiera</a>
+        <a class="btn btn-outline-secondary" href="{% url 'bingos:bingo_finanzas' bingo.idbingo %}">Gestión financiera</a>
         <a class="btn btn-success" href="{% url 'bingos:bingo_carton_nuevo' bingo.idbingo %}">Vender cartón para todo el Bingo</a>
         {% endif %}
         <a class="btn btn-primary" href="{% url 'bingos:editar' bingo.idbingo %}">Editar</a>
@@ -23,7 +25,7 @@
 
 {% if request.user.is_staff or request.user.is_superuser %}
 <div class="alert alert-info" role="note">
-    <strong>Venta híbrida recomendada:</strong> se crea un solo cartón, con un único código, matriz y precio, que participa en todas las partidas actuales de este Bingo. No se crea ni se cobra un cartón diferente por cada ronda.
+    <strong>Venta híbrida:</strong> se crea un solo cartón, con un único código, matriz y precio. El cartón participa únicamente en las rondas elegibles al momento de la venta. No se crea ni se cobra un cartón diferente por cada ronda.
 </div>
 {% endif %}
 
@@ -47,13 +49,14 @@
             </div>
             <div class="table-responsive mb-4">
                 <table class="table modern-table align-middle">
-                    <thead><tr><th>Ronda</th><th>Premio efectivo</th><th>Ganador</th><th>Inicio</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
+                    <thead><tr><th>Ronda</th><th>Premio efectivo</th><th>Ganador</th><th>Patrón</th><th>Inicio</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
                     <tbody>
                         {% for partida in partidas %}
                         <tr>
                             <td>{{ partida.nombreronda }}</td>
                             <td>${{ partida.valorefectivo|floatformat:2 }}</td>
                             <td>{{ partida.idjugadorganador|default:"Sin ganador" }}</td>
+                            <td>{{ partida.get_patronganador_display }}</td>
                             <td>{{ partida.horainicio|date:"d/m/Y H:i" }}</td>
                             <td><span class="badge rounded-pill {{ partida.estadopartida|estado_class }}">{{ partida.estadopartida|estado_partida_display }}</span></td>
                             <td class="text-end">
@@ -64,31 +67,43 @@
                             </td>
                         </tr>
                         {% empty %}
-                        <tr><td colspan="6" class="text-muted">No hay partidas asociadas.</td></tr>
+                        <tr><td colspan="7" class="text-muted">No hay partidas asociadas.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
 
-            <h2 class="section-subtitle">Cartones relacionados</h2>
+            <div class="section-heading">
+                <div>
+                    <h2 class="section-subtitle">Cartones relacionados</h2>
+                    <p>{{ cartones.paginator.count }} {% if cartones.paginator.count == 1 %}cartón{% else %}cartones{% endif %} · página {{ cartones.number }} de {{ cartones.paginator.num_pages }}</p>
+                </div>
+            </div>
             <div class="table-responsive">
                 <table class="table modern-table align-middle">
-                    <thead><tr><th>Código</th><th>Jugador</th><th>Partida</th><th>Precio</th><th>Estado</th></tr></thead>
+                    <thead><tr><th>Código</th><th>Jugador</th><th>Tipo</th><th>Ronda / participaciones</th><th>Precio</th><th>Estado</th></tr></thead>
                     <tbody>
                         {% for carton in cartones %}
                         <tr>
                             <td>{{ carton.codigocarton }}</td>
                             <td>{{ carton.idjugador|default:"Sin jugador" }}</td>
-                            <td>{{ carton.idpartida }}</td>
+                            {% if carton.idpartida_id %}
+                            <td><span class="badge text-bg-secondary">Cartón heredado por ronda</span></td>
+                            <td>{{ carton.idpartida.nombreronda }}</td>
+                            {% else %}
+                            <td><span class="badge text-bg-primary">Cartón del Bingo</span></td>
+                            <td>{{ carton.total_participaciones }} ronda{{ carton.total_participaciones|pluralize:"s" }}</td>
+                            {% endif %}
                             <td>${{ carton.preciopagado|floatformat:2 }}</td>
                             <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
                         </tr>
                         {% empty %}
-                        <tr><td colspan="5" class="text-muted">No hay cartones relacionados.</td></tr>
+                        <tr><td colspan="6" class="text-muted">No hay cartones relacionados.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
+            {% include "includes/pagination.html" %}
         </div>
     </div>
 </section>

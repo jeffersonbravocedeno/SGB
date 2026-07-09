@@ -5,6 +5,7 @@ from django.core.exceptions import ValidationError
 
 from apps.common.forms import (
     FriendlyModelForm,
+    apply_bootstrap,
     validate_optional_url,
     validate_optional_url_or_path,
     validate_unique_field,
@@ -14,6 +15,7 @@ from apps.jugadores.models import Jugador
 from .models import Bingo, Carton, Partidabingo
 from .services import (
     ESTADOS_PARTIDA,
+    ESTADO_PARTIDA_PROGRAMADA,
     estado_partida_valido,
     normalizar_estado_partida,
 )
@@ -105,6 +107,7 @@ class PartidaBingoForm(FriendlyModelForm):
             "valorefectivo",
             "premiomaterial",
             "estadopartida",
+            "patronganador",
             "bolascantadas",
             "ultimabola",
             "haydesempate",
@@ -119,6 +122,7 @@ class PartidaBingoForm(FriendlyModelForm):
             "valorefectivo": "Premio en efectivo",
             "premiomaterial": "Premio material",
             "estadopartida": "Estado",
+            "patronganador": "Patrón ganador",
             "bolascantadas": "Bolas cantadas",
             "ultimabola": "Última bola",
             "haydesempate": "Hay desempate",
@@ -136,6 +140,18 @@ class PartidaBingoForm(FriendlyModelForm):
         super().__init__(*args, **kwargs)
         self.fields["idjugadorganador"].queryset = Jugador.objects.order_by("aliasjugador")
         self.fields["idjugadorganador"].empty_label = "Sin ganador definido"
+        patronganador_field = self.fields["patronganador"]
+        patronganador_field.initial = (
+            patronganador_field.initial
+            or self._meta.model._meta.get_field("patronganador").default
+        )
+        if self.instance and self.instance.pk:
+            estado = normalizar_estado_partida(self.instance.estadopartida)
+            if estado != ESTADO_PARTIDA_PROGRAMADA:
+                patronganador_field.disabled = True
+                patronganador_field.help_text = (
+                    "Solo se puede cambiar cuando la ronda está Programada."
+                )
 
     def clean_estadopartida(self):
         estado = normalizar_estado_partida(self.cleaned_data.get("estadopartida"))
@@ -264,6 +280,133 @@ class GenerarCartonBingoForm(FriendlyModelForm):
         if precio is None or precio <= 0:
             raise ValidationError("El precio pagado debe ser mayor que cero.")
         return precio
+
+
+class CompraCartonJugadorForm(forms.Form):
+    confirmar_compra = forms.BooleanField(
+        label="Confirmo la compra de este cartón para el Bingo.",
+        required=True,
+        error_messages={
+            "required": "Confirme la compra para continuar.",
+        },
+    )
+
+
+class GastoOperativoBingoForm(forms.Form):
+    concepto = forms.CharField(
+        label="Concepto",
+        max_length=150,
+        error_messages={"required": "Ingrese el concepto del gasto."},
+    )
+    monto = forms.DecimalField(
+        label="Monto",
+        max_digits=12,
+        decimal_places=2,
+        error_messages={
+            "required": "Ingrese el monto del gasto.",
+            "invalid": "Ingrese un valor numérico válido.",
+        },
+    )
+    fechagasto = forms.DateTimeField(
+        label="Fecha de gasto",
+        required=False,
+        input_formats=["%Y-%m-%dT%H:%M"],
+        widget=forms.DateTimeInput(
+            attrs={"type": "datetime-local"},
+            format="%Y-%m-%dT%H:%M",
+        ),
+        error_messages={"invalid": "Ingrese una fecha y hora válidas."},
+        help_text="Opcional. Si se deja vacía, se usará la fecha actual.",
+    )
+    observacion = forms.CharField(
+        label="Observación",
+        max_length=300,
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 2}),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["monto"].widget.attrs.update({"step": "0.01"})
+        apply_bootstrap(self)
+
+
+class _PartidaPremioMaterialChoiceField(forms.ModelChoiceField):
+    def label_from_instance(self, obj):
+        ronda = obj.nombreronda or f"Partida {obj.pk}"
+        premio = obj.premiomaterial or "Premio material"
+        return f"{ronda} - {premio}"
+
+
+class CostoPremioMaterialBingoForm(forms.Form):
+    partida = _PartidaPremioMaterialChoiceField(
+        label="Partida",
+        queryset=Partidabingo.objects.none(),
+        empty_label="Seleccione una partida",
+        error_messages={"required": "Seleccione la partida del premio material."},
+    )
+    descripcion_premio = forms.CharField(
+        label="Descripción del premio",
+        max_length=150,
+        error_messages={"required": "Ingrese la descripción del premio."},
+    )
+    monto = forms.DecimalField(
+        label="Monto",
+        max_digits=12,
+        decimal_places=2,
+        error_messages={
+            "required": "Ingrese el monto del costo.",
+            "invalid": "Ingrese un valor numérico válido.",
+        },
+    )
+    observacion = forms.CharField(
+        label="Observación",
+        max_length=300,
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 2}),
+    )
+
+    def __init__(self, *args, bingo=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        queryset = Partidabingo.objects.none()
+        if bingo is not None and getattr(bingo, "pk", None) is not None:
+            queryset = (
+                Partidabingo.objects.filter(
+                    idbingo=bingo,
+                    premiomaterial__isnull=False,
+                    premiomaterial__gt="",
+                )
+                .order_by("horainicio", "idpartidabingo")
+            )
+        self.fields["partida"].queryset = queryset
+        self.fields["monto"].widget.attrs.update({"step": "0.01"})
+        apply_bootstrap(self)
+
+
+class MotivoAnulacionForm(forms.Form):
+    motivo = forms.CharField(
+        label="Motivo de anulación",
+        max_length=300,
+        widget=forms.Textarea(attrs={"rows": 2}),
+        error_messages={"required": "Ingrese el motivo de anulación."},
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        apply_bootstrap(self)
+
+
+class CierreFinancieroBingoForm(forms.Form):
+    observacion_cierre = forms.CharField(
+        label="Observación de cierre",
+        max_length=300,
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 2}),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        apply_bootstrap(self)
 
 
 class CartonPartidaForm(CartonForm):

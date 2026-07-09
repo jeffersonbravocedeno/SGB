@@ -14,6 +14,11 @@
 <form class="content-panel" method="post" novalidate>
     {% csrf_token %}
     {% include "includes/form_errors.html" with form=form %}
+    {% if form.patronganador.field.disabled %}
+    <div class="alert alert-info" role="note">
+        El patrón ganador no se puede cambiar porque la ronda ya no está Programada.
+    </div>
+    {% endif %}
     <div class="row g-3">
         {% for field in form %}
         <div class="{% if field.name in 'bolascantadas,idbingadores' %}col-12{% else %}col-md-6{% endif %}">

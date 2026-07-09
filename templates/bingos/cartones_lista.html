@@ -8,9 +8,8 @@
     <div>
         <p class="page-kicker">Cartones</p>
         <h1>Cartones</h1>
-        <p>Consulta y gestión de cartones asignados a partidas y jugadores.</p>
+        <p>Los cartones deben venderse desde el detalle del Bingo para conservar las participaciones por ronda.</p>
     </div>
-    <a class="btn btn-primary" href="{% url 'bingos:carton_nuevo' %}">+ Nuevo cartón</a>
 </section>
 
 <section class="content-panel">
@@ -26,19 +25,29 @@
     </div>
     <div class="table-responsive">
         <table class="table modern-table align-middle">
-            <thead><tr><th>Código</th><th>Jugador</th><th>Partida</th><th>Precio</th><th>Estado</th><th class="text-end">Acciones</th></tr></thead>
+            <thead><tr><th>Código</th><th>Jugador</th><th>Tipo</th><th>Bingo / ronda</th><th>Rondas</th><th>Precio</th><th>Estado</th></tr></thead>
             <tbody>
                 {% for carton in page_obj %}
                 <tr>
                     <td>{{ carton.codigocarton }}</td>
                     <td>{{ carton.idjugador|default:"Sin jugador" }}</td>
-                    <td>{{ carton.idpartida|default_dash }}</td>
+                    {% if carton.idpartida_id %}
+                    <td><span class="badge text-bg-secondary">Cartón heredado por ronda</span></td>
+                    <td>
+                        {{ carton.idpartida.idbingo.titulobingo }}
+                        <div class="small text-muted">{{ carton.idpartida.nombreronda }}</div>
+                    </td>
+                    <td>1 ronda</td>
+                    {% else %}
+                    <td><span class="badge text-bg-primary">Cartón del Bingo</span></td>
+                    <td>{{ carton.idbingo.titulobingo }}</td>
+                    <td>{{ carton.total_participaciones }} ronda{{ carton.total_participaciones|pluralize:"s" }}</td>
+                    {% endif %}
                     <td>${{ carton.preciopagado|floatformat:2 }}</td>
                     <td><span class="badge rounded-pill {{ carton.estadocarton|estado_class }}">{{ carton.estadocarton }}</span></td>
-                    <td class="text-end"><a class="btn btn-outline-secondary btn-sm" href="{% url 'bingos:carton_editar' carton.idcarton %}">Editar</a></td>
                 </tr>
                 {% empty %}
-                <tr><td colspan="6" class="text-muted">No hay cartones registrados.</td></tr>
+                <tr><td colspan="7" class="text-muted">No hay cartones registrados.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

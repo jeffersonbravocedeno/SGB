@@ -4,7 +4,7 @@ from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, IntegrityError, connection, transaction
 from django.http import Http404, HttpResponse
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -20,11 +20,25 @@ from .forms import (
     BingoForm,
     CartonForm,
     CartonPartidaForm,
+    CompraCartonJugadorForm,
+    CierreFinancieroBingoForm,
+    CostoPremioMaterialBingoForm,
     GenerarAsignarCartonForm,
     GenerarCartonBingoForm,
+    GastoOperativoBingoForm,
+    MotivoAnulacionForm,
     PartidaBingoForm,
 )
-from .models import Bingo, Carton, CartonPartidaBingo, Partidabingo, Sesionjuego
+from .models import (
+    Bingo,
+    BingoCierreFinanciero,
+    BingoGastoOperativo,
+    BingoPremioMaterialCosto,
+    Carton,
+    CartonPartidaBingo,
+    Partidabingo,
+    Sesionjuego,
+)
 from .realtime import programar_publicacion_partida
 from .reportes import (
     PDF_CONTENT_TYPE,
@@ -40,6 +54,7 @@ from .services import (
     BolaBingoError,
     CartonPublicoError,
     CartonAsignacionError,
+    CierreFinancieroError,
     DesempateError,
     ESTADO_PARTIDA_CANCELADA,
     ESTADO_PARTIDA_DESEMPATE,
@@ -51,12 +66,17 @@ from .services import (
     ESTADOS_PARTIDA_VALORES,
     EstadoPartidaError,
     MatrizCartonInvalidaError,
+    RondaCreacionError,
     ValidacionCartonError,
     acciones_disponibles_consola,
     confirmar_y_finalizar_desempate,
+    cerrar_financieramente_bingo,
     construir_matriz_marcada_carton,
     contar_numeros_marcados_carton,
+    construir_preliquidacion_financiera_bingo,
+    construir_resumen_financiero_real_bingo,
     crear_carton_maestro_para_bingo,
+    crear_ronda_con_participaciones,
     crear_y_asignar_carton,
     deserializar_matriz_carton_bingo,
     extraer_siguiente_bola,
@@ -64,6 +84,7 @@ from .services import (
     mensaje_estado_carton_publico,
     normalizar_estado_partida,
     obtener_numeros_faltantes_carton,
+    obtener_partidas_elegibles_venta_carton,
     obtener_participaciones_hibridas_partida,
     parse_bolas_cantadas,
     parsear_candidatos_desempate,
@@ -74,10 +95,15 @@ from .services import (
     preparar_datos_tablero_publico,
     preparar_participaciones_hibridas_para_consola,
     preparar_resumen_partida_publica,
+    preparar_resumen_patron_ganador,
     puede_asignar_cartones,
+    registrar_costo_premio_material_bingo,
+    registrar_gasto_operativo_bingo,
     estado_permite_validar_carton,
     preparar_accion_consola,
     sortear_balota_desempate,
+    anular_costo_premio_material_bingo,
+    anular_gasto_operativo_bingo,
     validar_carton_ganador,
     validar_participacion_ganadora,
     validar_asignacion_cartones,
@@ -86,6 +112,22 @@ from .services import (
 
 logger = logging.getLogger(__name__)
 
+ESTADOS_BINGO_SIN_COMPRA = {"Finalizado", "Cancelado"}
+MENSAJE_CREACION_CARTON_DIRECTA_DESHABILITADA = (
+    "Use la venta por Bingo para crear cartones y participaciones correctamente."
+)
+MENSAJE_EDICION_CARTON_DIRECTA_DESHABILITADA = (
+    "La edición directa de cartones está deshabilitada para proteger las "
+    "participaciones."
+)
+MENSAJE_EDICION_CARTON_PARTIDA_DESHABILITADA = (
+    "La edición directa del cartón por partida está deshabilitada."
+)
+
+
+def _estado_bingo_bloquea_compra(bingo):
+    return str(getattr(bingo, "estadobingo", "") or "").strip() in ESTADOS_BINGO_SIN_COMPRA
+
 
 @require_GET
 def sala_juego_publica(request):
@@ -93,15 +135,20 @@ def sala_juego_publica(request):
         Partidabingo.objects.select_related("idbingo")
         .order_by("-horainicio", "idpartidabingo")
     )
+    bingos_con_compra_mostrada = set()
+    partidas_publicas = []
+    for partida in partidas:
+        resumen = preparar_resumen_partida_publica(partida)
+        idbingo = getattr(partida, "idbingo_id", None)
+        mostrar_compra_carton = idbingo not in bingos_con_compra_mostrada
+        if mostrar_compra_carton and idbingo is not None:
+            bingos_con_compra_mostrada.add(idbingo)
+        resumen["mostrar_compra_carton"] = mostrar_compra_carton
+        partidas_publicas.append(resumen)
     return render(
         request,
         "bingos/sala_juego_publica.html",
-        {
-            "partidas_publicas": [
-                preparar_resumen_partida_publica(partida)
-                for partida in partidas
-            ]
-        },
+        {"partidas_publicas": partidas_publicas},
     )
 
 
@@ -388,6 +435,14 @@ def _datos_carton_vacios(partida=None):
         "numeros_marcados": 0,
         "total_numeros_carton": 24,
         "numeros_faltantes": [],
+        "patron_ganador": None,
+        "patron_ganador_label": None,
+        "numeros_marcados_patron": 0,
+        "total_requeridos_patron": 0,
+        "progreso_patron": 0,
+        "numeros_faltantes_patron": [],
+        "faltantes_patron_codigos": [],
+        "patron_completo": False,
         "ultima_bola_codigo": (
             preparar_datos_bolas_partida(partida)["ultima_bola_codigo"]
             if partida is not None
@@ -504,6 +559,11 @@ def _preparar_datos_carton_hibrido(carton, partida):
         carton.matriznumeros,
         partida.bolascantadas,
     )
+    patron = preparar_resumen_patron_ganador(
+        carton.matriznumeros,
+        partida.bolascantadas,
+        getattr(partida, "patronganador", None),
+    )
     datos_bolas = preparar_datos_bolas_partida(partida)
     return {
         "matriz_carton": matriz,
@@ -513,6 +573,7 @@ def _preparar_datos_carton_hibrido(carton, partida):
         ),
         "total_numeros_carton": 24,
         "numeros_faltantes": faltantes,
+        **patron,
         "ultima_bola_codigo": datos_bolas["ultima_bola_codigo"],
         "mensaje_estado_carton": mensaje_estado_carton_publico(
             partida.estadopartida
@@ -557,12 +618,34 @@ def bingo_nuevo(request):
 @admin_required
 def bingo_detalle(request, idbingo):
     bingo = get_object_or_404(Bingo, idbingo=idbingo)
-    partidas = Partidabingo.objects.filter(idbingo=bingo).select_related("idjugadorganador").order_by("horainicio")
-    cartones = Carton.objects.filter(idpartida__idbingo=bingo).select_related("idjugador", "idpartida").order_by("codigocarton")[:50]
+    partidas = (
+        Partidabingo.objects.filter(idbingo=bingo)
+        .select_related("idjugadorganador")
+        .order_by("horainicio")
+    )
+    cartones_queryset = (
+        Carton.objects.filter(idbingo=bingo)
+        .select_related(
+            "idbingo",
+            "idjugador",
+            "idpartida",
+            "idpartida__idbingo",
+        )
+        .annotate(
+            total_participaciones=Count("participaciones", distinct=True)
+        )
+        .order_by("codigocarton")
+    )
+    cartones = paginate(request, cartones_queryset)
     return render(
         request,
         "bingos/detalle.html",
-        {"bingo": bingo, "partidas": partidas, "cartones": cartones},
+        {
+            "bingo": bingo,
+            "partidas": partidas,
+            "cartones": cartones,
+            "page_obj": cartones,
+        },
     )
 
 
@@ -579,6 +662,9 @@ def bingo_carton_nuevo(request, idbingo):
                     precio_pagado=form.cleaned_data["preciopagado"],
                     fecha_compra=None,
                 )
+            except CierreFinancieroError as exc:
+                messages.error(request, str(exc))
+                return redirect("bingos:detalle", idbingo=bingo.idbingo)
             except CartonAsignacionError as exc:
                 form.add_error(None, str(exc))
             except (IntegrityError, ValidationError):
@@ -612,7 +698,7 @@ def bingo_carton_nuevo(request, idbingo):
                 messages.success(
                     request,
                     "Se creó un cartón maestro para todo el Bingo y "
-                    f"{texto_participaciones}, una por cada ronda actual.",
+                    f"{texto_participaciones} en las rondas futuras elegibles.",
                 )
                 return redirect("bingos:detalle", idbingo=bingo.idbingo)
     else:
@@ -620,7 +706,10 @@ def bingo_carton_nuevo(request, idbingo):
             initial={"preciopagado": bingo.preciocarton}
         )
 
-    total_partidas = Partidabingo.objects.filter(idbingo=bingo).count()
+    partidas = list(Partidabingo.objects.filter(idbingo=bingo))
+    partidas_elegibles = obtener_partidas_elegibles_venta_carton(partidas)
+    total_partidas = len(partidas)
+    total_partidas_elegibles = len(partidas_elegibles)
     return render(
         request,
         "bingos/bingo_carton_generar.html",
@@ -628,7 +717,95 @@ def bingo_carton_nuevo(request, idbingo):
             "form": form,
             "bingo": bingo,
             "total_partidas": total_partidas,
+            "total_partidas_elegibles": total_partidas_elegibles,
+            "total_partidas_no_elegibles": (
+                total_partidas - total_partidas_elegibles
+            ),
             "titulo": "Vender cartón para todo el Bingo",
+        },
+    )
+
+
+@jugador_required
+@require_http_methods(["GET", "POST"])
+def comprar_carton_bingo(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    partidas = list(Partidabingo.objects.filter(idbingo=bingo))
+    partidas_elegibles = obtener_partidas_elegibles_venta_carton(partidas)
+    partidas_no_elegibles = [
+        partida
+        for partida in partidas
+        if partida not in partidas_elegibles
+    ]
+    bingo_no_comprable = _estado_bingo_bloquea_compra(bingo)
+    compra_disponible = bool(partidas_elegibles) and not bingo_no_comprable
+
+    form = CompraCartonJugadorForm(
+        request.POST if request.method == "POST" else None
+    )
+    if request.method == "POST":
+        if bingo_no_comprable:
+            form.add_error(
+                None,
+                "No se puede comprar un cartón porque el Bingo está finalizado o cancelado.",
+            )
+        elif not partidas_elegibles:
+            form.add_error(
+                None,
+                "No se puede comprar un cartón porque ya no quedan rondas futuras disponibles.",
+            )
+        elif form.is_valid():
+            try:
+                carton = crear_carton_maestro_para_bingo(
+                    bingo=bingo,
+                    jugador=request.jugador,
+                    precio_pagado=bingo.preciocarton,
+                    fecha_compra=None,
+                )
+            except CierreFinancieroError as exc:
+                messages.error(request, str(exc))
+                return redirect("bingos:comprar_carton_bingo", idbingo=bingo.idbingo)
+            except CartonAsignacionError as exc:
+                form.add_error(None, str(exc))
+            except (IntegrityError, ValidationError):
+                logger.exception(
+                    "No fue posible validar o guardar la compra directa del Bingo %s",
+                    bingo.idbingo,
+                )
+                form.add_error(
+                    None,
+                    "No fue posible comprar el cartón. No se creó ningún registro.",
+                )
+            except DatabaseError:
+                logger.exception(
+                    "No fue posible guardar la compra directa del Bingo %s",
+                    bingo.idbingo,
+                )
+                form.add_error(
+                    None,
+                    "No fue posible completar la compra. No se creó ningún registro.",
+                )
+            else:
+                messages.success(
+                    request,
+                    f"Compra completada. Tu cartón es {carton.codigocarton}.",
+                )
+                return redirect("bingos:mis_cartones")
+
+    return render(
+        request,
+        "bingos/compra_carton_jugador.html",
+        {
+            "form": form,
+            "bingo": bingo,
+            "partidas": partidas,
+            "partidas_elegibles": partidas_elegibles,
+            "partidas_no_elegibles": partidas_no_elegibles,
+            "total_partidas": len(partidas),
+            "total_partidas_elegibles": len(partidas_elegibles),
+            "total_partidas_no_elegibles": len(partidas_no_elegibles),
+            "bingo_no_comprable": bingo_no_comprable,
+            "compra_disponible": compra_disponible,
         },
     )
 
@@ -675,6 +852,235 @@ def bingo_resumen_excel(request, idbingo):
         XLSX_CONTENT_TYPE,
         nombre_archivo_seguro("resumen_bingo", bingo.idbingo, "xlsx"),
     )
+
+
+@admin_required
+@require_GET
+def preliquidacion_financiera(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    preliquidacion = construir_preliquidacion_financiera_bingo(bingo)
+    return render(
+        request,
+        "bingos/preliquidacion_financiera.html",
+        {
+            "bingo": bingo,
+            "preliquidacion": preliquidacion,
+        },
+    )
+
+
+@admin_required
+@require_GET
+def bingo_finanzas(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    resumen = construir_resumen_financiero_real_bingo(bingo)
+    partidas = list(
+        Partidabingo.objects.filter(idbingo=bingo).order_by(
+            "horainicio",
+            "idpartidabingo",
+        )
+    )
+    partidas_por_id = {partida.pk: partida for partida in partidas}
+    gastos = list(
+        BingoGastoOperativo.objects.filter(idbingo=bingo)
+        .select_related("idusuarioregistro", "idusuarioanulacion")
+        .order_by("-fechagasto", "-idbingogastooperativo")
+    )
+    costos = list(
+        BingoPremioMaterialCosto.objects.filter(idbingo=bingo)
+        .select_related("idusuarioregistro", "idusuarioanulacion")
+        .order_by("-idbingopremiomaterialcosto")
+    )
+    costos_con_partida = [
+        {
+            "costo": costo,
+            "partida": partidas_por_id.get(costo.idpartidabingo),
+        }
+        for costo in costos
+    ]
+    cierre = resumen["cierre_existente"]
+    cierre_esta_cerrado = (
+        cierre is not None
+        and cierre.estado == BingoCierreFinanciero.ESTADO_CERRADO
+    )
+
+    return render(
+        request,
+        "bingos/finanzas.html",
+        {
+            "bingo": bingo,
+            "resumen": resumen,
+            "gastos": gastos,
+            "costos_con_partida": costos_con_partida,
+            "partidas": partidas,
+            "cierre": cierre,
+            "cierre_esta_cerrado": cierre_esta_cerrado,
+            "cierre_estado": (
+                BingoCierreFinanciero.ESTADO_CERRADO
+                if cierre_esta_cerrado
+                else BingoCierreFinanciero.ESTADO_ABIERTO
+            ),
+            "gasto_form": GastoOperativoBingoForm(),
+            "costo_form": CostoPremioMaterialBingoForm(bingo=bingo),
+            "cierre_form": CierreFinancieroBingoForm(),
+            "motivo_anulacion_form": MotivoAnulacionForm(),
+        },
+    )
+
+
+@admin_required
+@require_POST
+def bingo_finanzas_gasto_registrar(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    form = GastoOperativoBingoForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "No se pudo registrar el gasto operativo. Revise los datos ingresados.",
+        )
+        return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+    try:
+        registrar_gasto_operativo_bingo(
+            bingo,
+            request.user,
+            form.cleaned_data["concepto"],
+            form.cleaned_data["monto"],
+            form.cleaned_data["fechagasto"],
+            form.cleaned_data["observacion"],
+        )
+    except CierreFinancieroError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(request, "Gasto operativo registrado correctamente.")
+
+    return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+
+@admin_required
+@require_POST
+def bingo_finanzas_gasto_anular(request, idbingo, idgasto):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    gasto = get_object_or_404(
+        BingoGastoOperativo,
+        pk=idgasto,
+        idbingo=bingo,
+    )
+    form = MotivoAnulacionForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "No se pudo anular el gasto operativo. Ingrese el motivo de anulación.",
+        )
+        return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+    try:
+        anular_gasto_operativo_bingo(
+            gasto,
+            request.user,
+            form.cleaned_data["motivo"],
+        )
+    except CierreFinancieroError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(request, "Gasto operativo anulado correctamente.")
+
+    return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+
+@admin_required
+@require_POST
+def bingo_finanzas_costo_registrar(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    form = CostoPremioMaterialBingoForm(request.POST, bingo=bingo)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "No se pudo registrar el costo de premio material. Revise los datos ingresados.",
+        )
+        return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+    try:
+        registrar_costo_premio_material_bingo(
+            bingo,
+            form.cleaned_data["partida"],
+            request.user,
+            form.cleaned_data["descripcion_premio"],
+            form.cleaned_data["monto"],
+            form.cleaned_data["observacion"],
+        )
+    except CierreFinancieroError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(
+            request,
+            "Costo de premio material registrado correctamente.",
+        )
+
+    return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+
+@admin_required
+@require_POST
+def bingo_finanzas_costo_anular(request, idbingo, idcosto):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    costo = get_object_or_404(
+        BingoPremioMaterialCosto,
+        pk=idcosto,
+        idbingo=bingo,
+    )
+    form = MotivoAnulacionForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "No se pudo anular el costo de premio material. Ingrese el motivo de anulación.",
+        )
+        return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+    try:
+        anular_costo_premio_material_bingo(
+            costo,
+            request.user,
+            form.cleaned_data["motivo"],
+        )
+    except CierreFinancieroError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(
+            request,
+            "Costo de premio material anulado correctamente.",
+        )
+
+    return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+
+@admin_required
+@require_POST
+def bingo_finanzas_cerrar(request, idbingo):
+    bingo = get_object_or_404(Bingo, idbingo=idbingo)
+    form = CierreFinancieroBingoForm(request.POST)
+    if not form.is_valid():
+        messages.error(
+            request,
+            "No se pudo cerrar financieramente el Bingo. Revise los datos ingresados.",
+        )
+        return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
+
+    try:
+        cerrar_financieramente_bingo(
+            bingo,
+            request.user,
+            form.cleaned_data["observacion_cierre"],
+        )
+    except CierreFinancieroError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(
+            request,
+            "Bingo cerrado financieramente correctamente.",
+        )
+
+    return redirect("bingos:bingo_finanzas", idbingo=bingo.idbingo)
 
 
 @admin_required
@@ -727,27 +1133,52 @@ def partida_nueva(request, idbingo):
     if request.method == "POST":
         form = PartidaBingoForm(request.POST)
         if form.is_valid():
-            def before_save(partida):
-                partida.idbingo = bingo
-
             try:
-                partida = save_new_model_form(form, before_save=before_save)
+                resultado = crear_ronda_con_participaciones(
+                    bingo=bingo,
+                    partida=form.save(commit=False),
+                )
+            except RondaCreacionError as exc:
+                form.add_error(None, str(exc))
             except IntegrityError as exc:
                 form.add_integrity_error(exc)
+            except DatabaseError:
+                logger.exception(
+                    "No fue posible crear la ronda para el Bingo %s",
+                    bingo.idbingo,
+                )
+                form.add_error(
+                    None,
+                    "No fue posible crear la ronda. "
+                    "No se guardaron cambios parciales.",
+                )
             else:
-                messages.success(request, "Partida registrada correctamente.")
-                return redirect("bingos:partida_detalle", idpartidabingo=partida.idpartidabingo)
+                partida = resultado["partida"]
+                messages.success(
+                    request,
+                    "La ronda fue creada correctamente y se registraron las "
+                    "participaciones de los cartones activos del Bingo.",
+                )
+                return redirect(
+                    "bingos:partida_detalle",
+                    idpartidabingo=partida.idpartidabingo,
+                )
     else:
         form = PartidaBingoForm(
             initial={
                 "estadopartida": ESTADO_PARTIDA_PROGRAMADA,
+                "patronganador": "carton_lleno",
                 "bolascantadas": "[]",
                 "ultimabola": 0,
                 "haydesempate": False,
                 "horainicio": timezone.now(),
             }
         )
-    return render(request, "bingos/partida_formulario.html", {"form": form, "bingo": bingo, "titulo": "Nueva partida"})
+    return render(
+        request,
+        "bingos/partida_formulario.html",
+        {"form": form, "bingo": bingo, "titulo": "Nueva ronda"},
+    )
 
 
 @admin_required
@@ -756,7 +1187,14 @@ def partida_detalle(request, idpartidabingo):
         Partidabingo.objects.select_related("idbingo", "idjugadorganador"),
         idpartidabingo=idpartidabingo,
     )
-    cartones = Carton.objects.filter(idpartida=partida).select_related("idjugador").order_by("codigocarton")
+    cartones = (
+        Carton.objects.filter(idpartida=partida)
+        .select_related("idbingo", "idjugador", "idpartida")
+        .order_by("codigocarton")
+    )
+    participaciones_hibridas = obtener_participaciones_hibridas_partida(
+        partida
+    )
     carton_generado = None
     matriz_carton_generado = None
     carton_generado_id = request.GET.get("carton_generado", "").strip()
@@ -779,6 +1217,7 @@ def partida_detalle(request, idpartidabingo):
         {
             "partida": partida,
             "cartones": cartones,
+            "participaciones_hibridas": participaciones_hibridas,
             "bolas_cantadas": parse_bolas_cantadas(partida.bolascantadas),
             "puede_asignar_cartones": puede_asignar_cartones(partida),
             "carton_generado": carton_generado,
@@ -893,77 +1332,12 @@ def partida_carton_nuevo(request, idpartidabingo):
         Partidabingo.objects.select_related("idbingo"),
         idpartidabingo=idpartidabingo,
     )
-
-    if not puede_asignar_cartones(partida):
-        try:
-            validar_asignacion_cartones(partida)
-        except CartonAsignacionError as exc:
-            messages.error(request, str(exc))
-        return redirect(
-            "bingos:partida_detalle",
-            idpartidabingo=partida.idpartidabingo,
-        )
-
-    if request.method == "POST":
-        form = GenerarAsignarCartonForm(request.POST)
-        if form.is_valid():
-            try:
-                carton = crear_y_asignar_carton(
-                    partida=partida,
-                    jugador=form.cleaned_data["idjugador"],
-                    precio_pagado=form.cleaned_data["preciopagado"],
-                )
-            except CartonAsignacionError as exc:
-                messages.error(request, str(exc))
-                return redirect(
-                    "bingos:partida_detalle",
-                    idpartidabingo=partida.idpartidabingo,
-                )
-            except (IntegrityError, ValidationError):
-                logger.exception(
-                    "No fue posible validar o guardar el cartón para la partida %s",
-                    partida.idpartidabingo,
-                )
-                form.add_error(
-                    None,
-                    "No fue posible generar un cartón completo y único. No se creó ningún cartón.",
-                )
-            except DatabaseError:
-                logger.exception(
-                    "No fue posible guardar el cartón para la partida %s",
-                    partida.idpartidabingo,
-                )
-                form.add_error(
-                    None,
-                    "No fue posible generar el cartón. No se creó ningún cartón.",
-                )
-            else:
-                messages.success(
-                    request,
-                    f"Cartón {carton.codigocarton} generado y asignado correctamente.",
-                )
-                detalle_url = reverse(
-                    "bingos:partida_detalle",
-                    kwargs={"idpartidabingo": partida.idpartidabingo},
-                )
-                return redirect(
-                    f"{detalle_url}?carton_generado={carton.idcarton}"
-                )
-    else:
-        form = GenerarAsignarCartonForm(
-            initial={
-                "preciopagado": partida.idbingo.preciocarton,
-            }
-        )
-    return render(
+    messages.info(
         request,
-        "bingos/partida_carton_generar.html",
-        {
-            "form": form,
-            "partida": partida,
-            "titulo": "Generar y asignar cartón",
-        },
+        "Los nuevos cartones se crean para todo el Bingo y participan "
+        "automáticamente en sus rondas. Usa la opción de cartones del Bingo.",
     )
+    return redirect("bingos:detalle", idbingo=partida.idbingo_id)
 
 
 @admin_required
@@ -972,32 +1346,14 @@ def partida_carton_editar(request, idpartidabingo, idcarton):
         Partidabingo.objects.select_related("idbingo"),
         idpartidabingo=idpartidabingo,
     )
-    carton = get_object_or_404(Carton, idcarton=idcarton, idpartida=partida)
+    del idcarton
     if request.method == "POST":
-        form = CartonPartidaForm(request.POST, instance=carton)
-        if form.is_valid():
-            try:
-                with transaction.atomic():
-                    carton = form.save(commit=False)
-                    carton.idpartida = partida
-                    carton.save()
-                    form.save_m2m()
-            except IntegrityError as exc:
-                form.add_integrity_error(exc)
-            else:
-                messages.success(request, "Cartón actualizado correctamente.")
-                return redirect("bingos:partida_detalle", idpartidabingo=partida.idpartidabingo)
+        messages.error(request, MENSAJE_EDICION_CARTON_PARTIDA_DESHABILITADA)
     else:
-        form = CartonPartidaForm(instance=carton)
-    return render(
-        request,
-        "bingos/partida_carton_formulario.html",
-        {
-            "form": form,
-            "partida": partida,
-            "carton": carton,
-            "titulo": "Editar cartón de partida",
-        },
+        messages.info(request, MENSAJE_EDICION_CARTON_PARTIDA_DESHABILITADA)
+    return redirect(
+        "bingos:partida_detalle",
+        idpartidabingo=partida.idpartidabingo,
     )
 
 
@@ -1391,50 +1747,50 @@ def _attachment_response(content, content_type, filename):
 @admin_required
 def cartones_lista(request):
     busqueda = request.GET.get("q", "").strip()
-    cartones = Carton.objects.select_related("idjugador", "idpartida", "idpartida__idbingo").order_by("-fechacompra", "codigocarton")
+    cartones = Carton.objects.select_related(
+        "idbingo",
+        "idjugador",
+        "idpartida",
+        "idpartida__idbingo",
+    )
     if busqueda:
         cartones = cartones.filter(
             Q(codigocarton__icontains=busqueda)
             | Q(estadocarton__icontains=busqueda)
             | Q(idjugador__aliasjugador__icontains=busqueda)
         )
-    return render(request, "bingos/cartones_lista.html", {"page_obj": paginate(request, cartones), "busqueda": busqueda, "total": cartones.count()})
+    cartones = cartones.annotate(
+        total_participaciones=Count("participaciones", distinct=True)
+    ).order_by("-fechacompra", "codigocarton")
+    page_obj = paginate(request, cartones)
+    return render(
+        request,
+        "bingos/cartones_lista.html",
+        {
+            "page_obj": page_obj,
+            "busqueda": busqueda,
+            "total": page_obj.paginator.count,
+        },
+    )
 
 
 @admin_required
 def carton_nuevo(request):
     if request.method == "POST":
-        form = CartonForm(request.POST)
-        if form.is_valid():
-            try:
-                carton = save_new_model_form(form)
-            except IntegrityError as exc:
-                form.add_integrity_error(exc)
-            else:
-                messages.success(request, "Cartón registrado correctamente.")
-                return redirect("bingos:cartones_lista")
+        messages.error(request, MENSAJE_CREACION_CARTON_DIRECTA_DESHABILITADA)
     else:
-        form = CartonForm(initial={"estadocarton": "Disponible", "fechacompra": timezone.now()})
-    return render(request, "bingos/carton_formulario.html", {"form": form, "titulo": "Nuevo cartón"})
+        messages.info(request, MENSAJE_CREACION_CARTON_DIRECTA_DESHABILITADA)
+    return redirect("bingos:cartones_lista")
 
 
 @admin_required
 def carton_editar(request, idcarton):
-    carton = get_object_or_404(Carton, idcarton=idcarton)
+    del idcarton
     if request.method == "POST":
-        form = CartonForm(request.POST, instance=carton)
-        if form.is_valid():
-            try:
-                with transaction.atomic():
-                    form.save()
-            except IntegrityError as exc:
-                form.add_integrity_error(exc)
-            else:
-                messages.success(request, "Cartón actualizado correctamente.")
-                return redirect("bingos:cartones_lista")
+        messages.error(request, MENSAJE_EDICION_CARTON_DIRECTA_DESHABILITADA)
     else:
-        form = CartonForm(instance=carton)
-    return render(request, "bingos/carton_formulario.html", {"form": form, "carton": carton, "titulo": "Editar cartón"})
+        messages.info(request, MENSAJE_EDICION_CARTON_DIRECTA_DESHABILITADA)
+    return redirect("bingos:cartones_lista")
 
 
 @admin_required

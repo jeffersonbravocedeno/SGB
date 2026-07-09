@@ -40,6 +40,46 @@ urlpatterns = [
         views.bingo_carton_nuevo,
         name="bingo_carton_nuevo",
     ),
+    path(
+        "bingos/<int:idbingo>/preliquidacion/",
+        views.preliquidacion_financiera,
+        name="preliquidacion_financiera",
+    ),
+    path(
+        "bingos/<int:idbingo>/finanzas/",
+        views.bingo_finanzas,
+        name="bingo_finanzas",
+    ),
+    path(
+        "bingos/<int:idbingo>/finanzas/gastos/registrar/",
+        views.bingo_finanzas_gasto_registrar,
+        name="bingo_finanzas_gasto_registrar",
+    ),
+    path(
+        "bingos/<int:idbingo>/finanzas/gastos/<int:idgasto>/anular/",
+        views.bingo_finanzas_gasto_anular,
+        name="bingo_finanzas_gasto_anular",
+    ),
+    path(
+        "bingos/<int:idbingo>/finanzas/costos/registrar/",
+        views.bingo_finanzas_costo_registrar,
+        name="bingo_finanzas_costo_registrar",
+    ),
+    path(
+        "bingos/<int:idbingo>/finanzas/costos/<int:idcosto>/anular/",
+        views.bingo_finanzas_costo_anular,
+        name="bingo_finanzas_costo_anular",
+    ),
+    path(
+        "bingos/<int:idbingo>/finanzas/cerrar/",
+        views.bingo_finanzas_cerrar,
+        name="bingo_finanzas_cerrar",
+    ),
+    path(
+        "bingos/<int:idbingo>/comprar-carton/",
+        views.comprar_carton_bingo,
+        name="comprar_carton_bingo",
+    ),
     path("bingos/<int:idbingo>/", views.bingo_detalle, name="detalle"),
     path("bingos/<int:idbingo>/editar/", views.bingo_editar, name="editar"),
     path("bingos/<int:idbingo>/partidas/nueva/", views.partida_nueva, name="partida_nueva"),

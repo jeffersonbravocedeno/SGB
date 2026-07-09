@@ -3,15 +3,25 @@ import logging
 import random
 import re
 import uuid
+from collections import Counter
 from collections.abc import Iterable
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from apps.common.ids import assign_next_integer_pk
 
-from .models import Bingo, Carton, CartonPartidaBingo, Partidabingo
+from .models import (
+    Bingo,
+    BingoCierreFinanciero,
+    BingoGastoOperativo,
+    BingoPremioMaterialCosto,
+    Carton,
+    CartonPartidaBingo,
+    Partidabingo,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -40,7 +50,48 @@ ESTADOS_ASIGNACION_CARTONES = {
     ESTADO_PARTIDA_PROGRAMADA,
     ESTADO_PARTIDA_EN_ESPERA,
 }
+ESTADOS_PARTIDA_PENDIENTES_PRELIQUIDACION = {
+    ESTADO_PARTIDA_PROGRAMADA,
+    ESTADO_PARTIDA_EN_ESPERA,
+    ESTADO_PARTIDA_EN_CURSO,
+    ESTADO_PARTIDA_PAUSADA,
+    ESTADO_PARTIDA_DESEMPATE,
+}
+ESTADOS_PARTIDA_TERMINALES_PRELIQUIDACION = {
+    ESTADO_PARTIDA_FINALIZADA,
+    ESTADO_PARTIDA_CANCELADA,
+}
+TEXTO_COSTO_PREMIO_MATERIAL_PENDIENTE = "Costo pendiente de registrar"
+TEXTO_GASTOS_OPERATIVOS_PENDIENTES = "Pendientes de registrar"
+ALERTA_RONDAS_PENDIENTES_PRELIQUIDACION = (
+    "El Bingo todavía no está listo para un cierre financiero: "
+    "existen rondas pendientes."
+)
+ALERTA_PREMIOS_MATERIALES_PRELIQUIDACION = (
+    "Los costos de premios materiales todavía no están registrados."
+)
+ALERTA_GASTOS_OPERATIVOS_PRELIQUIDACION = (
+    "Los gastos operativos todavía no están registrados."
+)
 CASILLA_LIBRE = "LIBRE"
+
+PATRON_GANADOR_CARTON_LLENO = "carton_lleno"
+PATRON_GANADOR_LINEA_HORIZONTAL = "linea_horizontal"
+PATRON_GANADOR_LINEA_VERTICAL = "linea_vertical"
+PATRON_GANADOR_DIAGONAL = "diagonal"
+PATRON_GANADOR_CUATRO_ESQUINAS = "cuatro_esquinas"
+PATRON_GANADOR_CRUZ = "cruz"
+PATRON_GANADOR_X = "x"
+
+PATRONES_GANADORES = {
+    PATRON_GANADOR_CARTON_LLENO: "Cartón lleno",
+    PATRON_GANADOR_LINEA_HORIZONTAL: "Línea horizontal",
+    PATRON_GANADOR_LINEA_VERTICAL: "Línea vertical",
+    PATRON_GANADOR_DIAGONAL: "Diagonal",
+    PATRON_GANADOR_CUATRO_ESQUINAS: "Cuatro esquinas",
+    PATRON_GANADOR_CRUZ: "Cruz",
+    PATRON_GANADOR_X: "Letra X",
+}
 
 ESTADOS_PARTIDA_LEGADOS = {
     "En Juego": ESTADO_PARTIDA_EN_CURSO,
@@ -94,6 +145,14 @@ class CartonAsignacionError(ValueError):
     pass
 
 
+class RondaCreacionError(ValueError):
+    pass
+
+
+class CierreFinancieroError(ValueError):
+    pass
+
+
 class BolaBingoError(ValueError):
     pass
 
@@ -115,13 +174,15 @@ class CartonPublicoError(ValueError):
 
 
 class CartonNoCompletoError(ValidacionCartonError):
-    def __init__(self, faltantes):
+    def __init__(self, faltantes, patronganador=None):
+        self.patronganador = normalizar_patron_ganador(patronganador)
         self.faltantes = list(faltantes)
         codigos = ", ".join(
             formatear_bola_bingo(numero) for numero in self.faltantes
         )
+        etiqueta = obtener_etiqueta_patron_ganador(self.patronganador)
         super().__init__(
-            f"Este cartón aún no completa Bingo. Faltan: {codigos}."
+            f"Este cartón aún no completa el patrón {etiqueta}. Faltan: {codigos}."
         )
 
 
@@ -223,6 +284,210 @@ def _normalizar_matriz_carton_bingo(matriz):
     return normalizada
 
 
+def normalizar_patron_ganador(valor):
+    valor = str(valor or "").strip()
+    return valor if valor in PATRONES_GANADORES else PATRON_GANADOR_CARTON_LLENO
+
+
+def obtener_etiqueta_patron_ganador(patron_ganador):
+    patron = normalizar_patron_ganador(patron_ganador)
+    return PATRONES_GANADORES.get(patron, PATRONES_GANADORES[PATRON_GANADOR_CARTON_LLENO])
+
+
+def _validar_matriz_marcada_carton(matriz):
+    if not isinstance(matriz, list) or len(matriz) != 5:
+        raise MatrizCartonInvalidaError(
+            "La matriz marcada debe tener cinco filas."
+        )
+    if any(not isinstance(fila, list) or len(fila) != 5 for fila in matriz):
+        raise MatrizCartonInvalidaError(
+            "La matriz marcada debe tener cinco columnas por fila."
+        )
+    if any(
+        not isinstance(casilla, dict)
+        for fila in matriz
+        for casilla in fila
+    ):
+        raise MatrizCartonInvalidaError(
+            "La matriz marcada debe contener casillas estructuradas."
+        )
+    return matriz
+
+
+def _casilla_esta_marcada(casilla):
+    return bool(casilla.get("marcada")) or bool(casilla.get("libre"))
+
+
+def _numeros_faltantes_fila_marcada(fila):
+    return [
+        casilla["valor"]
+        for casilla in fila
+        if not _casilla_esta_marcada(casilla)
+    ]
+
+
+def _numeros_faltantes_columna_marcada(matriz, indice_columna):
+    return [
+        matriz[indice_fila][indice_columna]["valor"]
+        for indice_fila in range(5)
+        if not _casilla_esta_marcada(matriz[indice_fila][indice_columna])
+    ]
+
+
+def _numeros_faltantes_diagonal_principal_marcada(matriz):
+    return [
+        matriz[indice][indice]["valor"]
+        for indice in range(5)
+        if not _casilla_esta_marcada(matriz[indice][indice])
+    ]
+
+
+def _numeros_faltantes_diagonal_secundaria_marcada(matriz):
+    return [
+        matriz[indice][4 - indice]["valor"]
+        for indice in range(5)
+        if not _casilla_esta_marcada(matriz[indice][4 - indice])
+    ]
+
+
+def _union_faltantes(*secuencias):
+    faltantes = []
+    for secuencia in secuencias:
+        for numero in secuencia:
+            if numero not in faltantes:
+                faltantes.append(numero)
+    return faltantes
+
+
+def obtener_numeros_faltantes_patron_ganador(matriz_marcada, patronganador):
+    matriz_marcada = _validar_matriz_marcada_carton(matriz_marcada)
+    patron = normalizar_patron_ganador(patronganador)
+
+    if patron == PATRON_GANADOR_CARTON_LLENO:
+        return _union_faltantes(
+            *(
+                _numeros_faltantes_fila_marcada(fila)
+                for fila in matriz_marcada
+            )
+        )
+
+    if patron == PATRON_GANADOR_CUATRO_ESQUINAS:
+        esquinas = (
+            matriz_marcada[0][0],
+            matriz_marcada[0][4],
+            matriz_marcada[4][0],
+            matriz_marcada[4][4],
+        )
+        return [
+            casilla["valor"]
+            for casilla in esquinas
+            if not _casilla_esta_marcada(casilla)
+        ]
+
+    if patron == PATRON_GANADOR_LINEA_HORIZONTAL:
+        faltantes_por_fila = [
+            _numeros_faltantes_fila_marcada(fila)
+            for fila in matriz_marcada
+        ]
+        return min(
+            faltantes_por_fila,
+            key=lambda faltantes: (len(faltantes), faltantes_por_fila.index(faltantes)),
+        )
+
+    if patron == PATRON_GANADOR_LINEA_VERTICAL:
+        faltantes_por_columna = [
+            _numeros_faltantes_columna_marcada(matriz_marcada, indice)
+            for indice in range(5)
+        ]
+        return min(
+            faltantes_por_columna,
+            key=lambda faltantes: (len(faltantes), faltantes_por_columna.index(faltantes)),
+        )
+
+    if patron == PATRON_GANADOR_DIAGONAL:
+        diagonal_principal = _numeros_faltantes_diagonal_principal_marcada(
+            matriz_marcada
+        )
+        diagonal_secundaria = _numeros_faltantes_diagonal_secundaria_marcada(
+            matriz_marcada
+        )
+        return min(
+            [diagonal_principal, diagonal_secundaria],
+            key=lambda faltantes: (
+                len(faltantes),
+                0 if faltantes is diagonal_principal else 1,
+            ),
+        )
+
+    if patron == PATRON_GANADOR_CRUZ:
+        return _union_faltantes(
+            _numeros_faltantes_fila_marcada(matriz_marcada[2]),
+            _numeros_faltantes_columna_marcada(matriz_marcada, 2),
+        )
+
+    if patron == PATRON_GANADOR_X:
+        return _union_faltantes(
+            _numeros_faltantes_diagonal_principal_marcada(matriz_marcada),
+            _numeros_faltantes_diagonal_secundaria_marcada(matriz_marcada),
+        )
+
+    return _union_faltantes(
+        *(
+            _numeros_faltantes_fila_marcada(fila)
+            for fila in matriz_marcada
+        )
+    )
+
+
+def carton_cumple_patron_ganador(matriz_marcada, patronganador):
+    return not obtener_numeros_faltantes_patron_ganador(
+        matriz_marcada,
+        patronganador,
+    )
+
+
+def total_casillas_patron_ganador(patron_ganador):
+    patron = normalizar_patron_ganador(patron_ganador)
+    if patron == PATRON_GANADOR_CUATRO_ESQUINAS:
+        return 4
+    if patron in {
+        PATRON_GANADOR_LINEA_HORIZONTAL,
+        PATRON_GANADOR_LINEA_VERTICAL,
+        PATRON_GANADOR_DIAGONAL,
+    }:
+        return 5
+    if patron in {PATRON_GANADOR_CRUZ, PATRON_GANADOR_X}:
+        return 8
+    return 24
+
+
+def preparar_resumen_patron_ganador(matriz, bolas_extraidas, patronganador):
+    patron = normalizar_patron_ganador(patronganador)
+    matriz_marcada = construir_matriz_marcada_carton(matriz, bolas_extraidas)
+    faltantes = obtener_numeros_faltantes_patron_ganador(
+        matriz_marcada,
+        patron,
+    )
+    total_requeridos = total_casillas_patron_ganador(patron)
+    numeros_marcados = total_requeridos - len(faltantes)
+    return {
+        "patron_ganador": patron,
+        "patron_ganador_label": obtener_etiqueta_patron_ganador(patron),
+        "numeros_marcados_patron": numeros_marcados,
+        "total_requeridos_patron": total_requeridos,
+        "progreso_patron": (
+            round((numeros_marcados / total_requeridos) * 100)
+            if total_requeridos
+            else 0
+        ),
+        "numeros_faltantes_patron": faltantes,
+        "faltantes_patron_codigos": [
+            formatear_bola_bingo(numero) for numero in faltantes
+        ],
+        "patron_completo": not faltantes,
+    }
+
+
 def obtener_numeros_carton(matriz):
     matriz_valida = _normalizar_matriz_carton_bingo(matriz)
     return [
@@ -262,6 +527,620 @@ def validar_asignacion_cartones(partida):
         "No se puede generar ni asignar cartones porque la partida está en "
         f"estado {estado}. Solo se permite en Programada o En espera."
     )
+
+
+def _carton_vendido_y_asignado(carton):
+    return (
+        carton.idjugador_id is not None
+        and str(carton.estadocarton or "").strip().lower() == "vendido"
+    )
+
+
+def _decimal_o_cero(value):
+    if value in (None, ""):
+        return Decimal("0.00")
+    return Decimal(str(value))
+
+
+def _idbingo_de_carton(carton):
+    idbingo = getattr(carton, "idbingo_id", None)
+    if idbingo is not None:
+        return idbingo
+    bingo = getattr(carton, "idbingo", None)
+    return getattr(bingo, "pk", None)
+
+
+def _idbingo_de_partida(partida):
+    idbingo = getattr(partida, "idbingo_id", None)
+    if idbingo is not None:
+        return idbingo
+    bingo = getattr(partida, "idbingo", None)
+    return getattr(bingo, "pk", None)
+
+
+def _carton_maestro_vendido_para_bingo(carton, bingo):
+    return (
+        _idbingo_de_carton(carton) == bingo.pk
+        and getattr(carton, "idpartida_id", None) is None
+        and str(getattr(carton, "estadocarton", "") or "").strip().lower()
+        == "vendido"
+    )
+
+
+def calcular_recaudacion_registrada(cartones_o_resumenes):
+    """Calcula recaudación registrada desde cartones únicos, nunca participaciones."""
+    vistos = set()
+    total = Decimal("0.00")
+    for item in (cartones_o_resumenes or []):
+        if isinstance(item, dict):
+            pk = item.get("idcarton") or item.get("pk")
+            precio = item.get("precio_pagado")
+        else:
+            pk = getattr(item, "idcarton", None) or getattr(item, "pk", None)
+            precio = getattr(item, "preciopagado", None)
+        if pk is None or pk in vistos:
+            continue
+        vistos.add(pk)
+        if precio in (None, ""):
+            continue
+        total += Decimal(str(precio))
+    return total
+
+
+def construir_preliquidacion_financiera_bingo(
+    bingo,
+    cartones=None,
+    partidas=None,
+):
+    """Devuelve una preliquidación informativa sin modificar datos."""
+    if bingo is None or getattr(bingo, "pk", None) is None:
+        raise ValueError("El Bingo es obligatorio para preliquidar.")
+
+    if cartones is None:
+        cartones = (
+            Carton.objects.filter(
+                idbingo=bingo,
+                idpartida__isnull=True,
+                estadocarton="Vendido",
+            )
+            .select_related("idjugador", "idbingo")
+            .order_by("idcarton")
+        )
+    if partidas is None:
+        partidas = (
+            Partidabingo.objects.filter(idbingo=bingo)
+            .select_related("idbingo")
+            .order_by("horainicio", "idpartidabingo")
+        )
+
+    cartones_maestros_vendidos = []
+    cartones_vistos = set()
+    for carton in list(cartones or []):
+        pk = getattr(carton, "pk", None)
+        if pk in cartones_vistos:
+            continue
+        if not _carton_maestro_vendido_para_bingo(carton, bingo):
+            continue
+        cartones_vistos.add(pk)
+        cartones_maestros_vendidos.append(carton)
+
+    recaudacion_registrada = calcular_recaudacion_registrada(
+        cartones_maestros_vendidos
+    )
+
+    partidas = [
+        partida
+        for partida in list(partidas or [])
+        if _idbingo_de_partida(partida) == bingo.pk
+    ]
+    conteo_estados = Counter()
+    premios_efectivo_finalizados = Decimal("0.00")
+    premios_materiales = []
+
+    for partida in partidas:
+        estado = normalizar_estado_partida(getattr(partida, "estadopartida", None))
+        conteo_estados[estado] += 1
+        if estado == ESTADO_PARTIDA_FINALIZADA:
+            premios_efectivo_finalizados += _decimal_o_cero(
+                getattr(partida, "valorefectivo", None)
+            )
+
+        premio_material = str(getattr(partida, "premiomaterial", "") or "").strip()
+        if premio_material:
+            premios_materiales.append(
+                {
+                    "partida": partida,
+                    "ronda": partida.nombreronda,
+                    "estado": estado,
+                    "descripcion": premio_material,
+                    "costo": TEXTO_COSTO_PREMIO_MATERIAL_PENDIENTE,
+                }
+            )
+
+    rondas_pendientes = sum(
+        conteo_estados[estado]
+        for estado in ESTADOS_PARTIDA_PENDIENTES_PRELIQUIDACION
+    )
+    estado_rondas = {
+        "total": len(partidas),
+        "finalizadas": conteo_estados[ESTADO_PARTIDA_FINALIZADA],
+        "canceladas": conteo_estados[ESTADO_PARTIDA_CANCELADA],
+        "pendientes": rondas_pendientes,
+    }
+
+    alertas = []
+    if rondas_pendientes:
+        alertas.append(ALERTA_RONDAS_PENDIENTES_PRELIQUIDACION)
+    if premios_materiales:
+        alertas.append(ALERTA_PREMIOS_MATERIALES_PRELIQUIDACION)
+    alertas.append(ALERTA_GASTOS_OPERATIVOS_PRELIQUIDACION)
+
+    return {
+        "bingo": bingo,
+        "cartones_vendidos_unicos": len(cartones_maestros_vendidos),
+        "cartones_maestros_vendidos": cartones_maestros_vendidos,
+        "recaudacion_registrada": recaudacion_registrada,
+        "premios_efectivo_finalizados": premios_efectivo_finalizados,
+        "premios_materiales": premios_materiales,
+        "costo_premio_material_pendiente": TEXTO_COSTO_PREMIO_MATERIAL_PENDIENTE,
+        "gastos_operativos": TEXTO_GASTOS_OPERATIVOS_PENDIENTES,
+        "resultado_provisional": (
+            recaudacion_registrada - premios_efectivo_finalizados
+        ),
+        "estado_rondas": estado_rondas,
+        "alertas": alertas,
+    }
+
+
+def _sumar_monto_registrado(queryset):
+    return queryset.aggregate(total=Sum("monto"))["total"] or Decimal("0.00")
+
+
+def _limpiar_texto(valor):
+    return str(valor or "").strip()
+
+
+def _validar_monto_gasto(monto):
+    if isinstance(monto, bool):
+        raise CierreFinancieroError("El monto del gasto debe ser mayor que cero.")
+    try:
+        monto_decimal = Decimal(str(monto))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise CierreFinancieroError(
+            "El monto del gasto debe ser mayor que cero."
+        ) from exc
+    if not monto_decimal.is_finite() or monto_decimal <= 0:
+        raise CierreFinancieroError("El monto del gasto debe ser mayor que cero.")
+    return monto_decimal
+
+
+def _validar_monto_costo_premio_material(monto, observacion):
+    if isinstance(monto, bool):
+        raise CierreFinancieroError("El monto del costo no puede ser negativo.")
+    try:
+        monto_decimal = Decimal(str(monto))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise CierreFinancieroError(
+            "El monto del costo no puede ser negativo."
+        ) from exc
+    if not monto_decimal.is_finite() or monto_decimal < 0:
+        raise CierreFinancieroError("El monto del costo no puede ser negativo.")
+    if monto_decimal == 0 and not observacion:
+        raise CierreFinancieroError(
+            "Un costo de cero debe incluir una observación que indique la donación."
+        )
+    return monto_decimal
+
+
+def _cierre_financiero_esta_cerrado(bingo):
+    return BingoCierreFinanciero.objects.filter(
+        idbingo=bingo,
+        estado=BingoCierreFinanciero.ESTADO_CERRADO,
+    ).exists()
+
+
+def construir_resumen_financiero_real_bingo(bingo):
+    """Calcula el resumen financiero real sin cerrar ni modificar el Bingo."""
+    if bingo is None or getattr(bingo, "pk", None) is None:
+        raise CierreFinancieroError("El Bingo es obligatorio para el resumen.")
+
+    cartones = (
+        Carton.objects.filter(
+            idbingo=bingo,
+            idpartida__isnull=True,
+            estadocarton="Vendido",
+        )
+        .select_related("idjugador", "idbingo")
+        .order_by("idcarton")
+    )
+    cartones_maestros_vendidos = []
+    cartones_vistos = set()
+    for carton in cartones:
+        pk = getattr(carton, "pk", None)
+        if pk in cartones_vistos:
+            continue
+        if not _carton_maestro_vendido_para_bingo(carton, bingo):
+            continue
+        cartones_vistos.add(pk)
+        cartones_maestros_vendidos.append(carton)
+
+    recaudacion_registrada = calcular_recaudacion_registrada(
+        cartones_maestros_vendidos
+    )
+
+    partidas = list(
+        Partidabingo.objects.filter(idbingo=bingo).order_by(
+            "horainicio",
+            "idpartidabingo",
+        )
+    )
+    conteo_estados = Counter()
+    premios_efectivo_finalizados = Decimal("0.00")
+    partidas_finalizadas_con_premio_material = []
+
+    for partida in partidas:
+        estado = normalizar_estado_partida(getattr(partida, "estadopartida", None))
+        conteo_estados[estado] += 1
+        if estado != ESTADO_PARTIDA_FINALIZADA:
+            continue
+
+        premios_efectivo_finalizados += _decimal_o_cero(
+            getattr(partida, "valorefectivo", None)
+        )
+        premio_material = str(getattr(partida, "premiomaterial", "") or "").strip()
+        if premio_material:
+            partidas_finalizadas_con_premio_material.append(
+                (partida, premio_material)
+            )
+
+    costos_registrados = BingoPremioMaterialCosto.objects.filter(
+        idbingo=bingo,
+        estado=BingoPremioMaterialCosto.ESTADO_REGISTRADO,
+    )
+    costos_premios_materiales = _sumar_monto_registrado(costos_registrados)
+
+    gastos_operativos = _sumar_monto_registrado(
+        BingoGastoOperativo.objects.filter(
+            idbingo=bingo,
+            estado=BingoGastoOperativo.ESTADO_REGISTRADO,
+        )
+    )
+
+    ids_partidas_con_premio_material = [
+        partida.pk
+        for partida, _premio_material in partidas_finalizadas_con_premio_material
+    ]
+    ids_partidas_con_costo = set()
+    if ids_partidas_con_premio_material:
+        ids_partidas_con_costo = set(
+            costos_registrados.filter(
+                idpartidabingo__in=ids_partidas_con_premio_material,
+            ).values_list("idpartidabingo", flat=True)
+        )
+
+    premios_materiales_pendientes_de_costo = [
+        {
+            "partida": partida,
+            "idpartidabingo": partida.pk,
+            "ronda": partida.nombreronda,
+            "descripcion": premio_material,
+        }
+        for partida, premio_material in partidas_finalizadas_con_premio_material
+        if partida.pk not in ids_partidas_con_costo
+    ]
+
+    rondas_pendientes = sum(
+        conteo_estados[estado]
+        for estado in ESTADOS_PARTIDA_PENDIENTES_PRELIQUIDACION
+    )
+    cierre_existente = (
+        BingoCierreFinanciero.objects.filter(idbingo=bingo)
+        .order_by("idbingocierrefinanciero")
+        .first()
+    )
+    cierre_esta_cerrado = (
+        cierre_existente is not None
+        and cierre_existente.estado == BingoCierreFinanciero.ESTADO_CERRADO
+    )
+
+    bloqueos_de_cierre = []
+    if rondas_pendientes:
+        bloqueos_de_cierre.append(
+            "No se puede cerrar el Bingo porque existen rondas pendientes."
+        )
+    if premios_materiales_pendientes_de_costo:
+        bloqueos_de_cierre.append(
+            "No se puede cerrar el Bingo porque existen premios materiales "
+            "finalizados sin costo registrado."
+        )
+    if cierre_esta_cerrado:
+        bloqueos_de_cierre.append(
+            "No se puede cerrar el Bingo porque ya existe un cierre Cerrado."
+        )
+
+    resultado_provisional = (
+        recaudacion_registrada - premios_efectivo_finalizados
+    )
+    utilidad_bruta = resultado_provisional - costos_premios_materiales
+    utilidad_neta = utilidad_bruta - gastos_operativos
+
+    return {
+        "cartones_vendidos_unicos": len(cartones_maestros_vendidos),
+        "recaudacion_registrada": recaudacion_registrada,
+        "premios_efectivo_finalizados": premios_efectivo_finalizados,
+        "costos_premios_materiales": costos_premios_materiales,
+        "gastos_operativos": gastos_operativos,
+        "resultado_provisional": resultado_provisional,
+        "utilidad_bruta": utilidad_bruta,
+        "utilidad_neta": utilidad_neta,
+        "total_rondas": len(partidas),
+        "rondas_finalizadas": conteo_estados[ESTADO_PARTIDA_FINALIZADA],
+        "rondas_canceladas": conteo_estados[ESTADO_PARTIDA_CANCELADA],
+        "rondas_pendientes": rondas_pendientes,
+        "premios_materiales_pendientes_de_costo": (
+            premios_materiales_pendientes_de_costo
+        ),
+        "bloqueos_de_cierre": bloqueos_de_cierre,
+        "cierre_existente": cierre_existente,
+        "cierre_esta_cerrado": cierre_esta_cerrado,
+    }
+
+
+def registrar_gasto_operativo_bingo(
+    bingo,
+    usuario,
+    concepto,
+    monto,
+    fechagasto=None,
+    observacion="",
+):
+    concepto = _limpiar_texto(concepto)
+    if not concepto:
+        raise CierreFinancieroError("El concepto del gasto es obligatorio.")
+    monto = _validar_monto_gasto(monto)
+    observacion = _limpiar_texto(observacion)
+
+    with transaction.atomic():
+        bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+        if _cierre_financiero_esta_cerrado(bingo_bloqueado):
+            raise CierreFinancieroError(
+                "No se pueden registrar gastos porque el cierre financiero "
+                "está cerrado."
+            )
+
+        ahora = timezone.now()
+        return BingoGastoOperativo.objects.create(
+            idbingo=bingo_bloqueado,
+            concepto=concepto,
+            monto=monto,
+            fechagasto=fechagasto or ahora,
+            estado=BingoGastoOperativo.ESTADO_REGISTRADO,
+            observacion=observacion,
+            idusuarioregistro=usuario,
+            fechacreacion=ahora,
+        )
+
+
+def anular_gasto_operativo_bingo(gasto, usuario, motivo):
+    motivo = _limpiar_texto(motivo)
+    if not motivo:
+        raise CierreFinancieroError("Debe indicar el motivo de anulación.")
+
+    with transaction.atomic():
+        bingo_id = getattr(gasto, "idbingo_id", None)
+        if bingo_id is None:
+            bingo_id = getattr(getattr(gasto, "idbingo", None), "pk", None)
+        bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo_id)
+        gasto_bloqueado = BingoGastoOperativo.objects.select_for_update().get(
+            pk=gasto.pk,
+            idbingo=bingo_bloqueado,
+        )
+
+        if _cierre_financiero_esta_cerrado(bingo_bloqueado):
+            raise CierreFinancieroError(
+                "No se pueden anular gastos porque el cierre financiero está "
+                "cerrado."
+            )
+        if gasto_bloqueado.estado == BingoGastoOperativo.ESTADO_ANULADO:
+            raise CierreFinancieroError("El gasto ya se encuentra anulado.")
+
+        gasto_bloqueado.estado = BingoGastoOperativo.ESTADO_ANULADO
+        gasto_bloqueado.idusuarioanulacion = usuario
+        gasto_bloqueado.fechaanulacion = timezone.now()
+        gasto_bloqueado.motivoanulacion = motivo
+        gasto_bloqueado.save(
+            update_fields=[
+                "estado",
+                "idusuarioanulacion",
+                "fechaanulacion",
+                "motivoanulacion",
+            ]
+        )
+
+    return gasto_bloqueado
+
+
+def registrar_costo_premio_material_bingo(
+    bingo,
+    partida,
+    usuario,
+    descripcion_premio,
+    monto,
+    observacion="",
+):
+    descripcion_premio = _limpiar_texto(descripcion_premio)
+    if not descripcion_premio:
+        raise CierreFinancieroError("La descripción del premio es obligatoria.")
+    observacion = _limpiar_texto(observacion)
+    monto = _validar_monto_costo_premio_material(monto, observacion)
+
+    with transaction.atomic():
+        bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+        partida_bloqueada = Partidabingo.objects.select_for_update().get(
+            pk=partida.pk
+        )
+        if partida_bloqueada.idbingo_id != bingo_bloqueado.pk:
+            raise CierreFinancieroError(
+                "La partida no pertenece al Bingo indicado."
+            )
+        if _cierre_financiero_esta_cerrado(bingo_bloqueado):
+            raise CierreFinancieroError(
+                "No se pueden registrar costos porque el cierre financiero "
+                "está cerrado."
+            )
+        if not _limpiar_texto(partida_bloqueada.premiomaterial):
+            raise CierreFinancieroError(
+                "La partida no tiene un premio material configurado."
+            )
+        if (
+            BingoPremioMaterialCosto.objects.select_for_update()
+            .filter(
+                idpartidabingo=partida_bloqueada.pk,
+                estado=BingoPremioMaterialCosto.ESTADO_REGISTRADO,
+            )
+            .exists()
+        ):
+            raise CierreFinancieroError(
+                "Ya existe un costo de premio material registrado para esta partida."
+            )
+
+        return BingoPremioMaterialCosto.objects.create(
+            idbingo=bingo_bloqueado,
+            idpartidabingo=partida_bloqueada.pk,
+            descripcionpremio=descripcion_premio,
+            monto=monto,
+            estado=BingoPremioMaterialCosto.ESTADO_REGISTRADO,
+            observacion=observacion,
+            idusuarioregistro=usuario,
+            fechacreacion=timezone.now(),
+        )
+
+
+def anular_costo_premio_material_bingo(costo, usuario, motivo):
+    motivo = _limpiar_texto(motivo)
+    if not motivo:
+        raise CierreFinancieroError("Debe indicar el motivo de anulación.")
+
+    with transaction.atomic():
+        costo_bloqueado = BingoPremioMaterialCosto.objects.select_for_update().get(
+            pk=costo.pk
+        )
+        bingo_bloqueado = Bingo.objects.select_for_update().get(
+            pk=costo_bloqueado.idbingo_id
+        )
+        if _cierre_financiero_esta_cerrado(bingo_bloqueado):
+            raise CierreFinancieroError(
+                "No se pueden anular costos porque el cierre financiero está cerrado."
+            )
+        if costo_bloqueado.estado == BingoPremioMaterialCosto.ESTADO_ANULADO:
+            raise CierreFinancieroError(
+                "El costo de premio material ya se encuentra anulado."
+            )
+
+        costo_bloqueado.estado = BingoPremioMaterialCosto.ESTADO_ANULADO
+        costo_bloqueado.idusuarioanulacion = usuario
+        costo_bloqueado.fechaanulacion = timezone.now()
+        costo_bloqueado.motivoanulacion = motivo
+        costo_bloqueado.save(
+            update_fields=[
+                "estado",
+                "idusuarioanulacion",
+                "fechaanulacion",
+                "motivoanulacion",
+            ]
+        )
+
+    return costo_bloqueado
+
+
+def cerrar_financieramente_bingo(bingo, usuario, observacion_cierre=""):
+    observacion_cierre = _limpiar_texto(observacion_cierre)
+
+    with transaction.atomic():
+        bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+        list(
+            Partidabingo.objects.select_for_update().filter(
+                idbingo=bingo_bloqueado,
+            )
+        )
+        list(
+            BingoGastoOperativo.objects.select_for_update().filter(
+                idbingo=bingo_bloqueado,
+            )
+        )
+        list(
+            BingoPremioMaterialCosto.objects.select_for_update().filter(
+                idbingo=bingo_bloqueado,
+            )
+        )
+        cierre_bloqueado = (
+            BingoCierreFinanciero.objects.select_for_update()
+            .filter(idbingo=bingo_bloqueado)
+            .order_by("idbingocierrefinanciero")
+            .first()
+        )
+
+        resumen = construir_resumen_financiero_real_bingo(bingo_bloqueado)
+
+        if (
+            cierre_bloqueado is not None
+            and cierre_bloqueado.estado == BingoCierreFinanciero.ESTADO_CERRADO
+        ):
+            raise CierreFinancieroError("El cierre financiero ya está cerrado.")
+
+        bloqueos = resumen["bloqueos_de_cierre"]
+        if bloqueos:
+            raise CierreFinancieroError(
+                "No se puede cerrar financieramente el Bingo: "
+                + " ".join(bloqueos)
+            )
+
+        ahora = timezone.now()
+        snapshot = {
+            "cartonesvendidosunicos": resumen["cartones_vendidos_unicos"],
+            "recaudacionregistrada": resumen["recaudacion_registrada"],
+            "premiosefectivofinalizados": resumen["premios_efectivo_finalizados"],
+            "costospremiosmateriales": resumen["costos_premios_materiales"],
+            "gastosoperativos": resumen["gastos_operativos"],
+            "resultadoprovisional": resumen["resultado_provisional"],
+            "utilidadbruta": resumen["utilidad_bruta"],
+            "utilidadneta": resumen["utilidad_neta"],
+            "totalrondas": resumen["total_rondas"],
+            "rondasfinalizadas": resumen["rondas_finalizadas"],
+            "rondascanceladas": resumen["rondas_canceladas"],
+            "rondaspendientes": resumen["rondas_pendientes"],
+        }
+
+        if cierre_bloqueado is None:
+            cierre_bloqueado = BingoCierreFinanciero(
+                idbingo=bingo_bloqueado,
+                fechacreacion=ahora,
+            )
+
+        for campo, valor in snapshot.items():
+            setattr(cierre_bloqueado, campo, valor)
+
+        cierre_bloqueado.estado = BingoCierreFinanciero.ESTADO_CERRADO
+        cierre_bloqueado.fechacalculo = ahora
+        cierre_bloqueado.fechacierre = ahora
+        cierre_bloqueado.idusuariocierre = usuario
+        cierre_bloqueado.observacioncierre = observacion_cierre
+
+        if cierre_bloqueado.pk is None:
+            cierre_bloqueado.save()
+        else:
+            cierre_bloqueado.save(
+                update_fields=[
+                    *snapshot.keys(),
+                    "estado",
+                    "fechacalculo",
+                    "fechacierre",
+                    "idusuariocierre",
+                    "observacioncierre",
+                ]
+            )
+
+    return cierre_bloqueado
 
 
 def generar_codigo_carton(
@@ -324,32 +1203,113 @@ def generar_codigo_carton_bingo(
     )
 
 
-def validar_venta_carton_para_bingo(bingo, partidas):
-    """Exige al menos una ronda y que todas sigan abiertas para venta."""
-    partidas = list(partidas)
-    if not partidas:
-        raise CartonAsignacionError(
-            "No se puede vender un cartón porque el Bingo no tiene partidas."
-        )
-
-    partidas_no_aptas = [
+def obtener_partidas_elegibles_venta_carton(partidas):
+    """Devuelve las rondas futuras que admiten una venta nueva."""
+    return [
         partida
         for partida in partidas
-        if not puede_asignar_cartones(partida)
+        if puede_asignar_cartones(partida)
     ]
-    if partidas_no_aptas:
-        estados = ", ".join(
-            f"{partida.nombreronda or partida.pk}: "
-            f"{str(partida.estadopartida or 'Sin estado').strip()}"
-            for partida in partidas_no_aptas
-        )
+
+
+def validar_venta_carton_para_bingo(bingo, partidas):
+    """Exige al menos una ronda futura elegible y devuelve solo esas rondas."""
+    partidas_elegibles = obtener_partidas_elegibles_venta_carton(partidas)
+    if not partidas_elegibles:
         raise CartonAsignacionError(
-            "No se puede vender un cartón porque todas las partidas del Bingo "
-            "deben estar Programada o En espera. Partidas no aptas: "
-            f"{estados}."
+            "No se puede vender un cartón porque ya no quedan rondas futuras "
+            "disponibles en estado Programada o En espera para este Bingo."
         )
 
-    return partidas
+    return partidas_elegibles
+
+
+def _crear_participacion_aplicacion(carton, partida, bingo, fecha_creacion):
+    return CartonPartidaBingo.objects.create(
+        idcarton=carton,
+        idpartida=partida,
+        idbingo=bingo,
+        estado_participacion=CartonPartidaBingo.ESTADO_PENDIENTE,
+        indicevictoria=None,
+        es_asignacion_original=False,
+        origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
+        motivoestado=None,
+        fechacreacion=fecha_creacion,
+        fechavalidacion=None,
+    )
+
+
+def _carton_maestro_valido_para_bingo(carton, bingo):
+    return (
+        carton.idbingo_id == bingo.pk
+        and carton.idpartida_id is None
+        and _carton_vendido_y_asignado(carton)
+    )
+
+
+def crear_ronda_con_participaciones(bingo, partida, fecha_creacion=None):
+    """Crea una ronda y sincroniza sus participaciones en una transacción."""
+    if bingo is None or getattr(bingo, "pk", None) is None:
+        raise RondaCreacionError("El Bingo es obligatorio para crear la ronda.")
+    if not isinstance(partida, Partidabingo):
+        raise RondaCreacionError("Los datos de la ronda no son válidos.")
+    if getattr(partida, "pk", None) is not None:
+        raise RondaCreacionError("La ronda indicada ya fue registrada.")
+
+    with transaction.atomic():
+        bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+
+        partida.idbingo = bingo_bloqueado
+        assign_next_integer_pk(partida)
+        partida.save(force_insert=True)
+
+        maestros_bloqueados = list(
+            Carton.objects.select_for_update(of=("self",))
+            .filter(
+                idbingo=bingo_bloqueado,
+                idpartida__isnull=True,
+            )
+            .order_by("idcarton")
+        )
+        maestros_validos = [
+            carton
+            for carton in maestros_bloqueados
+            if _carton_maestro_valido_para_bingo(
+                carton,
+                bingo_bloqueado,
+            )
+        ]
+
+        ids_maestros = [carton.pk for carton in maestros_validos]
+        ids_con_participacion = set()
+        if ids_maestros:
+            ids_con_participacion = set(
+                CartonPartidaBingo.objects.select_for_update()
+                .filter(
+                    idpartida=partida,
+                    idcarton_id__in=ids_maestros,
+                )
+                .values_list("idcarton_id", flat=True)
+            )
+
+        fecha_creacion = fecha_creacion or timezone.now()
+        participaciones_creadas = []
+        for carton in maestros_validos:
+            if carton.pk in ids_con_participacion:
+                continue
+            participaciones_creadas.append(
+                _crear_participacion_aplicacion(
+                    carton=carton,
+                    partida=partida,
+                    bingo=bingo_bloqueado,
+                    fecha_creacion=fecha_creacion,
+                )
+            )
+
+    return {
+        "partida": partida,
+        "participaciones_creadas": participaciones_creadas,
+    }
 
 
 def crear_carton_maestro_para_bingo(
@@ -377,12 +1337,24 @@ def crear_carton_maestro_para_bingo(
             )
 
         bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+        bingo_es_persistido = not getattr(
+            getattr(bingo_bloqueado, "_state", None),
+            "adding",
+            False,
+        )
+        if bingo_es_persistido and _cierre_financiero_esta_cerrado(bingo_bloqueado):
+            raise CierreFinancieroError(
+                "No se pueden vender cartones porque el cierre financiero está cerrado."
+            )
         partidas = list(
             Partidabingo.objects.select_for_update()
             .filter(idbingo=bingo_bloqueado)
             .order_by("idpartidabingo")
         )
-        validar_venta_carton_para_bingo(bingo_bloqueado, partidas)
+        partidas_elegibles = validar_venta_carton_para_bingo(
+            bingo_bloqueado,
+            partidas,
+        )
 
         fecha_compra = fecha_compra or timezone.now()
         matriz = generar_matriz_carton_bingo()
@@ -405,18 +1377,12 @@ def crear_carton_maestro_para_bingo(
         carton.full_clean(validate_unique=False, validate_constraints=False)
         carton.save(force_insert=True)
 
-        for partida in partidas:
-            CartonPartidaBingo.objects.create(
-                idcarton=carton,
-                idpartida=partida,
-                idbingo=bingo_bloqueado,
-                estado_participacion=CartonPartidaBingo.ESTADO_PENDIENTE,
-                indicevictoria=None,
-                es_asignacion_original=False,
-                origen_asignacion=CartonPartidaBingo.ORIGEN_APLICACION,
-                motivoestado=None,
-                fechacreacion=fecha_compra,
-                fechavalidacion=None,
+        for partida in partidas_elegibles:
+            _crear_participacion_aplicacion(
+                carton=carton,
+                partida=partida,
+                bingo=bingo_bloqueado,
+                fecha_creacion=fecha_compra,
             )
 
     return carton
@@ -734,6 +1700,9 @@ def preparar_resumen_partida_publica(partida):
 def preparar_datos_tablero_publico(partida):
     datos_bolas = preparar_datos_bolas_partida(partida)
     estado = normalizar_estado_partida(partida.estadopartida)
+    patron_ganador = normalizar_patron_ganador(
+        getattr(partida, "patronganador", None)
+    )
     ganador = None
     if estado == ESTADO_PARTIDA_FINALIZADA and partida.idjugadorganador_id:
         ganador = partida.idjugadorganador.aliasjugador or "Jugador ganador"
@@ -744,6 +1713,13 @@ def preparar_datos_tablero_publico(partida):
         "ultima_bola_codigo": datos_bolas["ultima_bola_codigo"],
         "total_bolas_extraidas": datos_bolas["total_bolas_extraidas"],
         "total_bolas_faltantes": datos_bolas["total_bolas_faltantes"],
+        "patron_ganador": patron_ganador,
+        "patron_ganador_label": obtener_etiqueta_patron_ganador(
+            patron_ganador
+        ),
+        "total_requeridos_patron": total_casillas_patron_ganador(
+            patron_ganador
+        ),
         "mensaje_estado_publico": mensaje_estado_tablero_publico(estado),
         "ganador_publico": ganador,
         "resuelta_por_desempate": (
@@ -803,13 +1779,6 @@ def _carton_pertenece_a_partida(carton, partida):
     return carton.idpartida_id == partida.pk
 
 
-def _carton_vendido_y_asignado(carton):
-    return (
-        carton.idjugador_id is not None
-        and str(carton.estadocarton or "").strip().lower() == "vendido"
-    )
-
-
 def evaluar_carton_en_partida(carton, partida):
     if not _carton_pertenece_a_partida(carton, partida):
         raise ValidacionCartonError(
@@ -821,13 +1790,25 @@ def evaluar_carton_en_partida(carton, partida):
         )
 
     matriz = _normalizar_matriz_carton_bingo(carton.matriznumeros)
-    faltantes = obtener_numeros_faltantes_carton(
+    matriz_marcada = construir_matriz_marcada_carton(
         matriz,
         partida.bolascantadas,
+    )
+    patron_ganador = normalizar_patron_ganador(
+        getattr(partida, "patronganador", None)
+    )
+    faltantes = obtener_numeros_faltantes_patron_ganador(
+        matriz_marcada,
+        patron_ganador,
     )
     return {
         "carton": carton,
         "matriz": matriz,
+        "matriz_marcada": matriz_marcada,
+        "patron_ganador": patron_ganador,
+        "patron_ganador_label": obtener_etiqueta_patron_ganador(
+            patron_ganador
+        ),
         "faltantes": faltantes,
         "completo": not faltantes,
     }
@@ -895,6 +1876,11 @@ def preparar_datos_carton_jugador(carton):
         carton.matriznumeros,
         partida.bolascantadas,
     )
+    patron = preparar_resumen_patron_ganador(
+        carton.matriznumeros,
+        partida.bolascantadas,
+        getattr(partida, "patronganador", None),
+    )
     datos_bolas = preparar_datos_bolas_partida(partida)
     return {
         "matriz_carton": matriz,
@@ -904,6 +1890,7 @@ def preparar_datos_carton_jugador(carton):
         ),
         "total_numeros_carton": 24,
         "numeros_faltantes": faltantes,
+        **patron,
         "ultima_bola_codigo": datos_bolas["ultima_bola_codigo"],
         "mensaje_estado_carton": mensaje_estado_carton_publico(
             partida.estadopartida
@@ -912,6 +1899,10 @@ def preparar_datos_carton_jugador(carton):
 
 
 def preparar_cartones_para_validacion(partida, cartones):
+    patron_ganador = normalizar_patron_ganador(
+        getattr(partida, "patronganador", None)
+    )
+    total_requerido = total_casillas_patron_ganador(patron_ganador)
     resultado = []
     for carton in cartones:
         # La consola de validación solo expone cartones que pueden competir.
@@ -927,9 +1918,9 @@ def preparar_cartones_para_validacion(partida, cartones):
                 carton.matriznumeros,
                 partida.bolascantadas,
             )
-            faltantes = obtener_numeros_faltantes_carton(
-                carton.matriznumeros,
-                partida.bolascantadas,
+            faltantes_patron = obtener_numeros_faltantes_patron_ganador(
+                matriz_marcada,
+                patron_ganador,
             )
         except MatrizCartonInvalidaError as exc:
             error = "La matriz de este cartón es inválida y no puede ganar."
@@ -939,17 +1930,39 @@ def preparar_cartones_para_validacion(partida, cartones):
                 partida.pk,
                 exc,
             )
+            faltantes_patron = []
 
         resultado.append(
             {
                 "carton": carton,
                 "matriz": matriz_marcada,
-                "faltantes": faltantes,
+                "patron_ganador": patron_ganador,
+                "patron_ganador_label": obtener_etiqueta_patron_ganador(
+                    patron_ganador
+                ),
+                "faltantes": faltantes_patron,
                 "faltantes_codigos": [
-                    formatear_bola_bingo(numero) for numero in faltantes
+                    formatear_bola_bingo(numero)
+                    for numero in faltantes_patron
                 ],
-                "cantidad_marcados": 24 - len(faltantes) if matriz_marcada else 0,
-                "completo": matriz_marcada is not None and not faltantes,
+                "cantidad_marcados": (
+                    total_requerido - len(faltantes_patron)
+                    if matriz_marcada
+                    else 0
+                ),
+                "total_requeridos": total_requerido,
+                "progreso": (
+                    round(
+                        (
+                            (total_requerido - len(faltantes_patron))
+                            / total_requerido
+                        )
+                        * 100
+                    )
+                    if matriz_marcada and total_requerido
+                    else 0
+                ),
+                "completo": matriz_marcada is not None and not faltantes_patron,
                 "error": error,
                 "puede_validar": (
                     error is None and estado_permite_validar_carton(partida)
@@ -1404,7 +2417,10 @@ def validar_carton_ganador(partida, carton):
             ) from exc
 
         if not evaluacion["completo"]:
-            raise CartonNoCompletoError(evaluacion["faltantes"])
+            raise CartonNoCompletoError(
+                evaluacion["faltantes"],
+                patronganador=evaluacion["patron_ganador"],
+            )
 
         cartones_ganadores = buscar_cartones_ganadores(
             partida_bloqueada,
@@ -1532,15 +2548,27 @@ def evaluar_participacion_en_partida(participacion, partida=None):
         )
 
     matriz = _normalizar_matriz_carton_bingo(carton.matriznumeros)
-    faltantes = obtener_numeros_faltantes_carton(
+    matriz_marcada = construir_matriz_marcada_carton(
         matriz,
         partida.bolascantadas,
+    )
+    patron_ganador = normalizar_patron_ganador(
+        getattr(partida, "patronganador", None)
+    )
+    faltantes = obtener_numeros_faltantes_patron_ganador(
+        matriz_marcada,
+        patron_ganador,
     )
     return {
         "participacion": participacion,
         "carton": carton,
         "partida": partida,
         "matriz": matriz,
+        "matriz_marcada": matriz_marcada,
+        "patron_ganador": patron_ganador,
+        "patron_ganador_label": obtener_etiqueta_patron_ganador(
+            patron_ganador
+        ),
         "faltantes": faltantes,
         "completo": not faltantes,
     }
@@ -1578,6 +2606,10 @@ def preparar_participaciones_hibridas_para_consola(
     participaciones=None,
 ):
     """Prepara estado y progreso por participación para la consola."""
+    patron_ganador = normalizar_patron_ganador(
+        getattr(partida, "patronganador", None)
+    )
+    total_requerido = total_casillas_patron_ganador(patron_ganador)
     participaciones = (
         obtener_participaciones_hibridas_partida(partida)
         if participaciones is None
@@ -1600,9 +2632,9 @@ def preparar_participaciones_hibridas_para_consola(
                 carton.matriznumeros,
                 partida.bolascantadas,
             )
-            faltantes = obtener_numeros_faltantes_carton(
-                carton.matriznumeros,
-                partida.bolascantadas,
+            faltantes = obtener_numeros_faltantes_patron_ganador(
+                matriz_marcada,
+                patron_ganador,
             )
         except MatrizCartonInvalidaError as exc:
             error = "La matriz de este cartón es inválida y no puede ganar."
@@ -1613,7 +2645,11 @@ def preparar_participaciones_hibridas_para_consola(
                 exc,
             )
 
-        cantidad_marcados = 24 - len(faltantes) if matriz_marcada else 0
+        cantidad_marcados = (
+            total_requerido - len(faltantes)
+            if matriz_marcada
+            else 0
+        )
         resultado.append(
             {
                 "tipo_registro": "hibrido",
@@ -1621,12 +2657,21 @@ def preparar_participaciones_hibridas_para_consola(
                 "participacion": participacion,
                 "carton": carton,
                 "matriz": matriz_marcada,
+                "patron_ganador": patron_ganador,
+                "patron_ganador_label": obtener_etiqueta_patron_ganador(
+                    patron_ganador
+                ),
                 "faltantes": faltantes,
                 "faltantes_codigos": [
                     formatear_bola_bingo(numero) for numero in faltantes
                 ],
                 "cantidad_marcados": cantidad_marcados,
-                "progreso": round((cantidad_marcados / 24) * 100),
+                "total_requeridos": total_requerido,
+                "progreso": (
+                    round((cantidad_marcados / total_requerido) * 100)
+                    if total_requerido
+                    else 0
+                ),
                 "completo": matriz_marcada is not None and not faltantes,
                 "estado_participacion": participacion.estado_participacion,
                 "indicevictoria": participacion.indicevictoria,
@@ -1934,7 +2979,10 @@ def validar_participacion_ganadora(
                 "La matriz del cartón es inválida y no puede ganar."
             ) from exc
         if not evaluacion["completo"]:
-            raise CartonNoCompletoError(evaluacion["faltantes"])
+            raise CartonNoCompletoError(
+                evaluacion["faltantes"],
+                patronganador=evaluacion["patron_ganador"],
+            )
 
         participaciones_ganadoras = buscar_participaciones_ganadoras(
             partida_bloqueada,
