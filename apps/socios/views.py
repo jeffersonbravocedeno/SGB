@@ -1,18 +1,32 @@
 from decimal import Decimal
 
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Q, Sum
+from django.db.models import Case, IntegerField, Q, Sum, Value, When
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.views.decorators.http import require_POST, require_http_methods
 
 from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate
 from apps.finanzas.models import Ahorro, Aportesemanal, Prestamo
+from apps.jugadores.services import jugador_required
 
-from .forms import CuentaBancariaForm, SocioForm
-from .models import Cuentabancaria, Socio
+from .forms import (
+    AprobarSolicitudSocioForm,
+    CuentaBancariaForm,
+    RechazarSolicitudSocioForm,
+    SocioForm,
+    SolicitudSocioForm,
+)
+from .models import Cuentabancaria, Socio, SolicitudSocio
+from .services import (
+    aprobar_solicitud_socio,
+    crear_solicitud_socio,
+    rechazar_solicitud_socio,
+)
 
 
 @admin_required
@@ -41,6 +55,201 @@ def lista(request):
             "total": socios.count(),
         },
     )
+
+
+@jugador_required
+def mi_solicitud_socio(request):
+    jugador = request.jugador
+    solicitud = _ultima_solicitud_jugador(jugador)
+    return render(
+        request,
+        "socios/solicitud_socio_estado.html",
+        {
+            "jugador": jugador,
+            "socio": jugador.idsocio,
+            "solicitud": solicitud,
+            "tiene_solicitud_pendiente": _jugador_tiene_solicitud_pendiente(
+                jugador
+            ),
+        },
+    )
+
+
+@jugador_required
+@require_http_methods(["GET", "POST"])
+def solicitud_socio_nueva(request):
+    jugador = request.jugador
+    if jugador.idsocio_id is not None:
+        messages.info(request, "El jugador ya está vinculado a un socio.")
+        return redirect("socios:mi_solicitud_socio")
+
+    if _jugador_tiene_solicitud_pendiente(jugador):
+        messages.info(request, "Ya existe una solicitud pendiente para este jugador.")
+        return redirect("socios:mi_solicitud_socio")
+
+    if request.method == "POST":
+        form = SolicitudSocioForm(request.POST)
+        if form.is_valid():
+            try:
+                crear_solicitud_socio(jugador, form.cleaned_data)
+            except ValidationError as exc:
+                form.add_error(None, exc)
+            else:
+                messages.success(request, "Solicitud enviada correctamente.")
+                return redirect("socios:mi_solicitud_socio")
+    else:
+        form = SolicitudSocioForm()
+
+    return render(
+        request,
+        "socios/solicitud_socio_formulario.html",
+        {"form": form, "jugador": jugador},
+    )
+
+
+@admin_required
+def solicitudes_socio_lista(request):
+    solicitudes = (
+        SolicitudSocio.objects.select_related(
+            "idjugador",
+            "idtiposocio",
+            "idsocioresultado",
+            "idusuarioadminrespuesta",
+        )
+        .annotate(
+            prioridad_estado=Case(
+                When(estado=SolicitudSocio.ESTADO_PENDIENTE, then=Value(0)),
+                default=Value(1),
+                output_field=IntegerField(),
+            )
+        )
+        .order_by("prioridad_estado", "-fechasolicitud", "-idsolicitud")
+    )
+    return render(
+        request,
+        "socios/solicitudes_socio_lista.html",
+        {
+            "page_obj": paginate(request, solicitudes),
+            "total": solicitudes.count(),
+        },
+    )
+
+
+@admin_required
+def solicitud_socio_detalle(request, idsolicitud):
+    solicitud = _obtener_solicitud_admin(idsolicitud)
+    return render(
+        request,
+        "socios/solicitud_socio_detalle.html",
+        _contexto_solicitud_admin(solicitud),
+    )
+
+
+@admin_required
+@require_POST
+def solicitud_socio_aprobar(request, idsolicitud):
+    solicitud = _obtener_solicitud_admin(idsolicitud)
+    form = AprobarSolicitudSocioForm(request.POST)
+    if form.is_valid():
+        try:
+            solicitud, socio = aprobar_solicitud_socio(
+                solicitud.idsolicitud,
+                request.user,
+                form.cleaned_data,
+            )
+        except ValidationError as exc:
+            form.add_error(None, exc)
+        else:
+            messages.success(
+                request,
+                f"Solicitud aprobada. Socio vinculado: {socio}.",
+            )
+            return redirect(
+                "socios:solicitud_socio_detalle",
+                idsolicitud=solicitud.idsolicitud,
+            )
+
+    return render(
+        request,
+        "socios/solicitud_socio_detalle.html",
+        _contexto_solicitud_admin(solicitud, aprobar_form=form),
+        status=400,
+    )
+
+
+@admin_required
+@require_POST
+def solicitud_socio_rechazar(request, idsolicitud):
+    solicitud = _obtener_solicitud_admin(idsolicitud)
+    form = RechazarSolicitudSocioForm(request.POST)
+    if form.is_valid():
+        try:
+            solicitud = rechazar_solicitud_socio(
+                solicitud.idsolicitud,
+                request.user,
+                form.cleaned_data["motivorechazo"],
+            )
+        except ValidationError as exc:
+            form.add_error(None, exc)
+        else:
+            messages.success(request, "Solicitud rechazada correctamente.")
+            return redirect(
+                "socios:solicitud_socio_detalle",
+                idsolicitud=solicitud.idsolicitud,
+            )
+
+    return render(
+        request,
+        "socios/solicitud_socio_detalle.html",
+        _contexto_solicitud_admin(solicitud, rechazo_form=form),
+        status=400,
+    )
+
+
+def _ultima_solicitud_jugador(jugador):
+    return (
+        SolicitudSocio.objects.filter(idjugador=jugador)
+        .select_related("idtiposocio", "idsocioresultado")
+        .order_by("-fechasolicitud", "-idsolicitud")
+        .first()
+    )
+
+
+def _jugador_tiene_solicitud_pendiente(jugador):
+    return SolicitudSocio.objects.filter(
+        idjugador=jugador,
+        estado=SolicitudSocio.ESTADO_PENDIENTE,
+    ).exists()
+
+
+def _obtener_solicitud_admin(idsolicitud):
+    return get_object_or_404(
+        SolicitudSocio.objects.select_related(
+            "idjugador",
+            "idtiposocio",
+            "idsocioresultado",
+            "idusuarioadminrespuesta",
+        ),
+        idsolicitud=idsolicitud,
+    )
+
+
+def _contexto_solicitud_admin(
+    solicitud,
+    *,
+    aprobar_form=None,
+    rechazo_form=None,
+):
+    return {
+        "solicitud": solicitud,
+        "aprobar_form": aprobar_form or AprobarSolicitudSocioForm(
+            initial={
+                "idtiposocio": solicitud.idtiposocio_id,
+                "estadosocio": "Activo",
+            }
+        ),
+        "rechazo_form": rechazo_form or RechazarSolicitudSocioForm(),
+    }
 
 
 @admin_required

@@ -4,11 +4,14 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from django.contrib.auth.models import AnonymousUser
 from django.contrib.auth.models import User
+from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.exceptions import ValidationError
 from django.http import HttpResponse
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase
+from django.urls import reverse
 
 from apps.configuracion.models import Tiposocio
 from apps.jugadores.models import Jugador
@@ -90,11 +93,17 @@ class FakeQuerySet(list):
     def select_related(self, *fields):
         return self
 
+    def annotate(self, *args, **kwargs):
+        return self
+
     def filter(self, *args, **kwargs):
         return self
 
     def exists(self):
         return bool(self)
+
+    def count(self):
+        return len(self)
 
     def first(self):
         return self[0] if self else None
@@ -618,3 +627,310 @@ class _PatchGroup:
     def __exit__(self, exc_type, exc_value, traceback):
         for patcher in reversed(self.patches):
             patcher.__exit__(exc_type, exc_value, traceback)
+
+
+class SolicitudSocioWebTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.jugador = jugador_stub()
+        self.admin = User(username="admin", is_staff=True)
+        self.admin.pk = 1
+
+    def _request(self, method, path, user=None, data=None):
+        request_method = getattr(self.factory, method.lower())
+        request = request_method(path, data or {})
+        request.user = AnonymousUser() if user is None else user
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def _usuario_jugador(self):
+        user = User(username=self.jugador.aliasjugador, is_staff=False)
+        user.pk = 10
+        return user
+
+    def test_jugador_no_socio_puede_acceder_a_mi_solicitud(self):
+        contexto = {}
+
+        def render_spy(_request, template, context):
+            contexto.update(context)
+            return HttpResponse(template)
+
+        with patch(
+            "apps.jugadores.services.obtener_jugador_autenticado",
+            return_value=self.jugador,
+        ), patch(
+            "apps.socios.views._ultima_solicitud_jugador",
+            return_value=None,
+        ), patch(
+            "apps.socios.views._jugador_tiene_solicitud_pendiente",
+            return_value=False,
+        ), patch("apps.socios.views.render", side_effect=render_spy):
+            response = socios_views.mi_solicitud_socio(
+                self._request(
+                    "get",
+                    reverse("socios:mi_solicitud_socio"),
+                    self._usuario_jugador(),
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(contexto["jugador"], self.jugador)
+        self.assertIsNone(contexto["solicitud"])
+
+    def test_jugador_no_socio_puede_crear_solicitud_por_post(self):
+        solicitud = solicitud_socio_stub(jugador=self.jugador)
+
+        with patch(
+            "apps.jugadores.services.obtener_jugador_autenticado",
+            return_value=self.jugador,
+        ), patch(
+            "apps.socios.views._jugador_tiene_solicitud_pendiente",
+            return_value=False,
+        ), patch(
+            "apps.socios.views.SolicitudSocioForm"
+        ) as form_class, patch(
+            "apps.socios.views.crear_solicitud_socio",
+            return_value=solicitud,
+        ) as crear_mock:
+            form = form_class.return_value
+            form.is_valid.return_value = True
+            form.cleaned_data = {"cisocio": solicitud.cisocio}
+
+            response = socios_views.solicitud_socio_nueva(
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_nueva"),
+                    self._usuario_jugador(),
+                    {"cisocio": solicitud.cisocio},
+                )
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("socios:mi_solicitud_socio"))
+        crear_mock.assert_called_once_with(self.jugador, form.cleaned_data)
+
+    def test_jugador_socio_no_puede_crear_solicitud(self):
+        socio = socio_stub()
+        jugador = jugador_stub(socio=socio)
+
+        with patch(
+            "apps.jugadores.services.obtener_jugador_autenticado",
+            return_value=jugador,
+        ), patch("apps.socios.views.crear_solicitud_socio") as crear_mock:
+            response = socios_views.solicitud_socio_nueva(
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_nueva"),
+                    self._usuario_jugador(),
+                    {},
+                )
+            )
+
+        self.assertEqual(response.status_code, 302)
+        crear_mock.assert_not_called()
+
+    def test_jugador_no_puede_aprobar_solicitud(self):
+        with self.assertRaises(Exception) as context:
+            socios_views.solicitud_socio_aprobar(
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_aprobar", args=[1]),
+                    self._usuario_jugador(),
+                    {},
+                ),
+                1,
+            )
+
+        self.assertEqual(context.exception.__class__.__name__, "PermissionDenied")
+
+    def test_admin_puede_listar_solicitudes(self):
+        solicitud = solicitud_socio_stub()
+        contexto = {}
+
+        def render_spy(_request, template, context):
+            contexto.update(context)
+            return HttpResponse(template)
+
+        with patch(
+            "apps.socios.views.SolicitudSocio.objects.select_related",
+            return_value=FakeQuerySet([solicitud]),
+        ), patch("apps.socios.views.paginate", return_value=[solicitud]), patch(
+            "apps.socios.views.render",
+            side_effect=render_spy,
+        ):
+            response = socios_views.solicitudes_socio_lista(
+                self._request(
+                    "get",
+                    reverse("socios:solicitudes_socio_lista"),
+                    self.admin,
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(contexto["total"], 1)
+
+    def test_admin_puede_ver_detalle(self):
+        solicitud = solicitud_socio_stub()
+        contexto = {}
+
+        def render_spy(_request, template, context):
+            contexto.update(context)
+            return HttpResponse(template)
+
+        with patch(
+            "apps.socios.views._obtener_solicitud_admin",
+            return_value=solicitud,
+        ), patch(
+            "apps.socios.views._contexto_solicitud_admin",
+            return_value={"solicitud": solicitud},
+        ), patch("apps.socios.views.render", side_effect=render_spy):
+            response = socios_views.solicitud_socio_detalle(
+                self._request(
+                    "get",
+                    reverse("socios:solicitud_socio_detalle", args=[1]),
+                    self.admin,
+                ),
+                1,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(contexto["solicitud"], solicitud)
+
+    def test_admin_puede_aprobar_por_post(self):
+        solicitud = solicitud_socio_stub()
+        socio = socio_stub()
+
+        with patch(
+            "apps.socios.views._obtener_solicitud_admin",
+            return_value=solicitud,
+        ), patch("apps.socios.views.AprobarSolicitudSocioForm") as form_class, patch(
+            "apps.socios.views.aprobar_solicitud_socio",
+            return_value=(solicitud, socio),
+        ) as aprobar_mock:
+            form = form_class.return_value
+            form.is_valid.return_value = True
+            form.cleaned_data = {"observacion": "Aprobada"}
+
+            response = socios_views.solicitud_socio_aprobar(
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_aprobar", args=[1]),
+                    self.admin,
+                    {"observacion": "Aprobada"},
+                ),
+                1,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        aprobar_mock.assert_called_once_with(
+            solicitud.idsolicitud,
+            self.admin,
+            form.cleaned_data,
+        )
+
+    def test_admin_puede_rechazar_por_post(self):
+        solicitud = solicitud_socio_stub()
+
+        with patch(
+            "apps.socios.views._obtener_solicitud_admin",
+            return_value=solicitud,
+        ), patch("apps.socios.views.RechazarSolicitudSocioForm") as form_class, patch(
+            "apps.socios.views.rechazar_solicitud_socio",
+            return_value=solicitud,
+        ) as rechazar_mock:
+            form = form_class.return_value
+            form.is_valid.return_value = True
+            form.cleaned_data = {"motivorechazo": "No cumple requisitos"}
+
+            response = socios_views.solicitud_socio_rechazar(
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_rechazar", args=[1]),
+                    self.admin,
+                    {"motivorechazo": "No cumple requisitos"},
+                ),
+                1,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        rechazar_mock.assert_called_once_with(
+            solicitud.idsolicitud,
+            self.admin,
+            "No cumple requisitos",
+        )
+
+    def test_get_aprobar_y_rechazar_no_modifica_estado(self):
+        solicitudes = (
+            (
+                socios_views.solicitud_socio_aprobar,
+                reverse("socios:solicitud_socio_aprobar", args=[1]),
+            ),
+            (
+                socios_views.solicitud_socio_rechazar,
+                reverse("socios:solicitud_socio_rechazar", args=[1]),
+            ),
+        )
+
+        for view, path in solicitudes:
+            with self.subTest(path=path), patch(
+                "apps.socios.views.aprobar_solicitud_socio"
+            ) as aprobar_mock, patch(
+                "apps.socios.views.rechazar_solicitud_socio"
+            ) as rechazar_mock:
+                response = view(self._request("get", path, self.admin), 1)
+
+                self.assertEqual(response.status_code, 405)
+                aprobar_mock.assert_not_called()
+                rechazar_mock.assert_not_called()
+
+    def test_usuario_no_autorizado_no_accede_a_vistas_admin(self):
+        usuario = User(username="normal", is_staff=False)
+        usuario.pk = 2
+        vistas = (
+            (
+                socios_views.solicitudes_socio_lista,
+                self._request(
+                    "get",
+                    reverse("socios:solicitudes_socio_lista"),
+                    usuario,
+                ),
+                (),
+            ),
+            (
+                socios_views.solicitud_socio_detalle,
+                self._request(
+                    "get",
+                    reverse("socios:solicitud_socio_detalle", args=[1]),
+                    usuario,
+                ),
+                (1,),
+            ),
+            (
+                socios_views.solicitud_socio_aprobar,
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_aprobar", args=[1]),
+                    usuario,
+                    {},
+                ),
+                (1,),
+            ),
+            (
+                socios_views.solicitud_socio_rechazar,
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_rechazar", args=[1]),
+                    usuario,
+                    {},
+                ),
+                (1,),
+            ),
+        )
+
+        for view, request, args in vistas:
+            with self.subTest(view=view.__name__):
+                with self.assertRaises(Exception) as context:
+                    view(request, *args)
+
+                self.assertEqual(context.exception.__class__.__name__, "PermissionDenied")

@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Solicitud de socio{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Solicitud de socio</p>
+        <h1>Solicitud #{{ solicitud.idsolicitud }}</h1>
+        <p>{{ solicitud.cisocio }} · {{ solicitud.estado }}</p>
+    </div>
+    <a class="btn btn-outline-secondary" href="{% url 'socios:solicitudes_socio_lista' %}">Volver</a>
+</section>
+
+<section class="content-panel">
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Estado</h2>
+            <p>Resultado administrativo de la solicitud.</p>
+        </div>
+        <dl class="detail-grid">
+            <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ solicitud.estado|estado_class }}">{{ solicitud.estado }}</span></dd></div>
+            <div><dt>Fecha de solicitud</dt><dd>{{ solicitud.fechasolicitud|date:"d/m/Y H:i" }}</dd></div>
+            <div><dt>Fecha de respuesta</dt><dd>{{ solicitud.fecharespuesta|date:"d/m/Y H:i"|default_dash }}</dd></div>
+            <div><dt>Admin respuesta</dt><dd>{{ solicitud.idusuarioadminrespuesta|default_dash }}</dd></div>
+            <div class="grid-full"><dt>Observación</dt><dd>{{ solicitud.observacion|default_dash }}</dd></div>
+            <div class="grid-full"><dt>Motivo rechazo</dt><dd>{{ solicitud.motivorechazo|default_dash }}</dd></div>
+            <div class="grid-full"><dt>Socio resultado</dt><dd>{{ solicitud.idsocioresultado|default_dash }}</dd></div>
+        </dl>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Jugador</h2>
+            <p>Cuenta de jugador que envió la solicitud.</p>
+        </div>
+        <dl class="detail-grid">
+            <div><dt>Jugador</dt><dd>{{ solicitud.idjugador }}</dd></div>
+            <div><dt>Alias</dt><dd>{{ solicitud.idjugador.aliasjugador|default_dash }}</dd></div>
+            <div><dt>Correo</dt><dd>{{ solicitud.idjugador.correojugador|default_dash }}</dd></div>
+            <div><dt>Socio actual</dt><dd>{{ solicitud.idjugador.idsocio|default_dash }}</dd></div>
+        </dl>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Datos solicitados</h2>
+            <p>Información propuesta para crear o vincular el socio.</p>
+        </div>
+        <dl class="detail-grid">
+            <div><dt>Tipo de socio</dt><dd>{{ solicitud.idtiposocio|default_dash }}</dd></div>
+            <div><dt>Cédula</dt><dd>{{ solicitud.cisocio }}</dd></div>
+            <div><dt>Primer nombre</dt><dd>{{ solicitud.primernombresocio }}</dd></div>
+            <div><dt>Segundo nombre</dt><dd>{{ solicitud.segundonombresocio|default_dash }}</dd></div>
+            <div><dt>Primer apellido</dt><dd>{{ solicitud.primerapellidosocio }}</dd></div>
+            <div><dt>Segundo apellido</dt><dd>{{ solicitud.segundoapellidosocio }}</dd></div>
+            <div><dt>Fecha de nacimiento</dt><dd>{{ solicitud.fechanacimientosocio|date:"d/m/Y" }}</dd></div>
+            <div><dt>Sexo</dt><dd>{{ solicitud.sexosocio|default_dash }}</dd></div>
+            <div><dt>Teléfono personal</dt><dd>{{ solicitud.telefonopersonalsocio|default_dash }}</dd></div>
+            <div><dt>Teléfono trabajo</dt><dd>{{ solicitud.telefonotrabajosocio|default_dash }}</dd></div>
+            <div class="grid-full"><dt>Dirección domicilio</dt><dd>{{ solicitud.direcciondomiciliosocio }}</dd></div>
+            <div class="grid-full"><dt>Dirección trabajo</dt><dd>{{ solicitud.direcciontrabajosocio|default_dash }}</dd></div>
+        </dl>
+    </div>
+
+    {% if solicitud.estado == "Pendiente" %}
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Resolver solicitud</h2>
+            <p>Aprobación o rechazo administrativo.</p>
+        </div>
+        <div class="row g-4">
+            <div class="col-lg-6">
+                <form method="post" action="{% url 'socios:solicitud_socio_aprobar' solicitud.idsolicitud %}" novalidate>
+                    {% csrf_token %}
+                    {% include "includes/form_errors.html" with form=aprobar_form %}
+                    <div class="row g-3">
+                        <div class="col-12">{% include "includes/field.html" with field=aprobar_form.idtiposocio %}</div>
+                        <div class="col-12">{% include "includes/field.html" with field=aprobar_form.estadosocio %}</div>
+                        <div class="col-12">{% include "includes/field.html" with field=aprobar_form.observacion %}</div>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn btn-primary" type="submit">Aprobar</button>
+                    </div>
+                </form>
+            </div>
+            <div class="col-lg-6">
+                <form method="post" action="{% url 'socios:solicitud_socio_rechazar' solicitud.idsolicitud %}" novalidate>
+                    {% csrf_token %}
+                    {% include "includes/form_errors.html" with form=rechazo_form %}
+                    {% include "includes/field.html" with field=rechazo_form.motivorechazo %}
+                    <div class="form-actions">
+                        <button class="btn btn-outline-danger" type="submit">Rechazar</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}

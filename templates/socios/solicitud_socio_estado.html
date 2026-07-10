@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Mi solicitud para ser socio{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Solicitud de socio</p>
+        <h1>Mi solicitud para ser socio</h1>
+        <p>{{ jugador }}</p>
+    </div>
+    {% if not socio and not tiene_solicitud_pendiente %}
+    <a class="btn btn-primary" href="{% url 'socios:solicitud_socio_nueva' %}">Solicitar ser socio</a>
+    {% endif %}
+</section>
+
+<section class="content-panel">
+    {% if socio %}
+    <div class="alert alert-success mb-0" role="status">
+        Ya estás vinculado al socio {{ socio }}.
+    </div>
+    {% elif solicitud %}
+    <dl class="detail-grid">
+        <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ solicitud.estado|estado_class }}">{{ solicitud.estado }}</span></dd></div>
+        <div><dt>Cédula</dt><dd>{{ solicitud.cisocio }}</dd></div>
+        <div><dt>Fecha de solicitud</dt><dd>{{ solicitud.fechasolicitud|date:"d/m/Y H:i" }}</dd></div>
+        <div><dt>Tipo de socio</dt><dd>{{ solicitud.idtiposocio|default_dash }}</dd></div>
+        <div class="grid-full"><dt>Nombre solicitado</dt><dd>{{ solicitud.primernombresocio }} {{ solicitud.segundonombresocio }} {{ solicitud.primerapellidosocio }} {{ solicitud.segundoapellidosocio }}</dd></div>
+        {% if solicitud.estado == "Aprobada" %}
+        <div class="grid-full"><dt>Resultado</dt><dd>Solicitud aprobada. Socio vinculado: {{ solicitud.idsocioresultado|default_dash }}.</dd></div>
+        {% elif solicitud.estado == "Rechazada" %}
+        <div class="grid-full"><dt>Motivo de rechazo</dt><dd>{{ solicitud.motivorechazo|default:solicitud.observacion|default_dash }}</dd></div>
+        {% else %}
+        <div class="grid-full"><dt>Resultado</dt><dd>Solicitud pendiente de revisión administrativa.</dd></div>
+        {% endif %}
+    </dl>
+
+    {% if solicitud.estado == "Rechazada" %}
+    <div class="form-actions">
+        <a class="btn btn-primary" href="{% url 'socios:solicitud_socio_nueva' %}">Crear nueva solicitud</a>
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="empty-state">
+        <strong>No tienes una solicitud registrada.</strong>
+        <span>Puedes enviar tus datos para revisión administrativa.</span>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}

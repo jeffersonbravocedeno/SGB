@@ -40,6 +40,7 @@ def _next_permitido_para_jugador(next_url):
         return False
     rutas_permitidas = (
         reverse("bingos:mis_cartones"),
+        reverse("socios:mi_solicitud_socio"),
         "/juego/",
         reverse("password_change"),
         reverse("password_change_done"),
