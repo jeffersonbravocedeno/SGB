@@ -7,7 +7,13 @@ from apps.common.forms import FriendlyModelForm
 from apps.configuracion.models import Metodopago
 from apps.socios.models import Socio
 
-from .models import Ahorro, Aportesemanal, PagoPrestamo, Prestamo
+from .models import (
+    Ahorro,
+    Aportesemanal,
+    PagoPrestamo,
+    Prestamo,
+    SolicitudPagoPrestamo,
+)
 
 
 MENSAJE_VENCIMIENTO_ANTERIOR = (
@@ -285,6 +291,114 @@ class PagoPrestamoForm(FriendlyModelForm):
     def clean_observacion(self):
         value = self.cleaned_data.get("observacion")
         return value.strip() if value else ""
+
+
+class SolicitudPagoPrestamoForm(FriendlyModelForm):
+    integrity_error_map = ()
+
+    class Meta:
+        model = SolicitudPagoPrestamo
+        fields = (
+            "monto",
+            "idmetodopago",
+            "referencia",
+            "rutacomprobante",
+            "observacionsocio",
+        )
+        labels = {
+            "monto": "Monto",
+            "idmetodopago": "Método de pago",
+            "referencia": "Referencia",
+            "rutacomprobante": "Comprobante o dato de comprobante",
+            "observacionsocio": "Observación",
+        }
+        widgets = {
+            "observacionsocio": forms.Textarea(attrs={"rows": 3}),
+        }
+        error_messages = {
+            "referencia": {
+                "required": "Debe ingresar una referencia.",
+            },
+        }
+
+    def __init__(self, *args, prestamo=None, metodo_pago_queryset=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.prestamo = prestamo
+        if metodo_pago_queryset is None:
+            metodo_pago_queryset = Metodopago.objects.order_by("nombremetodopago")
+        self.fields["idmetodopago"].queryset = metodo_pago_queryset
+        self.fields["idmetodopago"].required = False
+        self.fields["referencia"].error_messages[
+            "required"
+        ] = "Debe ingresar una referencia."
+
+    def clean_monto(self):
+        value = self.cleaned_data.get("monto")
+        if value is None or value <= 0:
+            raise forms.ValidationError("El monto debe ser mayor que cero.")
+        return value
+
+    def clean_referencia(self):
+        value = self.cleaned_data.get("referencia")
+        value = value.strip() if value else ""
+        if not value:
+            raise forms.ValidationError("Debe ingresar una referencia.")
+        return value
+
+    def clean_rutacomprobante(self):
+        return _texto_opcional(self.cleaned_data.get("rutacomprobante"))
+
+    def clean_observacionsocio(self):
+        return _texto_opcional(self.cleaned_data.get("observacionsocio"))
+
+    def clean(self):
+        cleaned_data = super().clean()
+        monto = cleaned_data.get("monto")
+        if self.prestamo is None or monto is None:
+            return cleaned_data
+
+        try:
+            saldo_pendiente = Decimal(str(self.prestamo.saldopendiente))
+        except (InvalidOperation, TypeError, ValueError):
+            self.add_error("monto", "El préstamo no tiene saldo pendiente.")
+            return cleaned_data
+
+        if saldo_pendiente <= 0:
+            self.add_error("monto", "El préstamo no tiene saldo pendiente.")
+        elif monto > saldo_pendiente:
+            self.add_error("monto", "El monto no puede superar el saldo pendiente.")
+        return cleaned_data
+
+
+class AprobarSolicitudPagoPrestamoForm(forms.Form):
+    observacionadmin = forms.CharField(
+        label="Observación administrativa",
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 3}),
+    )
+
+    def clean_observacionadmin(self):
+        return _texto_opcional(self.cleaned_data.get("observacionadmin")) or ""
+
+
+class RechazarSolicitudPagoPrestamoForm(forms.Form):
+    motivorechazo = forms.CharField(
+        label="Motivo de rechazo",
+        widget=forms.Textarea(attrs={"rows": 3}),
+        error_messages={"required": "Debe ingresar un motivo de rechazo."},
+    )
+
+    def clean_motivorechazo(self):
+        value = self.cleaned_data.get("motivorechazo")
+        value = value.strip() if value else ""
+        if not value:
+            raise forms.ValidationError("Debe ingresar un motivo de rechazo.")
+        return value
+
+
+def _texto_opcional(value):
+    value = value.strip() if value else ""
+    return value or None
 
 
 class AhorroForm(FriendlyModelForm):

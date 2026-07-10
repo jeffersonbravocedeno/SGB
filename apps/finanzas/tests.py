@@ -13,6 +13,7 @@ from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from apps.configuracion.models import Metodopago, Regalo
+from apps.jugadores.models import Jugador
 from apps.socios.models import Socio
 
 from . import admin as finanzas_admin
@@ -20,19 +21,34 @@ from . import services as finanzas_services
 from . import views as finanzas_views
 from .forms import (
     AhorroForm,
+    AprobarSolicitudPagoPrestamoForm,
     AporteSemanalForm,
     PagoPrestamoForm,
     PrestamoConGarantesForm,
     PrestamoEdicionForm,
+    RechazarSolicitudPagoPrestamoForm,
+    SolicitudPagoPrestamoForm,
 )
-from .models import Ahorro, Aportesemanal, Pago, PagoPrestamo, Prestamo, PrestamoGarante
+from .models import (
+    Ahorro,
+    Aportesemanal,
+    Pago,
+    PagoPrestamo,
+    Prestamo,
+    PrestamoGarante,
+    SolicitudPagoPrestamo,
+)
 from .services import (
     PrestamoGarantiaError,
     PrestamoPagoError,
+    SolicitudPagoPrestamoError,
+    aprobar_solicitud_pago_prestamo,
     calcular_capacidad_garante,
     construir_datos_garantes,
     crear_prestamo_con_garantes,
+    crear_solicitud_pago_prestamo,
     registrar_pago_prestamo,
+    rechazar_solicitud_pago_prestamo,
     validar_garantes_prestamo,
 )
 
@@ -87,6 +103,80 @@ def socio_stub(idsocio, nombre=None):
         cisocio=str(idsocio).zfill(10),
         estadosocio="Activo",
     )
+
+
+def jugador_stub(idjugador=1, socio=None):
+    return Jugador(
+        idjugador=idjugador,
+        idsocio=socio,
+        aliasjugador=f"jugador{idjugador}",
+        correojugador=f"jugador{idjugador}@example.com",
+        fecharegistrojugador=datetime(2026, 7, 10, 9, 0),
+        saldocreditojugador=Decimal("0.00"),
+        estadocuentajugador="Activo",
+    )
+
+
+def prestamo_solicitud_stub(
+    idsocio,
+    *,
+    idprestamo=10,
+    saldo=Decimal("300.00"),
+    estado="Aprobado",
+):
+    prestamo = Prestamo(
+        idprestamo=idprestamo,
+        idsocio=idsocio,
+        montoprestamosolicitado=Decimal("1000.00"),
+        tasainteres=Decimal("5.00"),
+        montototalpagar=Decimal("1050.00"),
+        saldopendiente=saldo,
+        numerocuotas=10,
+        fechasolicitud=date(2026, 7, 8),
+        fechavencimiento=date(2026, 12, 8),
+        estadoprestamo=estado,
+    )
+    prestamo.save = MagicMock()
+    return prestamo
+
+
+def solicitud_pago_prestamo_stub(
+    prestamo,
+    jugador,
+    *,
+    idsolicitudpago=1,
+    monto=Decimal("100.00"),
+    estado=SolicitudPagoPrestamo.ESTADO_PENDIENTE,
+    metodo_pago=None,
+):
+    solicitud = SolicitudPagoPrestamo(
+        idsolicitudpago=idsolicitudpago,
+        idprestamo=prestamo,
+        idsocio=prestamo.idsocio,
+        idjugador=jugador,
+        idmetodopago=metodo_pago,
+        monto=monto,
+        referencia="REF-SOCIO-1",
+        rutacomprobante="TRX-001",
+        observacionsocio="Pago desde portal",
+        estado=estado,
+        fechasolicitud=datetime(2026, 7, 10, 9, 30),
+    )
+    solicitud.save = MagicMock()
+    return solicitud
+
+
+class LockedSolicitudPagoQuerySet:
+    def __init__(self, solicitud):
+        self.solicitud = solicitud
+
+    def select_related(self, *args, **kwargs):
+        raise AssertionError(
+            "No se debe usar select_related despues de select_for_update en SolicitudPagoPrestamo."
+        )
+
+    def get(self, **kwargs):
+        return self.solicitud
 
 
 def bingo_stub(idbingo=1):
@@ -276,6 +366,97 @@ class PagoPrestamoModelMetadataTests(SimpleTestCase):
                 "estadopago": "estadopago",
             },
         )
+
+
+class SolicitudPagoPrestamoModelMetadataTests(SimpleTestCase):
+    def test_modelo_existe_y_no_es_gestionado(self):
+        self.assertEqual(SolicitudPagoPrestamo.__name__, "SolicitudPagoPrestamo")
+        self.assertFalse(SolicitudPagoPrestamo._meta.managed)
+
+    def test_tabla_fisica_correcta(self):
+        self.assertEqual(
+            SolicitudPagoPrestamo._meta.db_table,
+            "solicitud_pago_prestamo",
+        )
+
+    def test_primary_key_es_autofield(self):
+        pk = SolicitudPagoPrestamo._meta.pk
+
+        self.assertIsInstance(pk, django_models.AutoField)
+        self.assertEqual(pk.name, "idsolicitudpago")
+        self.assertEqual(pk.column, "idsolicitudpago")
+        self.assertTrue(pk.primary_key)
+
+    def test_columnas_fisicas_correctas(self):
+        columnas = {
+            field.name: field.column
+            for field in SolicitudPagoPrestamo._meta.fields
+        }
+
+        self.assertEqual(
+            columnas,
+            {
+                "idsolicitudpago": "idsolicitudpago",
+                "idprestamo": "idprestamo",
+                "idsocio": "idsocio",
+                "idjugador": "idjugador",
+                "idmetodopago": "idmetodopago",
+                "monto": "monto",
+                "referencia": "referencia",
+                "rutacomprobante": "rutacomprobante",
+                "observacionsocio": "observacionsocio",
+                "estado": "estado",
+                "fechasolicitud": "fechasolicitud",
+                "fecharespuesta": "fecharespuesta",
+                "idusuarioadminrespuesta": "idusuarioadminrespuesta",
+                "motivorechazo": "motivorechazo",
+                "observacionadmin": "observacionadmin",
+                "idpagoprestamoresultado": "idpagoprestamoresultado",
+            },
+        )
+
+    def test_foreign_keys_usan_modelos_correctos(self):
+        self.assertIs(
+            SolicitudPagoPrestamo._meta.get_field("idprestamo").remote_field.model,
+            Prestamo,
+        )
+        self.assertIs(
+            SolicitudPagoPrestamo._meta.get_field("idsocio").remote_field.model,
+            Socio,
+        )
+        self.assertIs(
+            SolicitudPagoPrestamo._meta.get_field("idjugador").remote_field.model,
+            Jugador,
+        )
+        self.assertIs(
+            SolicitudPagoPrestamo._meta.get_field("idmetodopago").remote_field.model,
+            Metodopago,
+        )
+        self.assertIs(
+            SolicitudPagoPrestamo._meta.get_field(
+                "idpagoprestamoresultado"
+            ).remote_field.model,
+            PagoPrestamo,
+        )
+
+    def test_estado_tiene_choices_pendiente_aprobada_rechazada(self):
+        field = SolicitudPagoPrestamo._meta.get_field("estado")
+
+        self.assertEqual(
+            tuple(field.choices),
+            (
+                ("Pendiente", "Pendiente"),
+                ("Aprobada", "Aprobada"),
+                ("Rechazada", "Rechazada"),
+            ),
+        )
+        self.assertEqual(field.default, "Pendiente")
+
+    def test_monto_precision_decimal(self):
+        field = SolicitudPagoPrestamo._meta.get_field("monto")
+
+        self.assertEqual(field.max_digits, 12)
+        self.assertEqual(field.decimal_places, 2)
 
 
 class PagoPrestamoAdminTests(SimpleTestCase):
@@ -593,6 +774,100 @@ class PagoPrestamoFormTests(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors.as_data())
         self.assertEqual(form.cleaned_data["numeroreferencia"], "REF-001")
         self.assertEqual(form.cleaned_data["observacion"], "Pago de cuota")
+
+
+class SolicitudPagoPrestamoFormTests(SimpleTestCase):
+    def setUp(self):
+        self.socio = socio_stub(1, "Socio Pago")
+        self.prestamo = prestamo_solicitud_stub(
+            self.socio,
+            saldo=Decimal("300.00"),
+        )
+
+    def _form(self, **overrides):
+        datos = {
+            "monto": "100.00",
+            "idmetodopago": "",
+            "referencia": " REF-PORTAL ",
+            "rutacomprobante": " TRX-123 ",
+            "observacionsocio": " Pago desde portal ",
+        }
+        datos.update(overrides)
+        return SolicitudPagoPrestamoForm(
+            data=datos,
+            prestamo=self.prestamo,
+            metodo_pago_queryset=Metodopago.objects.none(),
+        )
+
+    def _is_valid(self, form):
+        with patch.object(SolicitudPagoPrestamo, "full_clean"):
+            return form.is_valid()
+
+    def test_formulario_acepta_datos_validos_y_limpia_textos(self):
+        form = self._form()
+
+        self.assertTrue(self._is_valid(form), form.errors.as_data())
+        self.assertEqual(form.cleaned_data["monto"], Decimal("100.00"))
+        self.assertEqual(form.cleaned_data["referencia"], "REF-PORTAL")
+        self.assertEqual(form.cleaned_data["rutacomprobante"], "TRX-123")
+        self.assertEqual(form.cleaned_data["observacionsocio"], "Pago desde portal")
+
+    def test_formulario_rechaza_monto_cero(self):
+        form = self._form(monto="0")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("monto", form.errors)
+        self.assertIn("El monto debe ser mayor que cero.", form.errors["monto"])
+
+    def test_formulario_rechaza_monto_negativo(self):
+        form = self._form(monto="-1.00")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("monto", form.errors)
+
+    def test_formulario_rechaza_referencia_vacia(self):
+        form = self._form(referencia="  ")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("referencia", form.errors)
+        self.assertIn("Debe ingresar una referencia.", form.errors["referencia"])
+
+    def test_formulario_rechaza_sobrepago_si_recibe_prestamo(self):
+        form = self._form(monto="301.00")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("monto", form.errors)
+        self.assertIn(
+            "El monto no puede superar el saldo pendiente.",
+            form.errors["monto"],
+        )
+
+    def test_formulario_rechaza_prestamo_sin_saldo(self):
+        self.prestamo.saldopendiente = Decimal("0.00")
+        form = self._form(monto="1.00")
+
+        self.assertFalse(self._is_valid(form))
+        self.assertIn("El préstamo no tiene saldo pendiente.", form.errors["monto"])
+
+
+class SolicitudPagoPrestamoDecisionFormTests(SimpleTestCase):
+    def test_aprobar_limpia_observacion_admin(self):
+        form = AprobarSolicitudPagoPrestamoForm(
+            data={"observacionadmin": " Validado en finanzas "}
+        )
+
+        self.assertTrue(form.is_valid(), form.errors.as_data())
+        self.assertEqual(form.cleaned_data["observacionadmin"], "Validado en finanzas")
+
+    def test_rechazar_exige_motivo(self):
+        form = RechazarSolicitudPagoPrestamoForm(data={"motivorechazo": "  "})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("motivorechazo", form.errors)
+        self.assertIn(
+            "Debe ingresar un motivo de rechazo.",
+            form.errors["motivorechazo"],
+        )
 
 
 class AhorroFormTests(SimpleTestCase):
@@ -1755,6 +2030,466 @@ class RegistrarPagoPrestamoTests(SimpleTestCase):
         prestamo.save.assert_called_once_with(
             update_fields=["saldopendiente", "estadoprestamo"]
         )
+
+
+class SolicitudPagoPrestamoServicesTests(SimpleTestCase):
+    def setUp(self):
+        self.socio = socio_stub(1, "Socio Deudor")
+        self.otro_socio = socio_stub(2, "Otro Socio")
+        self.jugador = jugador_stub(1, self.socio)
+        self.admin = User(username="admin", is_staff=True)
+        self.metodo_pago = Metodopago(idmetodopago=3, nombremetodopago="Transferencia")
+
+    def _datos_solicitud(self, **overrides):
+        datos = {
+            "monto": Decimal("100.00"),
+            "idmetodopago": self.metodo_pago,
+            "referencia": " REF-PORTAL ",
+            "rutacomprobante": " TRX-001 ",
+            "observacionsocio": " Pago desde portal ",
+        }
+        datos.update(overrides)
+        return datos
+
+    def _patch_prestamo_bloqueado(self, prestamo):
+        prestamos_bloqueados = MagicMock()
+        prestamos_bloqueados.get.return_value = prestamo
+        return (
+            patch(
+                "apps.finanzas.services.Prestamo.objects.select_for_update",
+                return_value=prestamos_bloqueados,
+            ),
+            prestamos_bloqueados,
+        )
+
+    def _patch_solicitudes_pendientes(self, existe=False):
+        solicitudes = MagicMock()
+        solicitudes.exists.return_value = existe
+        return patch(
+            "apps.finanzas.services.SolicitudPagoPrestamo.objects.filter",
+            return_value=solicitudes,
+        )
+
+    def _patch_solicitud_bloqueada(self, solicitud):
+        return patch(
+            "apps.finanzas.services.SolicitudPagoPrestamo.objects.select_for_update",
+            return_value=LockedSolicitudPagoQuerySet(solicitud),
+        )
+
+    def test_socio_crea_solicitud_para_prestamo_propio(self):
+        prestamo = prestamo_solicitud_stub(self.socio)
+        solicitud_creada = SolicitudPagoPrestamo(idsolicitudpago=1)
+        bloqueo_patch, prestamos_bloqueados = self._patch_prestamo_bloqueado(
+            prestamo
+        )
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ) as atomic,
+            bloqueo_patch,
+            self._patch_solicitudes_pendientes(False),
+            patch(
+                "apps.finanzas.services.SolicitudPagoPrestamo.objects.create",
+                return_value=solicitud_creada,
+            ) as solicitud_create,
+            patch("apps.finanzas.services.PagoPrestamo.objects.create") as pago_create,
+        ):
+            solicitud = crear_solicitud_pago_prestamo(
+                self.jugador,
+                prestamo.idprestamo,
+                self._datos_solicitud(),
+            )
+
+        self.assertIs(solicitud, solicitud_creada)
+        atomic.assert_called_once()
+        prestamos_bloqueados.get.assert_called_once_with(idprestamo=10)
+        solicitud_create.assert_called_once()
+        datos_creacion = solicitud_create.call_args.kwargs
+        self.assertIs(datos_creacion["idprestamo"], prestamo)
+        self.assertEqual(datos_creacion["idsocio_id"], self.socio.idsocio)
+        self.assertIs(datos_creacion["idjugador"], self.jugador)
+        self.assertIs(datos_creacion["idmetodopago"], self.metodo_pago)
+        self.assertEqual(datos_creacion["monto"], Decimal("100.00"))
+        self.assertEqual(datos_creacion["referencia"], "REF-PORTAL")
+        self.assertEqual(datos_creacion["rutacomprobante"], "TRX-001")
+        self.assertEqual(datos_creacion["observacionsocio"], "Pago desde portal")
+        self.assertEqual(datos_creacion["estado"], "Pendiente")
+        pago_create.assert_not_called()
+
+    def test_jugador_sin_socio_no_puede_solicitar_pago(self):
+        jugador = jugador_stub(2, None)
+
+        with self.assertRaisesMessage(
+            SolicitudPagoPrestamoError,
+            "El jugador no está vinculado a un socio.",
+        ):
+            crear_solicitud_pago_prestamo(
+                jugador,
+                10,
+                self._datos_solicitud(),
+            )
+
+    def test_socio_no_puede_solicitar_pago_de_prestamo_ajeno(self):
+        prestamo = prestamo_solicitud_stub(self.otro_socio)
+        bloqueo_patch, _prestamos_bloqueados = self._patch_prestamo_bloqueado(
+            prestamo
+        )
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            bloqueo_patch,
+            patch(
+                "apps.finanzas.services.SolicitudPagoPrestamo.objects.create"
+            ) as solicitud_create,
+        ):
+            with self.assertRaisesMessage(
+                SolicitudPagoPrestamoError,
+                "El préstamo no pertenece al socio autenticado.",
+            ):
+                crear_solicitud_pago_prestamo(
+                    self.jugador,
+                    prestamo.idprestamo,
+                    self._datos_solicitud(),
+                )
+
+        solicitud_create.assert_not_called()
+
+    def test_monto_cero_se_rechaza(self):
+        with self.assertRaisesMessage(
+            SolicitudPagoPrestamoError,
+            "El monto debe ser mayor que cero.",
+        ):
+            crear_solicitud_pago_prestamo(
+                self.jugador,
+                10,
+                self._datos_solicitud(monto=Decimal("0.00")),
+            )
+
+    def test_monto_negativo_se_rechaza(self):
+        with self.assertRaisesMessage(
+            SolicitudPagoPrestamoError,
+            "El monto debe ser mayor que cero.",
+        ):
+            crear_solicitud_pago_prestamo(
+                self.jugador,
+                10,
+                self._datos_solicitud(monto=Decimal("-1.00")),
+            )
+
+    def test_sobrepago_se_rechaza(self):
+        prestamo = prestamo_solicitud_stub(self.socio, saldo=Decimal("50.00"))
+        bloqueo_patch, _prestamos_bloqueados = self._patch_prestamo_bloqueado(
+            prestamo
+        )
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            bloqueo_patch,
+            patch(
+                "apps.finanzas.services.SolicitudPagoPrestamo.objects.create"
+            ) as solicitud_create,
+        ):
+            with self.assertRaisesMessage(
+                SolicitudPagoPrestamoError,
+                "El monto no puede superar el saldo pendiente.",
+            ):
+                crear_solicitud_pago_prestamo(
+                    self.jugador,
+                    prestamo.idprestamo,
+                    self._datos_solicitud(monto=Decimal("51.00")),
+                )
+
+        solicitud_create.assert_not_called()
+
+    def test_solicitud_pendiente_no_modifica_saldopendiente(self):
+        prestamo = prestamo_solicitud_stub(self.socio, saldo=Decimal("300.00"))
+        saldo_original = prestamo.saldopendiente
+        bloqueo_patch, _prestamos_bloqueados = self._patch_prestamo_bloqueado(
+            prestamo
+        )
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            bloqueo_patch,
+            self._patch_solicitudes_pendientes(False),
+            patch(
+                "apps.finanzas.services.SolicitudPagoPrestamo.objects.create",
+                return_value=SolicitudPagoPrestamo(idsolicitudpago=1),
+            ),
+            patch("apps.finanzas.services.PagoPrestamo.objects.create") as pago_create,
+        ):
+            crear_solicitud_pago_prestamo(
+                self.jugador,
+                prestamo.idprestamo,
+                self._datos_solicitud(),
+            )
+
+        self.assertEqual(prestamo.saldopendiente, saldo_original)
+        prestamo.save.assert_not_called()
+        pago_create.assert_not_called()
+
+    def test_no_permite_duplicar_solicitud_pendiente_para_mismo_prestamo(self):
+        prestamo = prestamo_solicitud_stub(self.socio)
+        bloqueo_patch, _prestamos_bloqueados = self._patch_prestamo_bloqueado(
+            prestamo
+        )
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            bloqueo_patch,
+            self._patch_solicitudes_pendientes(True),
+            patch(
+                "apps.finanzas.services.SolicitudPagoPrestamo.objects.create"
+            ) as solicitud_create,
+        ):
+            with self.assertRaisesMessage(
+                SolicitudPagoPrestamoError,
+                "Ya existe una solicitud de pago pendiente para este préstamo.",
+            ):
+                crear_solicitud_pago_prestamo(
+                    self.jugador,
+                    prestamo.idprestamo,
+                    self._datos_solicitud(),
+                )
+
+        solicitud_create.assert_not_called()
+
+    def test_admin_aprueba_solicitud_pendiente_crea_pago_y_baja_saldo(self):
+        prestamo = prestamo_solicitud_stub(self.socio, saldo=Decimal("300.00"))
+        solicitud = solicitud_pago_prestamo_stub(
+            prestamo,
+            self.jugador,
+            monto=Decimal("125.00"),
+            metodo_pago=self.metodo_pago,
+        )
+        pago_creado = PagoPrestamo(idpagoprestamo=7)
+        bloqueo_prestamo_patch, prestamos_bloqueados = self._patch_prestamo_bloqueado(
+            prestamo
+        )
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            self._patch_solicitud_bloqueada(solicitud),
+            bloqueo_prestamo_patch as select_for_update,
+            patch(
+                "apps.finanzas.services.PagoPrestamo.objects.create",
+                return_value=pago_creado,
+            ) as pago_create,
+        ):
+            solicitud_resultado, pago = aprobar_solicitud_pago_prestamo(
+                solicitud.idsolicitudpago,
+                self.admin,
+                {"observacionadmin": " Validado "},
+            )
+
+        self.assertIs(solicitud_resultado, solicitud)
+        self.assertIs(pago, pago_creado)
+        self.assertEqual(select_for_update.call_count, 2)
+        self.assertEqual(prestamos_bloqueados.get.call_count, 2)
+        pago_create.assert_called_once()
+        self.assertEqual(prestamo.saldopendiente, Decimal("175.00"))
+        prestamo.save.assert_called_once_with(update_fields=["saldopendiente"])
+        self.assertEqual(solicitud.estado, SolicitudPagoPrestamo.ESTADO_APROBADA)
+        self.assertIs(solicitud.idpagoprestamoresultado, pago_creado)
+        self.assertEqual(solicitud.observacionadmin, "Validado")
+        solicitud.save.assert_called_once_with(
+            update_fields=[
+                "estado",
+                "fecharespuesta",
+                "idusuarioadminrespuesta",
+                "observacionadmin",
+                "idpagoprestamoresultado",
+            ]
+        )
+
+    def test_aprobar_pago_exacto_liquida_prestamo(self):
+        prestamo = prestamo_solicitud_stub(self.socio, saldo=Decimal("100.00"))
+        solicitud = solicitud_pago_prestamo_stub(
+            prestamo,
+            self.jugador,
+            monto=Decimal("100.00"),
+        )
+        pago_creado = PagoPrestamo(idpagoprestamo=8)
+        bloqueo_prestamo_patch, _prestamos_bloqueados = self._patch_prestamo_bloqueado(
+            prestamo
+        )
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            self._patch_solicitud_bloqueada(solicitud),
+            bloqueo_prestamo_patch,
+            patch(
+                "apps.finanzas.services.PagoPrestamo.objects.create",
+                return_value=pago_creado,
+            ),
+        ):
+            aprobar_solicitud_pago_prestamo(solicitud.idsolicitudpago, self.admin)
+
+        self.assertEqual(prestamo.saldopendiente, Decimal("0"))
+        self.assertEqual(prestamo.estadoprestamo, "Liquidado")
+        prestamo.save.assert_called_once_with(
+            update_fields=["saldopendiente", "estadoprestamo"]
+        )
+
+    def test_admin_rechaza_solicitud_pendiente_sin_crear_pago_ni_bajar_saldo(self):
+        prestamo = prestamo_solicitud_stub(self.socio, saldo=Decimal("300.00"))
+        solicitud = solicitud_pago_prestamo_stub(prestamo, self.jugador)
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            self._patch_solicitud_bloqueada(solicitud),
+            patch("apps.finanzas.services.PagoPrestamo.objects.create") as pago_create,
+        ):
+            resultado = rechazar_solicitud_pago_prestamo(
+                solicitud.idsolicitudpago,
+                self.admin,
+                " Referencia no comprobada ",
+            )
+
+        self.assertIs(resultado, solicitud)
+        self.assertEqual(solicitud.estado, SolicitudPagoPrestamo.ESTADO_RECHAZADA)
+        self.assertEqual(solicitud.motivorechazo, "Referencia no comprobada")
+        self.assertEqual(prestamo.saldopendiente, Decimal("300.00"))
+        prestamo.save.assert_not_called()
+        pago_create.assert_not_called()
+        solicitud.save.assert_called_once_with(
+            update_fields=[
+                "estado",
+                "fecharespuesta",
+                "idusuarioadminrespuesta",
+                "motivorechazo",
+            ]
+        )
+
+    def test_no_se_puede_aprobar_dos_veces(self):
+        prestamo = prestamo_solicitud_stub(self.socio)
+        solicitud = solicitud_pago_prestamo_stub(
+            prestamo,
+            self.jugador,
+            estado=SolicitudPagoPrestamo.ESTADO_APROBADA,
+        )
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            self._patch_solicitud_bloqueada(solicitud),
+            patch(
+                "apps.finanzas.services.PagoPrestamo.objects.create"
+            ) as pago_create,
+        ):
+            with self.assertRaisesMessage(
+                SolicitudPagoPrestamoError,
+                "La solicitud ya fue resuelta.",
+            ):
+                aprobar_solicitud_pago_prestamo(solicitud.idsolicitudpago, self.admin)
+
+        pago_create.assert_not_called()
+
+    def test_no_se_puede_rechazar_solicitud_aprobada(self):
+        prestamo = prestamo_solicitud_stub(self.socio)
+        solicitud = solicitud_pago_prestamo_stub(
+            prestamo,
+            self.jugador,
+            estado=SolicitudPagoPrestamo.ESTADO_APROBADA,
+        )
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            self._patch_solicitud_bloqueada(solicitud),
+        ):
+            with self.assertRaisesMessage(
+                SolicitudPagoPrestamoError,
+                "La solicitud ya fue resuelta.",
+            ):
+                rechazar_solicitud_pago_prestamo(
+                    solicitud.idsolicitudpago,
+                    self.admin,
+                    "No procede",
+                )
+
+        solicitud.save.assert_not_called()
+
+    def test_no_se_puede_aprobar_si_saldo_actual_no_alcanza(self):
+        prestamo = prestamo_solicitud_stub(self.socio, saldo=Decimal("50.00"))
+        solicitud = solicitud_pago_prestamo_stub(
+            prestamo,
+            self.jugador,
+            monto=Decimal("100.00"),
+        )
+        bloqueo_prestamo_patch, _prestamos_bloqueados = self._patch_prestamo_bloqueado(
+            prestamo
+        )
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            self._patch_solicitud_bloqueada(solicitud),
+            bloqueo_prestamo_patch,
+            patch(
+                "apps.finanzas.services.registrar_pago_prestamo"
+            ) as registrar_pago,
+        ):
+            with self.assertRaisesMessage(
+                SolicitudPagoPrestamoError,
+                "El monto no puede superar el saldo pendiente.",
+            ):
+                aprobar_solicitud_pago_prestamo(solicitud.idsolicitudpago, self.admin)
+
+        registrar_pago.assert_not_called()
+        solicitud.save.assert_not_called()
+
+    def test_aprobar_no_usa_select_related_nullable_con_select_for_update(self):
+        prestamo = prestamo_solicitud_stub(self.socio)
+        solicitud = solicitud_pago_prestamo_stub(prestamo, self.jugador)
+        bloqueo_prestamo_patch, _prestamos_bloqueados = self._patch_prestamo_bloqueado(
+            prestamo
+        )
+
+        with (
+            patch(
+                "apps.finanzas.services.transaction.atomic",
+                return_value=nullcontext(),
+            ),
+            self._patch_solicitud_bloqueada(solicitud) as solicitud_lock,
+            bloqueo_prestamo_patch,
+            patch(
+                "apps.finanzas.services.registrar_pago_prestamo",
+                return_value=PagoPrestamo(idpagoprestamo=9),
+            ),
+        ):
+            aprobar_solicitud_pago_prestamo(solicitud.idsolicitudpago, self.admin)
+
+        solicitud_lock.assert_called_once_with()
 
 
 class ServiciosGarantesPrestamoTests(SimpleTestCase):
