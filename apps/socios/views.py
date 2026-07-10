@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
 from django.core.exceptions import ValidationError
@@ -11,7 +11,7 @@ from django.views.decorators.http import require_POST, require_http_methods
 from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate
-from apps.finanzas.models import Ahorro, Aportesemanal, Prestamo
+from apps.finanzas.models import Ahorro, Aportesemanal, PagoPrestamo, Prestamo
 from apps.jugadores.services import jugador_required
 
 from .forms import (
@@ -27,6 +27,16 @@ from .services import (
     crear_solicitud_socio,
     rechazar_solicitud_socio,
 )
+
+
+ESTADOS_PRESTAMO_INACTIVO = {
+    "liquidado",
+    "pagado",
+    "cerrado",
+    "cancelado",
+    "rechazado",
+    "anulado",
+}
 
 
 @admin_required
@@ -53,6 +63,78 @@ def lista(request):
             "busqueda": busqueda,
             "page_obj": paginate(request, socios),
             "total": socios.count(),
+        },
+    )
+
+
+@jugador_required
+def portal_socio(request):
+    jugador = request.jugador
+    socio = jugador.idsocio
+    if socio is None:
+        return render(
+            request,
+            "socios/portal_socio.html",
+            {
+                "jugador": jugador,
+                "socio": None,
+            },
+        )
+
+    ahorros = list(
+        Ahorro.objects.filter(idsocio=socio)
+        .select_related("idbingo")
+        .order_by("-fechaahorro", "-idahorro")
+    )
+    aportes = list(
+        Aportesemanal.objects.filter(idsocio=socio)
+        .select_related("idregalo", "idpartida")
+        .order_by("-fechaplanificadada", "-idaporte")
+    )
+    prestamos = list(
+        Prestamo.objects.filter(idsocio=socio).order_by(
+            "-fechasolicitud",
+            "-idprestamo",
+        )
+    )
+    pagos_prestamo = list(
+        PagoPrestamo.objects.filter(idprestamo__idsocio=socio)
+        .select_related("idprestamo", "idmetodopago")
+        .order_by("-fechapago", "-idpagoprestamo")
+    )
+
+    total_ahorro_activo = sum(
+        (
+            _decimal_modelo(ahorro.montoahorro)
+            for ahorro in ahorros
+            if _estado_es(ahorro.estado, "Activo")
+        ),
+        Decimal("0"),
+    )
+    saldo_pendiente_total = sum(
+        (_decimal_modelo(prestamo.saldopendiente) for prestamo in prestamos),
+        Decimal("0"),
+    )
+    prestamos_activos = [
+        prestamo
+        for prestamo in prestamos
+        if _prestamo_es_activo(prestamo)
+    ]
+
+    return render(
+        request,
+        "socios/portal_socio.html",
+        {
+            "jugador": jugador,
+            "socio": socio,
+            "ahorros": ahorros,
+            "aportes": aportes,
+            "prestamos": prestamos,
+            "pagos_prestamo": pagos_prestamo,
+            "total_ahorro_activo": total_ahorro_activo,
+            "prestamos_activos": prestamos_activos,
+            "saldo_pendiente_total": saldo_pendiente_total,
+            "aportes_registrados": len(aportes),
         },
     )
 
@@ -250,6 +332,22 @@ def _contexto_solicitud_admin(
         ),
         "rechazo_form": rechazo_form or RechazarSolicitudSocioForm(),
     }
+
+
+def _decimal_modelo(value):
+    try:
+        return Decimal(str(value or "0"))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0")
+
+
+def _estado_es(value, expected):
+    return str(value or "").strip().lower() == expected.lower()
+
+
+def _prestamo_es_activo(prestamo):
+    estado = str(prestamo.estadoprestamo or "").strip().lower()
+    return estado not in ESTADOS_PRESTAMO_INACTIVO
 
 
 @admin_required

@@ -9,6 +9,7 @@
     <div class="sidebar-title">Jugador</div>
     <nav class="sidebar-nav" aria-label="Menú de jugador">
         <a class="{% if request.resolver_match.url_name == 'mis_cartones' or request.resolver_match.url_name == 'mi_carton_detalle' %}active{% endif %}" href="{% url 'bingos:mis_cartones' %}">Mis cartones</a>
+        <a class="{% if request.resolver_match.url_name == 'portal_socio' %}active{% endif %}" href="{% url 'socios:portal_socio' %}">Mi panel de socio</a>
         <a class="{% if request.resolver_match.url_name == 'mi_solicitud_socio' or request.resolver_match.url_name == 'solicitud_socio_nueva' %}active{% endif %}" href="{% url 'socios:mi_solicitud_socio' %}">Mi solicitud de socio</a>
     </nav>
     {% endif %}
@@ -41,6 +42,7 @@
             {% endif %}
             {% if request.user|has_group:"Jugador" and not request.user.is_staff and not request.user.is_superuser %}
             <a class="{% if request.resolver_match.url_name == 'mis_cartones' or request.resolver_match.url_name == 'mi_carton_detalle' %}active{% endif %}" href="{% url 'bingos:mis_cartones' %}">Mis cartones</a>
+            <a class="{% if request.resolver_match.url_name == 'portal_socio' %}active{% endif %}" href="{% url 'socios:portal_socio' %}">Mi panel de socio</a>
             <a class="{% if request.resolver_match.url_name == 'mi_solicitud_socio' or request.resolver_match.url_name == 'solicitud_socio_nueva' %}active{% endif %}" href="{% url 'socios:mi_solicitud_socio' %}">Mi solicitud de socio</a>
             {% endif %}
             {% if request.user.is_staff or request.user.is_superuser %}

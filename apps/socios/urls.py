@@ -7,6 +7,7 @@ app_name = "socios"
 
 urlpatterns = [
     path("", views.lista, name="lista"),
+    path("mi-panel/", views.portal_socio, name="portal_socio"),
     path("mi-solicitud/", views.mi_solicitud_socio, name="mi_solicitud_socio"),
     path("mi-solicitud/nueva/", views.solicitud_socio_nueva, name="solicitud_socio_nueva"),
     path("solicitudes/", views.solicitudes_socio_lista, name="solicitudes_socio_lista"),

@@ -11,7 +11,7 @@ from django.core.exceptions import ValidationError
 from django.http import HttpResponse
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase
-from django.urls import reverse
+from django.urls import Resolver404, resolve, reverse
 
 from apps.configuracion.models import Tiposocio
 from apps.jugadores.models import Jugador
@@ -163,6 +163,30 @@ def aporte_stub(valor=Decimal("12.50")):
         fechaplanificadada=datetime(2026, 7, 8, 10, 30),
         fechaentregareal=None,
         estadoaporte="Al Dia",
+    )
+
+
+def prestamo_stub(idsocio, idprestamo=1, saldo="40.00", estado="Aprobado"):
+    return SimpleNamespace(
+        idprestamo=idprestamo,
+        idsocio=idsocio,
+        montoprestamosolicitado=Decimal("100.00"),
+        saldopendiente=Decimal(saldo),
+        fechasolicitud=date(2026, 7, 1),
+        fechavencimiento=date(2026, 12, 31),
+        estadoprestamo=estado,
+    )
+
+
+def pago_prestamo_stub(prestamo, monto="20.00"):
+    return SimpleNamespace(
+        idpagoprestamo=1,
+        idprestamo=prestamo,
+        idmetodopago="Transferencia",
+        fechapago=datetime(2026, 7, 10, 9, 0),
+        montopagado=Decimal(monto),
+        numeroreferencia="REF-001",
+        observacion="Pago registrado",
     )
 
 
@@ -941,3 +965,216 @@ class SolicitudSocioWebTests(SimpleTestCase):
                     view(request, *args)
 
                 self.assertEqual(context.exception.__class__.__name__, "PermissionDenied")
+
+
+class PortalSocioWebTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.socio = socio_stub(idsocio=10)
+        self.otro_socio = socio_stub(idsocio=20)
+        self.jugador = jugador_stub(idjugador=10, socio=self.socio)
+        self.usuario = User(username=self.jugador.aliasjugador, is_staff=False)
+        self.usuario.pk = 10
+
+    def _request(self, user=None):
+        request = self.factory.get(reverse("socios:portal_socio"))
+        request.user = AnonymousUser() if user is None else user
+        request.session = {}
+        return request
+
+    def _render_spy(self, contexto):
+        def render(_request, template, context):
+            contexto.update(context)
+            return HttpResponse(template)
+
+        return render
+
+    def _patch_jugador_autenticado(self, jugador=None):
+        return patch(
+            "apps.jugadores.services.obtener_jugador_autenticado",
+            return_value=jugador or self.jugador,
+        )
+
+    def _patch_datos_portal(
+        self,
+        *,
+        ahorros=None,
+        aportes=None,
+        prestamos=None,
+        pagos=None,
+    ):
+        ahorros = list(ahorros or [])
+        aportes = list(aportes or [])
+        prestamos = list(prestamos or [])
+        pagos = list(pagos or [])
+
+        return _PatchGroup(
+            [
+                patch(
+                    "apps.socios.views.Ahorro.objects.filter",
+                    side_effect=lambda **kwargs: FakeQuerySet(
+                        [
+                            ahorro
+                            for ahorro in ahorros
+                            if getattr(ahorro, "idsocio", None) is kwargs.get("idsocio")
+                        ]
+                    ),
+                ),
+                patch(
+                    "apps.socios.views.Aportesemanal.objects.filter",
+                    side_effect=lambda **kwargs: FakeQuerySet(
+                        [
+                            aporte
+                            for aporte in aportes
+                            if getattr(aporte, "idsocio", None) is kwargs.get("idsocio")
+                        ]
+                    ),
+                ),
+                patch(
+                    "apps.socios.views.Prestamo.objects.filter",
+                    side_effect=lambda **kwargs: FakeQuerySet(
+                        [
+                            prestamo
+                            for prestamo in prestamos
+                            if getattr(prestamo, "idsocio", None) is kwargs.get("idsocio")
+                        ]
+                    ),
+                ),
+                patch(
+                    "apps.socios.views.PagoPrestamo.objects.filter",
+                    side_effect=lambda **kwargs: FakeQuerySet(
+                        [
+                            pago
+                            for pago in pagos
+                            if getattr(pago.idprestamo, "idsocio", None)
+                            is kwargs.get("idprestamo__idsocio")
+                        ]
+                    ),
+                ),
+            ],
+            ("ahorros_filter", "aportes_filter", "prestamos_filter", "pagos_filter"),
+        )
+
+    def _abrir_portal(self, jugador=None, **datos):
+        contexto = {}
+        with self._patch_jugador_autenticado(jugador), self._patch_datos_portal(
+            **datos
+        ) as mocks, patch("apps.socios.views.render", side_effect=self._render_spy(contexto)):
+            response = socios_views.portal_socio(self._request(self.usuario))
+
+        return response, contexto, mocks
+
+    def test_jugador_con_socio_puede_entrar_a_portal_socio(self):
+        response, contexto, _mocks = self._abrir_portal()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(contexto["jugador"], self.jugador)
+        self.assertIs(contexto["socio"], self.socio)
+
+    def test_jugador_sin_socio_entra_y_recibe_contexto_para_solicitar(self):
+        jugador = jugador_stub(idjugador=11, socio=None)
+        contexto = {}
+
+        with self._patch_jugador_autenticado(jugador), patch(
+            "apps.socios.views.render",
+            side_effect=self._render_spy(contexto),
+        ):
+            response = socios_views.portal_socio(self._request(self.usuario))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(contexto["socio"])
+        self.assertIs(contexto["jugador"], jugador)
+
+    def test_usuario_no_autenticado_no_accede(self):
+        response = socios_views.portal_socio(self._request())
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response["Location"])
+
+    def test_usuario_que_no_es_jugador_no_accede(self):
+        usuario = User(username="normal", is_staff=False)
+        usuario.pk = 99
+
+        with patch("apps.jugadores.services.usuario_es_jugador", return_value=False):
+            with self.assertRaises(Exception) as context:
+                socios_views.portal_socio(self._request(usuario))
+
+        self.assertEqual(context.exception.__class__.__name__, "PermissionDenied")
+
+    def test_portal_no_acepta_id_de_socio_por_url(self):
+        with self.assertRaises(Resolver404):
+            resolve("/socios/mi-panel/10/")
+
+    def test_portal_muestra_prestamos_del_socio_vinculado(self):
+        prestamo = prestamo_stub(self.socio, idprestamo=1)
+        otro_prestamo = prestamo_stub(self.otro_socio, idprestamo=2)
+
+        _response, contexto, _mocks = self._abrir_portal(
+            prestamos=[prestamo, otro_prestamo],
+        )
+
+        self.assertEqual(contexto["prestamos"], [prestamo])
+        self.assertEqual(contexto["prestamos_activos"], [prestamo])
+        self.assertEqual(contexto["saldo_pendiente_total"], Decimal("40.00"))
+
+    def test_portal_muestra_ahorros_del_socio_vinculado(self):
+        ahorro = ahorro_stub("120.00", estado="Activo")
+        otro_ahorro = ahorro_stub("999.00", estado="Activo")
+        ahorro.idsocio = self.socio
+        otro_ahorro.idsocio = self.otro_socio
+
+        _response, contexto, _mocks = self._abrir_portal(
+            ahorros=[ahorro, otro_ahorro],
+        )
+
+        self.assertEqual(contexto["ahorros"], [ahorro])
+        self.assertEqual(contexto["total_ahorro_activo"], Decimal("120.00"))
+
+    def test_portal_muestra_aportes_del_socio_vinculado(self):
+        aporte = aporte_stub(Decimal("12.50"))
+        otro_aporte = aporte_stub(Decimal("99.00"))
+        aporte.idsocio = self.socio
+        otro_aporte.idsocio = self.otro_socio
+
+        _response, contexto, _mocks = self._abrir_portal(
+            aportes=[aporte, otro_aporte],
+        )
+
+        self.assertEqual(contexto["aportes"], [aporte])
+        self.assertEqual(contexto["aportes_registrados"], 1)
+
+    def test_portal_muestra_pagos_de_prestamos_del_socio_vinculado(self):
+        prestamo = prestamo_stub(self.socio, idprestamo=1)
+        otro_prestamo = prestamo_stub(self.otro_socio, idprestamo=2)
+        pago = pago_prestamo_stub(prestamo)
+        otro_pago = pago_prestamo_stub(otro_prestamo, monto="999.00")
+
+        _response, contexto, _mocks = self._abrir_portal(
+            prestamos=[prestamo, otro_prestamo],
+            pagos=[pago, otro_pago],
+        )
+
+        self.assertEqual(contexto["pagos_prestamo"], [pago])
+
+    def test_portal_no_muestra_datos_de_otro_socio(self):
+        ahorro = ahorro_stub("120.00", estado="Activo")
+        otro_ahorro = ahorro_stub("999.00", estado="Activo")
+        ahorro.idsocio = self.socio
+        otro_ahorro.idsocio = self.otro_socio
+        prestamo = prestamo_stub(self.socio, idprestamo=1)
+        otro_prestamo = prestamo_stub(self.otro_socio, idprestamo=2)
+        pago = pago_prestamo_stub(prestamo)
+        otro_pago = pago_prestamo_stub(otro_prestamo, monto="999.00")
+
+        _response, contexto, mocks = self._abrir_portal(
+            ahorros=[ahorro, otro_ahorro],
+            prestamos=[prestamo, otro_prestamo],
+            pagos=[pago, otro_pago],
+        )
+
+        self.assertNotIn(otro_ahorro, contexto["ahorros"])
+        self.assertNotIn(otro_prestamo, contexto["prestamos"])
+        self.assertNotIn(otro_pago, contexto["pagos_prestamo"])
+        mocks["ahorros_filter"].assert_called_once_with(idsocio=self.socio)
+        mocks["prestamos_filter"].assert_called_once_with(idsocio=self.socio)
+        mocks["pagos_filter"].assert_called_once_with(idprestamo__idsocio=self.socio)

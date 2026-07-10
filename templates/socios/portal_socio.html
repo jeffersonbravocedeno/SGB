@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Mi panel de socio{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Portal del socio</p>
+        <h1>Mi panel de socio</h1>
+        <p>{{ jugador }}</p>
+    </div>
+</section>
+
+{% if not socio %}
+<section class="content-panel">
+    <div class="empty-state">
+        <strong>Aún no estás vinculado a un socio.</strong>
+        <span>Para acceder al panel debes tener una solicitud aprobada.</span>
+    </div>
+    <div class="form-actions">
+        <a class="btn btn-primary" href="{% url 'socios:mi_solicitud_socio' %}">Solicitar ser socio</a>
+    </div>
+</section>
+{% else %}
+<section class="row g-3 mb-4">
+    <div class="col-md-6 col-xl-3">
+        <div class="content-panel h-100">
+            <p class="page-kicker">Ahorro activo</p>
+            <h2>${{ total_ahorro_activo|floatformat:2 }}</h2>
+        </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
+        <div class="content-panel h-100">
+            <p class="page-kicker">Préstamos activos</p>
+            <h2>{{ prestamos_activos|length }}</h2>
+        </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
+        <div class="content-panel h-100">
+            <p class="page-kicker">Saldo pendiente</p>
+            <h2>${{ saldo_pendiente_total|floatformat:2 }}</h2>
+        </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
+        <div class="content-panel h-100">
+            <p class="page-kicker">Aportes registrados</p>
+            <h2>{{ aportes_registrados }}</h2>
+        </div>
+    </div>
+</section>
+
+<section class="content-panel">
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Datos personales</h2>
+            <p>Información registrada del socio vinculado.</p>
+        </div>
+        <dl class="detail-grid">
+            <div><dt>Socio</dt><dd>{{ socio }}</dd></div>
+            <div><dt>Cédula</dt><dd>{{ socio.cisocio }}</dd></div>
+            <div><dt>Tipo de socio</dt><dd>{{ socio.idtiposocio|default_dash }}</dd></div>
+            <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ socio.estadosocio|estado_class }}">{{ socio.estadosocio|default_dash }}</span></dd></div>
+            <div><dt>Teléfono personal</dt><dd>{{ socio.telefonopersonalsocio|default_dash }}</dd></div>
+            <div><dt>Teléfono trabajo</dt><dd>{{ socio.telefonotrabajosocio|default_dash }}</dd></div>
+            <div class="grid-full"><dt>Dirección domicilio</dt><dd>{{ socio.direcciondomiciliosocio|default_dash }}</dd></div>
+            <div class="grid-full"><dt>Dirección trabajo</dt><dd>{{ socio.direcciontrabajosocio|default_dash }}</dd></div>
+        </dl>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Ahorros</h2>
+            <p>Total de ahorro activo: ${{ total_ahorro_activo|floatformat:2 }}</p>
+        </div>
+        <div class="table-responsive">
+            <table class="table modern-table align-middle">
+                <thead><tr><th>Tipo</th><th>Monto</th><th>Fecha</th><th>Estado</th></tr></thead>
+                <tbody>
+                    {% for ahorro in ahorros %}
+                    <tr>
+                        <td>{{ ahorro.tipoahorro }}</td>
+                        <td>${{ ahorro.montoahorro|floatformat:2 }}</td>
+                        <td>{{ ahorro.fechaahorro|date:"d/m/Y H:i" }}</td>
+                        <td><span class="badge rounded-pill {{ ahorro.estado|estado_class }}">{{ ahorro.estado }}</span></td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="4" class="text-muted">No hay ahorros registrados.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Aportes semanales</h2>
+            <p>Aportes vinculados al socio.</p>
+        </div>
+        <div class="table-responsive">
+            <table class="table modern-table align-middle">
+                <thead><tr><th>Semana</th><th>Regalo</th><th>Valor del regalo asociado</th><th>Estado</th><th>Planificada</th><th>Entrega</th></tr></thead>
+                <tbody>
+                    {% for aporte in aportes %}
+                    <tr>
+                        <td>{{ aporte.numerosemana|default_dash }}</td>
+                        <td>{{ aporte.idregalo }}</td>
+                        <td>{% if aporte.idregalo.valorregalo != None %}${{ aporte.idregalo.valorregalo|floatformat:2 }}{% else %}-{% endif %}</td>
+                        <td><span class="badge rounded-pill {{ aporte.estadoaporte|estado_class }}">{{ aporte.estadoaporte|default_dash }}</span></td>
+                        <td>{{ aporte.fechaplanificadada|date:"d/m/Y H:i" }}</td>
+                        <td>{{ aporte.fechaentregareal|date:"d/m/Y H:i"|default_dash }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="6" class="text-muted">No hay aportes registrados.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Préstamos</h2>
+            <p>Préstamos asociados al socio.</p>
+        </div>
+        <div class="table-responsive">
+            <table class="table modern-table align-middle">
+                <thead><tr><th>Monto solicitado</th><th>Saldo pendiente</th><th>Solicitud</th><th>Vencimiento</th><th>Estado</th></tr></thead>
+                <tbody>
+                    {% for prestamo in prestamos %}
+                    <tr>
+                        <td>${{ prestamo.montoprestamosolicitado|floatformat:2 }}</td>
+                        <td>${{ prestamo.saldopendiente|floatformat:2 }}</td>
+                        <td>{{ prestamo.fechasolicitud|date:"d/m/Y" }}</td>
+                        <td>{{ prestamo.fechavencimiento|date:"d/m/Y" }}</td>
+                        <td><span class="badge rounded-pill {{ prestamo.estadoprestamo|estado_class }}">{{ prestamo.estadoprestamo }}</span></td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="5" class="text-muted">No hay préstamos registrados.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="form-section mb-0">
+        <div class="form-section-title">
+            <h2>Pagos registrados</h2>
+            <p>Historial de pagos de préstamos.</p>
+        </div>
+        <div class="table-responsive">
+            <table class="table modern-table align-middle">
+                <thead><tr><th>Préstamo</th><th>Monto pagado</th><th>Fecha pago</th><th>Método</th><th>Referencia</th><th>Observación</th></tr></thead>
+                <tbody>
+                    {% for pago in pagos_prestamo %}
+                    <tr>
+                        <td>{{ pago.idprestamo }}</td>
+                        <td>${{ pago.montopagado|floatformat:2 }}</td>
+                        <td>{{ pago.fechapago|date:"d/m/Y H:i" }}</td>
+                        <td>{{ pago.idmetodopago|default_dash }}</td>
+                        <td>{{ pago.numeroreferencia|default_dash }}</td>
+                        <td>{{ pago.observacion|default_dash }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="6" class="text-muted">No hay pagos registrados.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+{% endif %}
+{% endblock %}
