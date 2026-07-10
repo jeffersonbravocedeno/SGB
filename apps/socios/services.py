@@ -45,11 +45,7 @@ def aprobar_solicitud_socio(solicitud_id, usuario_admin, datos_aprobacion=None):
     datos_aprobacion = datos_aprobacion or {}
 
     with transaction.atomic():
-        solicitud = (
-            SolicitudSocio.objects.select_for_update()
-            .select_related("idjugador", "idtiposocio")
-            .get(pk=solicitud_id)
-        )
+        solicitud = SolicitudSocio.objects.select_for_update().get(pk=solicitud_id)
         _validar_pendiente(solicitud)
 
         jugador = Jugador.objects.select_for_update().get(pk=solicitud.idjugador_id)

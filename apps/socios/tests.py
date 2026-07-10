@@ -123,6 +123,13 @@ class FakeModelChoiceQuerySet(FakeQuerySet):
         super().__init__(objects)
 
 
+class LockedSolicitudQuerySet(FakeQuerySet):
+    def select_related(self, *fields):
+        raise AssertionError(
+            "No se debe usar select_related despues de select_for_update en SolicitudSocio."
+        )
+
+
 def _coincide_objeto(obj, filtros):
     for field_name, expected in filtros.items():
         if field_name == "pk":
@@ -580,7 +587,7 @@ class SolicitudSocioServicesTests(SimpleTestCase):
             patch("apps.socios.services.transaction.atomic", return_value=nullcontext()),
             patch(
                 "apps.socios.services.SolicitudSocio.objects.select_for_update",
-                return_value=FakeQuerySet([solicitud]),
+                return_value=LockedSolicitudQuerySet([solicitud]),
             ),
             patch(
                 "apps.socios.services.Jugador.objects.select_for_update",
