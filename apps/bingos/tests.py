@@ -9240,8 +9240,15 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
     databases = {"default"}
 
     BOOTSTRAP_TABLES = (
+        "tiposocio",
+        "socio",
+        "metodopago",
         "bingo",
         "jugador",
+        "prestamo",
+        "pago_prestamo",
+        "solicitud_socio",
+        "solicitud_pago_prestamo",
         "partidabingo",
         "carton",
         "carton_partida_bingo",
