@@ -1212,6 +1212,21 @@ def obtener_partidas_elegibles_venta_carton(partidas):
     ]
 
 
+ESTADOS_BINGO_SIN_VENTA_CARTONES = frozenset({"finalizado", "cancelado"})
+
+
+def bingo_permite_vender_cartones(bingo):
+    estado = str(getattr(bingo, "estadobingo", "") or "").strip().casefold()
+    return estado not in ESTADOS_BINGO_SIN_VENTA_CARTONES
+
+
+def _validar_estado_bingo_para_venta_cartones(bingo):
+    if not bingo_permite_vender_cartones(bingo):
+        raise CartonAsignacionError(
+            "No se puede vender un cartón porque el Bingo está finalizado o cancelado."
+        )
+
+
 def validar_venta_carton_para_bingo(bingo, partidas):
     """Exige al menos una ronda futura elegible y devuelve solo esas rondas."""
     partidas_elegibles = obtener_partidas_elegibles_venta_carton(partidas)
@@ -1337,6 +1352,7 @@ def crear_carton_maestro_para_bingo(
             )
 
         bingo_bloqueado = Bingo.objects.select_for_update().get(pk=bingo.pk)
+        _validar_estado_bingo_para_venta_cartones(bingo_bloqueado)
         bingo_es_persistido = not getattr(
             getattr(bingo_bloqueado, "_state", None),
             "adding",
