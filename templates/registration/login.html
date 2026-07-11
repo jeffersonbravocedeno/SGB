@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load siab_tags %}
 
 {% block title %}SIAB | Iniciar sesión{% endblock %}
 
@@ -6,25 +7,71 @@
 <section class="login-screen">
     <div class="login-panel">
         <div class="login-brand">
-            <span>SIAB</span>
-            <h1>Sistema Integral de Administración de Bingos</h1>
-            <p>Ingresa con tu usuario para acceder a tu cuenta.</p>
+            <span class="login-brand-mark">SIAB</span>
+            <h1>Sistema Integral de<br>Administración de Bingos</h1>
+            <p>Gestión de socios, jugadores, finanzas y partidas en una sola plataforma.</p>
+            <ul class="login-brand-features" aria-label="Características de SIAB">
+                <li>Administración de socios</li>
+                <li>Control financiero</li>
+                <li>Bingos en tiempo real</li>
+            </ul>
         </div>
-        <form method="post" class="login-form" novalidate>
-            {% csrf_token %}
-            {% include "includes/form_errors.html" with form=form %}
-            <div class="mb-3">
-                {% include "includes/field.html" with field=form.username %}
+        <div class="login-form-area">
+            <div class="login-form-heading">
+                <h2>Bienvenido</h2>
+                <p>Ingresa tus credenciales para continuar.</p>
             </div>
-            <div class="mb-4">
-                {% include "includes/field.html" with field=form.password %}
+            <form method="post" class="login-form" novalidate>
+                {% csrf_token %}
+                {% if form.errors %}
+                <div class="login-error-summary" role="alert">
+                    {% for error in form.non_field_errors %}
+                    <div>{{ error }}</div>
+                    {% endfor %}
+                    {% for field in form %}
+                    {% for error in field.errors %}
+                    <div>{{ error }}</div>
+                    {% endfor %}
+                    {% endfor %}
+                </div>
+                {% endif %}
+                <div class="login-field">
+                    {% include "includes/field.html" with field=form.username %}
+                </div>
+                <div class="login-field">
+                    <label class="form-label" for="{{ form.password.id_for_label }}">{{ form.password.label }}</label>
+                    <div class="login-password-control">
+                        {{ form.password|bootstrap_widget }}
+                        <button class="login-password-toggle" type="button" aria-label="Mostrar contraseña" aria-controls="{{ form.password.id_for_label }}" aria-pressed="false">Mostrar</button>
+                    </div>
+                    {% for error in form.password.errors %}
+                    <div class="invalid-feedback d-block">{{ error }}</div>
+                    {% endfor %}
+                </div>
+                <input type="hidden" name="next" value="{{ next }}">
+                <button class="btn login-submit" type="submit">Iniciar sesión</button>
+            </form>
+            <div class="login-register">
+                <p>¿Todavía no tienes una cuenta?</p>
+                <a class="login-register-link" href="{% url 'registro_jugador' %}">Registrarse como jugador</a>
             </div>
-            <button class="btn btn-primary w-100" type="submit">Iniciar sesión</button>
-            <input type="hidden" name="next" value="{{ next }}">
-        </form>
-        <div class="mt-3 text-center">
-            <a href="{% url 'registro_jugador' %}">Registrarse como jugador</a>
         </div>
     </div>
 </section>
+<script>
+    (function () {
+        const toggle = document.querySelector('.login-password-toggle');
+        const password = document.getElementById('{{ form.password.id_for_label }}');
+
+        if (!toggle || !password) return;
+
+        toggle.addEventListener('click', function () {
+            const showing = password.type === 'text';
+            password.type = showing ? 'password' : 'text';
+            toggle.textContent = showing ? 'Mostrar' : 'Ocultar';
+            toggle.setAttribute('aria-label', showing ? 'Mostrar contraseña' : 'Ocultar contraseña');
+            toggle.setAttribute('aria-pressed', String(!showing));
+        });
+    }());
+</script>
 {% endblock %}
