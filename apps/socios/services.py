@@ -1,5 +1,5 @@
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.common.ids import assign_next_integer_pk
@@ -10,6 +10,7 @@ from .models import Socio, SolicitudSocio
 
 MENSAJE_JUGADOR_YA_SOCIO = "El jugador ya está vinculado a un socio."
 MENSAJE_SOLICITUD_PENDIENTE = "Ya existe una solicitud pendiente para este jugador."
+MENSAJE_CEDULA_PENDIENTE = "Ya existe una solicitud pendiente con esta cédula."
 MENSAJE_SOLICITUD_RESUELTA = "La solicitud ya fue resuelta."
 MENSAJE_JUGADOR_VINCULADO_APROBACION = (
     "No se puede aprobar la solicitud porque el jugador ya fue vinculado a un socio."
@@ -33,12 +34,34 @@ def crear_solicitud_socio(jugador, datos_limpios):
         ).exists():
             raise ValidationError(MENSAJE_SOLICITUD_PENDIENTE)
 
-        return SolicitudSocio.objects.create(
-            idjugador=jugador_bloqueado,
+        if SolicitudSocio.objects.filter(
+            cisocio=datos_solicitud["cisocio"],
             estado=SolicitudSocio.ESTADO_PENDIENTE,
-            fechasolicitud=timezone.now(),
-            **datos_solicitud,
-        )
+        ).exists():
+            raise ValidationError(MENSAJE_CEDULA_PENDIENTE)
+
+        try:
+            with transaction.atomic():
+                return SolicitudSocio.objects.create(
+                    idjugador=jugador_bloqueado,
+                    estado=SolicitudSocio.ESTADO_PENDIENTE,
+                    fechasolicitud=timezone.now(),
+                    **datos_solicitud,
+                )
+        except IntegrityError:
+            if SolicitudSocio.objects.filter(
+                cisocio=datos_solicitud["cisocio"],
+                estado=SolicitudSocio.ESTADO_PENDIENTE,
+            ).exists():
+                raise ValidationError(MENSAJE_CEDULA_PENDIENTE) from None
+            if SolicitudSocio.objects.filter(
+                idjugador=jugador_bloqueado,
+                estado=SolicitudSocio.ESTADO_PENDIENTE,
+            ).exists():
+                raise ValidationError(MENSAJE_SOLICITUD_PENDIENTE) from None
+            raise ValidationError(
+                "No fue posible crear la solicitud. Verifique los datos e inténtelo nuevamente."
+            ) from None
 
 
 def aprobar_solicitud_socio(solicitud_id, usuario_admin, datos_aprobacion=None):
@@ -63,16 +86,12 @@ def aprobar_solicitud_socio(solicitud_id, usuario_admin, datos_aprobacion=None):
         solicitud.fecharespuesta = timezone.now()
         solicitud.idusuarioadminrespuesta = usuario_admin
         solicitud.idsocioresultado = socio
-        observacion = _texto_limpio(datos_aprobacion.get("observacion"))
-        if observacion:
-            solicitud.observacion = observacion
         solicitud.save(
             update_fields=[
                 "estado",
                 "fecharespuesta",
                 "idusuarioadminrespuesta",
                 "idsocioresultado",
-                "observacion",
             ]
         )
 
@@ -92,14 +111,12 @@ def rechazar_solicitud_socio(solicitud_id, usuario_admin, motivo):
         solicitud.fecharespuesta = timezone.now()
         solicitud.idusuarioadminrespuesta = usuario_admin
         solicitud.motivorechazo = motivo_limpio
-        solicitud.observacion = motivo_limpio
         solicitud.save(
             update_fields=[
                 "estado",
                 "fecharespuesta",
                 "idusuarioadminrespuesta",
                 "motivorechazo",
-                "observacion",
             ]
         )
 

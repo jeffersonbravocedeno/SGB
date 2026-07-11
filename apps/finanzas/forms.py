@@ -324,6 +324,10 @@ class SolicitudPagoPrestamoForm(FriendlyModelForm):
     def __init__(self, *args, prestamo=None, metodo_pago_queryset=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.prestamo = prestamo
+        self.fields["referencia"].max_length = 80
+        self.fields["referencia"].widget.attrs["maxlength"] = 80
+        self.fields["rutacomprobante"].max_length = 255
+        self.fields["rutacomprobante"].widget.attrs["maxlength"] = 255
         if metodo_pago_queryset is None:
             metodo_pago_queryset = Metodopago.objects.order_by("nombremetodopago")
         self.fields["idmetodopago"].queryset = metodo_pago_queryset

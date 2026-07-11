@@ -8,6 +8,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.contrib.auth.models import User
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.http import Http404, HttpResponse
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase
@@ -21,7 +22,11 @@ from apps.jugadores.models import Jugador
 
 from . import views as socios_views
 from . import services as socios_services
-from .forms import RechazarSolicitudSocioForm, SolicitudSocioForm
+from .forms import (
+    AprobarSolicitudSocioForm,
+    RechazarSolicitudSocioForm,
+    SolicitudSocioForm,
+)
 from .models import Socio, SolicitudSocio
 
 
@@ -413,6 +418,29 @@ class SolicitudSocioFormTests(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("motivorechazo", form.errors)
 
+    def test_formularios_administrativos_respetan_limite_de_255(self):
+        observacion_valida = AprobarSolicitudSocioForm(
+            data={"observacion": "a" * 255},
+            tipo_socio_queryset=self._tipo_queryset(),
+        )
+        observacion_excedida = AprobarSolicitudSocioForm(
+            data={"observacion": "a" * 256},
+            tipo_socio_queryset=self._tipo_queryset(),
+        )
+        rechazo_valido = RechazarSolicitudSocioForm(
+            data={"motivorechazo": "r" * 255}
+        )
+        rechazo_excedido = RechazarSolicitudSocioForm(
+            data={"motivorechazo": "r" * 256}
+        )
+
+        self.assertTrue(observacion_valida.is_valid(), observacion_valida.errors)
+        self.assertFalse(observacion_excedida.is_valid())
+        self.assertIn("observacion", observacion_excedida.errors)
+        self.assertTrue(rechazo_valido.is_valid(), rechazo_valido.errors)
+        self.assertFalse(rechazo_excedido.is_valid())
+        self.assertIn("motivorechazo", rechazo_excedido.errors)
+
 
 class SolicitudSocioServicesTests(SimpleTestCase):
     def _datos_solicitud(self, **overrides):
@@ -493,6 +521,51 @@ class SolicitudSocioServicesTests(SimpleTestCase):
 
         self.assertIn("Ya existe una solicitud pendiente", str(context.exception))
         create_mock.assert_not_called()
+
+    def test_dos_jugadores_no_pueden_solicitar_con_la_misma_cedula(self):
+        jugador = jugador_stub(idjugador=2)
+        pendiente = solicitud_socio_stub(jugador=jugador_stub(idjugador=1))
+
+        with patch("apps.socios.services.transaction.atomic", return_value=nullcontext()), patch(
+            "apps.socios.services.Jugador.objects.select_for_update",
+            return_value=FakeQuerySet([jugador]),
+        ), patch(
+            "apps.socios.services.SolicitudSocio.objects.filter",
+            side_effect=[FakeQuerySet(), FakeQuerySet([pendiente])],
+        ), patch("apps.socios.services.SolicitudSocio.objects.create") as create_mock:
+            with self.assertRaisesMessage(
+                ValidationError,
+                "Ya existe una solicitud pendiente con esta cédula.",
+            ):
+                socios_services.crear_solicitud_socio(
+                    jugador,
+                    self._datos_solicitud(cisocio=" 0912345678 "),
+                )
+
+        create_mock.assert_not_called()
+
+    def test_integrity_error_se_convierte_en_error_controlado(self):
+        jugador = jugador_stub(idjugador=2)
+        pendiente = solicitud_socio_stub(jugador=jugador_stub(idjugador=1))
+
+        with patch("apps.socios.services.transaction.atomic", return_value=nullcontext()), patch(
+            "apps.socios.services.Jugador.objects.select_for_update",
+            return_value=FakeQuerySet([jugador]),
+        ), patch(
+            "apps.socios.services.SolicitudSocio.objects.filter",
+            side_effect=[FakeQuerySet(), FakeQuerySet(), FakeQuerySet([pendiente])],
+        ), patch(
+            "apps.socios.services.SolicitudSocio.objects.create",
+            side_effect=IntegrityError("índice parcial"),
+        ):
+            with self.assertRaisesMessage(
+                ValidationError,
+                "Ya existe una solicitud pendiente con esta cédula.",
+            ):
+                socios_services.crear_solicitud_socio(
+                    jugador,
+                    self._datos_solicitud(),
+                )
 
     def test_admin_aprueba_y_crea_socio_si_cedula_no_existe(self):
         admin = User(username="admin", is_staff=True)
@@ -599,6 +672,35 @@ class SolicitudSocioServicesTests(SimpleTestCase):
         solicitud_save.assert_called_once()
         jugador_save.assert_not_called()
         socio_save.assert_not_called()
+
+    def test_decisiones_preservan_observacion_original_del_aspirante(self):
+        admin = User(username="admin", is_staff=True)
+        jugador = jugador_stub()
+        solicitud_aprobada = solicitud_socio_stub(jugador=jugador)
+        solicitud_aprobada.observacion = "Observación original"
+
+        with self._patch_aprobacion(solicitud_aprobada, jugador, socios=[]):
+            socios_services.aprobar_solicitud_socio(
+                solicitud_aprobada.idsolicitud,
+                admin,
+                {"observacion": "Respuesta administrativa"},
+            )
+
+        solicitud_rechazada = solicitud_socio_stub(jugador=jugador)
+        solicitud_rechazada.observacion = "Observación original"
+        with patch("apps.socios.services.transaction.atomic", return_value=nullcontext()), patch(
+            "apps.socios.services.SolicitudSocio.objects.select_for_update",
+            return_value=FakeQuerySet([solicitud_rechazada]),
+        ), patch.object(SolicitudSocio, "save", autospec=True):
+            socios_services.rechazar_solicitud_socio(
+                solicitud_rechazada.idsolicitud,
+                admin,
+                "Motivo administrativo",
+            )
+
+        self.assertEqual(solicitud_aprobada.observacion, "Observación original")
+        self.assertEqual(solicitud_rechazada.observacion, "Observación original")
+        self.assertEqual(solicitud_rechazada.motivorechazo, "Motivo administrativo")
 
     def test_no_se_puede_rechazar_solicitud_ya_aprobada(self):
         admin = User(username="admin", is_staff=True)

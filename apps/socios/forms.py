@@ -208,6 +208,7 @@ class AprobarSolicitudSocioForm(forms.Form):
     observacion = forms.CharField(
         label="Observación",
         required=False,
+        max_length=255,
         widget=forms.Textarea(attrs={"rows": 3}),
     )
 
@@ -226,6 +227,7 @@ class AprobarSolicitudSocioForm(forms.Form):
 class RechazarSolicitudSocioForm(forms.Form):
     motivorechazo = forms.CharField(
         label="Motivo de rechazo",
+        max_length=255,
         widget=forms.Textarea(attrs={"rows": 3}),
         error_messages={"required": "Debe ingresar un motivo de rechazo."},
     )

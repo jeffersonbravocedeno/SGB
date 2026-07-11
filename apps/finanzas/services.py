@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
+from apps.jugadores.models import Jugador
 from apps.socios.models import Socio
 
 from .models import (
@@ -16,14 +17,16 @@ from .models import (
 
 
 PORCENTAJE_GARANTIA_PRESTAMO = Decimal("0.50")
-ESTADOS_PRESTAMO_SIN_SALDO_GARANTE = (
+ESTADOS_PRESTAMO_NO_PAGABLES = (
     "Liquidado",
     "Pagado",
+    "Finalizado",
     "Cerrado",
     "Cancelado",
     "Rechazado",
     "Anulado",
 )
+ESTADOS_PRESTAMO_SIN_SALDO_GARANTE = ESTADOS_PRESTAMO_NO_PAGABLES
 PRESTAMO_CAMPOS_PERMITIDOS = {
     "idsocio",
     "montoprestamosolicitado",
@@ -262,11 +265,11 @@ def _dato_aprobacion(datos_aprobacion, campo, default=""):
     return getattr(datos_aprobacion, campo, default)
 
 
-def _estado_prestamo_es_final(estado):
-    estado_normalizado = str(estado or "").strip().lower()
-    return any(
-        estado_normalizado == estado_final.lower()
-        for estado_final in ESTADOS_PRESTAMO_SIN_SALDO_GARANTE
+def _prestamo_admite_pagos(prestamo):
+    estado_normalizado = str(prestamo.estadoprestamo or "").strip().lower()
+    return not any(
+        estado_normalizado == estado_no_pagable.lower()
+        for estado_no_pagable in ESTADOS_PRESTAMO_NO_PAGABLES
     )
 
 
@@ -478,10 +481,8 @@ def registrar_pago_prestamo(
         except Prestamo.DoesNotExist:
             raise PrestamoPagoError("Debe seleccionar un préstamo válido.") from None
 
-        if _estado_prestamo_es_final(prestamo_bloqueado.estadoprestamo):
-            raise PrestamoPagoError(
-                "No se pueden registrar pagos para un préstamo cerrado o liquidado."
-            )
+        if not _prestamo_admite_pagos(prestamo_bloqueado):
+            raise PrestamoPagoError("El préstamo no admite nuevos pagos.")
 
         saldo_pendiente = _normalizar_saldo_pendiente_pago(
             prestamo_bloqueado.saldopendiente
@@ -518,10 +519,6 @@ def crear_solicitud_pago_prestamo(jugador, idprestamo, datos_limpios):
     if jugador_id is None:
         raise SolicitudPagoPrestamoError("Debe seleccionar un jugador válido.")
 
-    socio_id = _idsocio_jugador(jugador)
-    if socio_id is None:
-        raise SolicitudPagoPrestamoError("El jugador no está vinculado a un socio.")
-
     try:
         prestamo_id = _idprestamo_desde_valor(idprestamo)
     except PrestamoPagoError as exc:
@@ -542,6 +539,21 @@ def crear_solicitud_pago_prestamo(jugador, idprestamo, datos_limpios):
 
     with transaction.atomic():
         try:
+            jugador_bloqueado = Jugador.objects.select_for_update().get(
+                idjugador=jugador_id
+            )
+        except Jugador.DoesNotExist:
+            raise SolicitudPagoPrestamoError(
+                "Debe seleccionar un jugador válido."
+            ) from None
+
+        socio_id = _idsocio_jugador(jugador_bloqueado)
+        if socio_id is None:
+            raise SolicitudPagoPrestamoError(
+                "El jugador no está vinculado a un socio."
+            )
+
+        try:
             prestamo = Prestamo.objects.select_for_update().get(
                 idprestamo=prestamo_id
             )
@@ -555,10 +567,8 @@ def crear_solicitud_pago_prestamo(jugador, idprestamo, datos_limpios):
                 "El préstamo no pertenece al socio autenticado."
             )
 
-        if _estado_prestamo_es_final(prestamo.estadoprestamo):
-            raise SolicitudPagoPrestamoError(
-                "No se pueden registrar pagos para un préstamo cerrado o liquidado."
-            )
+        if not _prestamo_admite_pagos(prestamo):
+            raise SolicitudPagoPrestamoError("El préstamo no admite nuevos pagos.")
 
         saldo_pendiente = _normalizar_saldo_solicitud_pago(prestamo.saldopendiente)
         if monto > saldo_pendiente:
@@ -577,7 +587,7 @@ def crear_solicitud_pago_prestamo(jugador, idprestamo, datos_limpios):
         return SolicitudPagoPrestamo.objects.create(
             idprestamo=prestamo,
             idsocio_id=socio_id,
-            idjugador=jugador,
+            idjugador=jugador_bloqueado,
             idmetodopago=datos_limpios.get("idmetodopago"),
             monto=monto,
             referencia=referencia,
@@ -619,10 +629,27 @@ def aprobar_solicitud_pago_prestamo(
                 "Debe seleccionar un préstamo válido."
             ) from None
 
-        if _estado_prestamo_es_final(prestamo.estadoprestamo):
-            raise SolicitudPagoPrestamoError(
-                "No se pueden registrar pagos para un préstamo cerrado o liquidado."
+        try:
+            jugador = Jugador.objects.select_for_update().get(
+                idjugador=solicitud.idjugador_id
             )
+        except Jugador.DoesNotExist:
+            raise SolicitudPagoPrestamoError(
+                "La solicitud no conserva una relación válida entre jugador, socio y préstamo."
+            ) from None
+
+        if (
+            solicitud.idjugador_id != jugador.pk
+            or solicitud.idsocio_id != _idsocio_jugador(jugador)
+            or _idsocio_prestamo(prestamo) != solicitud.idsocio_id
+            or prestamo.pk != solicitud.idprestamo_id
+        ):
+            raise SolicitudPagoPrestamoError(
+                "La solicitud no conserva una relación válida entre jugador, socio y préstamo."
+            )
+
+        if not _prestamo_admite_pagos(prestamo):
+            raise SolicitudPagoPrestamoError("El préstamo no admite nuevos pagos.")
 
         monto = _normalizar_monto_solicitud_pago(solicitud.monto)
         saldo_pendiente = _normalizar_saldo_solicitud_pago(prestamo.saldopendiente)
