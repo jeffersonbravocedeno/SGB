@@ -42,9 +42,9 @@
                     <td>{{ solicitud.primernombresocio }} {{ solicitud.primerapellidosocio }}</td>
                     <td>{{ solicitud.fechasolicitud|date:"d/m/Y H:i" }}</td>
                     <td><span class="badge rounded-pill {{ solicitud.estado|estado_class }}">{{ solicitud.estado }}</span></td>
-                    <td class="text-end">
+                    <td class="text-end"><div class="table-actions">
                         <a class="btn btn-outline-primary btn-sm" href="{% url 'socios:solicitud_socio_detalle' solicitud.idsolicitud %}">Ver detalle</a>
-                    </td>
+                    </div></td>
                 </tr>
                 {% empty %}
                 <tr>

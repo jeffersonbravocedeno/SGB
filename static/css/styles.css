@@ -64,9 +64,14 @@ a {
     padding: 1.25rem;
     background: #ffffff;
     border-right: 1px solid var(--siab-line);
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
 }
 
 .sidebar-title {
+    flex: 0 0 auto;
     color: var(--siab-muted);
     font-size: 0.78rem;
     font-weight: 800;
@@ -75,7 +80,12 @@ a {
 
 .sidebar-nav {
     display: grid;
+    flex: 0 0 auto;
     gap: 0.35rem;
+}
+
+.offcanvas-body .sidebar-nav {
+    padding-bottom: 1rem;
 }
 
 .sidebar-nav a {
@@ -142,7 +152,9 @@ a {
     background:
         linear-gradient(135deg, rgba(20, 32, 51, 0.98), rgba(23, 78, 85, 0.94)),
         url("/static/img/dashboard-pattern.svg");
-    background-size: cover;
+    background-repeat: no-repeat;
+    background-position: center, right -8rem center;
+    background-size: cover, 38rem auto;
 }
 
 .page-header h1 {
@@ -159,11 +171,39 @@ a {
 }
 
 .page-kicker {
-    color: #9bd8d2;
+    color: var(--siab-primary-dark);
     font-size: 0.78rem;
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
+}
+
+.page-header .page-kicker {
+    color: #b8eee8;
+}
+
+.content-panel .page-kicker,
+.metric-card .page-kicker {
+    color: var(--siab-primary-dark);
+}
+
+.page-header .btn-outline-secondary {
+    border-color: rgba(255, 255, 255, 0.72);
+    color: #ffffff;
+}
+
+.page-header .btn-outline-secondary:hover,
+.page-header .btn-outline-secondary:focus {
+    border-color: #ffffff;
+    color: var(--siab-sidebar);
+    background: #ffffff;
+}
+
+.page-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.55rem;
 }
 
 .public-page-header {
@@ -533,6 +573,7 @@ a {
     border-radius: 0.5rem;
     background: #ffffff;
     color: var(--siab-ink);
+    box-shadow: 0 0.55rem 1.25rem rgba(24, 33, 47, 0.05);
 }
 
 .metric-card span {
@@ -544,6 +585,39 @@ a {
     align-self: end;
     font-size: 2rem;
     font-weight: 800;
+}
+
+.money-cell {
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.money-cell.text-start {
+    text-align: left !important;
+}
+
+.table-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.35rem;
+}
+
+.decision-panel {
+    height: 100%;
+    padding: 1rem;
+    border: 1px solid var(--siab-line);
+    border-radius: 0.5rem;
+    background: #f8fafc;
+}
+
+.decision-panel--approve {
+    border-top: 0.25rem solid #2f855a;
+}
+
+.decision-panel--reject {
+    border-top: 0.25rem solid #c53030;
 }
 
 .link-card:hover,
@@ -1135,6 +1209,22 @@ a {
 
     .page-header {
         padding: 1.15rem;
+        background-position: center, right -16rem center;
+        background-size: cover, 34rem auto;
+    }
+
+    .page-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .page-actions .btn {
+        flex: 1 1 10rem;
+    }
+
+    .section-heading > .d-flex,
+    .toolbar > .d-flex {
+        flex-wrap: wrap;
     }
 
     .detail-grid,

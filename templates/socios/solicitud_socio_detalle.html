@@ -71,7 +71,7 @@
             <p>Aprobación o rechazo administrativo.</p>
         </div>
         <div class="row g-4">
-            <div class="col-lg-6">
+            <div class="col-lg-6"><div class="decision-panel decision-panel--approve">
                 <form method="post" action="{% url 'socios:solicitud_socio_aprobar' solicitud.idsolicitud %}" novalidate>
                     {% csrf_token %}
                     {% include "includes/form_errors.html" with form=aprobar_form %}
@@ -84,8 +84,8 @@
                         <button class="btn btn-primary" type="submit">Aprobar</button>
                     </div>
                 </form>
-            </div>
-            <div class="col-lg-6">
+            </div></div>
+            <div class="col-lg-6"><div class="decision-panel decision-panel--reject">
                 <form method="post" action="{% url 'socios:solicitud_socio_rechazar' solicitud.idsolicitud %}" novalidate>
                     {% csrf_token %}
                     {% include "includes/form_errors.html" with form=rechazo_form %}
@@ -94,7 +94,7 @@
                         <button class="btn btn-outline-danger" type="submit">Rechazar</button>
                     </div>
                 </form>
-            </div>
+            </div></div>
         </div>
     </div>
     {% endif %}

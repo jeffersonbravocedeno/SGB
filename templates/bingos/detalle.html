@@ -10,7 +10,7 @@
         <h1>{{ bingo.titulobingo }}</h1>
         <p>{{ bingo.fechaprogramadabingo|date:"d/m/Y H:i" }} · {{ bingo.lugarbingo|default:"Sin lugar definido" }}</p>
     </div>
-    <div class="d-flex gap-2">
+    <div class="page-actions">
         <a class="btn btn-outline-secondary" href="{% url 'bingos:lista' %}">Volver</a>
         <a class="btn btn-outline-secondary" href="{% url 'bingos:partidas_lista' %}">Partidas</a>
         <a class="btn btn-outline-secondary" href="{% url 'bingos:bingo_resumen_excel' bingo.idbingo %}">Exportar resumen</a>

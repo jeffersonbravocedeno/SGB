@@ -36,7 +36,7 @@
             <thead>
                 <tr>
                     <th>Préstamo</th>
-                    <th>Monto</th>
+                    <th class="text-end">Monto</th>
                     <th>Referencia</th>
                     <th>Fecha solicitud</th>
                     <th>Estado</th>
@@ -48,7 +48,7 @@
                 {% for solicitud in solicitudes %}
                 <tr>
                     <td>{{ solicitud.idprestamo }}</td>
-                    <td>${{ solicitud.monto|floatformat:2 }}</td>
+                    <td class="money-cell">${{ solicitud.monto|floatformat:2 }}</td>
                     <td>{{ solicitud.referencia }}</td>
                     <td>{{ solicitud.fechasolicitud|date:"d/m/Y H:i" }}</td>
                     <td><span class="badge rounded-pill {{ solicitud.estado|estado_class }}">{{ solicitud.estado }}</span></td>
@@ -56,7 +56,7 @@
                     <td>{{ solicitud.motivorechazo|default_dash }}</td>
                 </tr>
                 {% empty %}
-                <tr><td colspan="7" class="text-muted">No hay solicitudes de pago registradas.</td></tr>
+                <tr><td colspan="7"><div class="empty-state"><strong>No hay solicitudes de pago registradas</strong><span>Las solicitudes que envíes aparecerán aquí con su estado de revisión.</span></div></td></tr>
                 {% endfor %}
             </tbody>
         </table>

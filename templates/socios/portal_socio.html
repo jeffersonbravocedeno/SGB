@@ -23,30 +23,22 @@
     </div>
 </section>
 {% else %}
-<section class="row g-3 mb-4">
-    <div class="col-md-6 col-xl-3">
-        <div class="content-panel h-100">
-            <p class="page-kicker">Ahorro activo</p>
-            <h2>${{ total_ahorro_activo|floatformat:2 }}</h2>
-        </div>
+<section class="dashboard-grid" aria-label="Resumen financiero del socio">
+    <div class="metric-card">
+        <span>Ahorro activo</span>
+        <strong>${{ total_ahorro_activo|floatformat:2 }}</strong>
     </div>
-    <div class="col-md-6 col-xl-3">
-        <div class="content-panel h-100">
-            <p class="page-kicker">Préstamos activos</p>
-            <h2>{{ prestamos_activos|length }}</h2>
-        </div>
+    <div class="metric-card">
+        <span>Préstamos activos</span>
+        <strong>{{ prestamos_activos|length }}</strong>
     </div>
-    <div class="col-md-6 col-xl-3">
-        <div class="content-panel h-100">
-            <p class="page-kicker">Saldo pendiente</p>
-            <h2>${{ saldo_pendiente_total|floatformat:2 }}</h2>
-        </div>
+    <div class="metric-card">
+        <span>Saldo pendiente</span>
+        <strong>${{ saldo_pendiente_total|floatformat:2 }}</strong>
     </div>
-    <div class="col-md-6 col-xl-3">
-        <div class="content-panel h-100">
-            <p class="page-kicker">Aportes registrados</p>
-            <h2>{{ aportes_registrados }}</h2>
-        </div>
+    <div class="metric-card">
+        <span>Aportes registrados</span>
+        <strong>{{ aportes_registrados }}</strong>
     </div>
 </section>
 
@@ -80,7 +72,7 @@
                     {% for ahorro in ahorros %}
                     <tr>
                         <td>{{ ahorro.tipoahorro }}</td>
-                        <td>${{ ahorro.montoahorro|floatformat:2 }}</td>
+                        <td class="money-cell">${{ ahorro.montoahorro|floatformat:2 }}</td>
                         <td>{{ ahorro.fechaahorro|date:"d/m/Y H:i" }}</td>
                         <td><span class="badge rounded-pill {{ ahorro.estado|estado_class }}">{{ ahorro.estado }}</span></td>
                     </tr>
@@ -105,7 +97,7 @@
                     <tr>
                         <td>{{ aporte.numerosemana|default_dash }}</td>
                         <td>{{ aporte.idregalo }}</td>
-                        <td>{% if aporte.idregalo.valorregalo != None %}${{ aporte.idregalo.valorregalo|floatformat:2 }}{% else %}-{% endif %}</td>
+                        <td class="money-cell">{% if aporte.idregalo.valorregalo != None %}${{ aporte.idregalo.valorregalo|floatformat:2 }}{% else %}-{% endif %}</td>
                         <td><span class="badge rounded-pill {{ aporte.estadoaporte|estado_class }}">{{ aporte.estadoaporte|default_dash }}</span></td>
                         <td>{{ aporte.fechaplanificadada|date:"d/m/Y H:i" }}</td>
                         <td>{{ aporte.fechaentregareal|date:"d/m/Y H:i"|default_dash }}</td>
@@ -129,8 +121,8 @@
                 <tbody>
                     {% for prestamo in prestamos %}
                     <tr>
-                        <td>${{ prestamo.montoprestamosolicitado|floatformat:2 }}</td>
-                        <td>${{ prestamo.saldopendiente|floatformat:2 }}</td>
+                        <td class="money-cell">${{ prestamo.montoprestamosolicitado|floatformat:2 }}</td>
+                        <td class="money-cell">${{ prestamo.saldopendiente|floatformat:2 }}</td>
                         <td>{{ prestamo.fechasolicitud|date:"d/m/Y" }}</td>
                         <td>{{ prestamo.fechavencimiento|date:"d/m/Y" }}</td>
                         <td><span class="badge rounded-pill {{ prestamo.estadoprestamo|estado_class }}">{{ prestamo.estadoprestamo }}</span></td>
@@ -162,7 +154,7 @@
                     {% for pago in pagos_prestamo %}
                     <tr>
                         <td>{{ pago.idprestamo }}</td>
-                        <td>${{ pago.montopagado|floatformat:2 }}</td>
+                        <td class="money-cell">${{ pago.montopagado|floatformat:2 }}</td>
                         <td>{{ pago.fechapago|date:"d/m/Y H:i" }}</td>
                         <td>{{ pago.idmetodopago|default_dash }}</td>
                         <td>{{ pago.numeroreferencia|default_dash }}</td>

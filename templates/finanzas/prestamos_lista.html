@@ -25,7 +25,7 @@
                     <td>${{ prestamo.saldopendiente|floatformat:2 }}</td>
                     <td>{{ prestamo.fechavencimiento|date:"d/m/Y" }}</td>
                     <td><span class="badge rounded-pill {{ prestamo.estadoprestamo|estado_class }}">{{ prestamo.estadoprestamo }}</span></td>
-                    <td class="text-end"><div class="btn-group btn-group-sm"><a class="btn btn-outline-primary" href="{% url 'finanzas:prestamo_detalle' prestamo.idprestamo %}">Ver detalle</a><a class="btn btn-outline-secondary" href="{% url 'finanzas:prestamo_editar' prestamo.idprestamo %}">Editar</a></div></td>
+                    <td class="text-end"><div class="table-actions"><a class="btn btn-sm btn-outline-primary" href="{% url 'finanzas:prestamo_detalle' prestamo.idprestamo %}">Ver detalle</a><a class="btn btn-sm btn-outline-secondary" href="{% url 'finanzas:prestamo_editar' prestamo.idprestamo %}">Editar</a></div></td>
                 </tr>
                 {% empty %}
                 <tr><td colspan="7" class="text-muted">No hay préstamos registrados.</td></tr>

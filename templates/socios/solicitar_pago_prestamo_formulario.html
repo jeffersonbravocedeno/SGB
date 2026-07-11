@@ -23,9 +23,9 @@
         <dl class="detail-grid">
             <div><dt>Préstamo</dt><dd>#{{ prestamo.idprestamo }}</dd></div>
             <div><dt>Socio</dt><dd>{{ prestamo.idsocio }}</dd></div>
-            <div><dt>Monto solicitado</dt><dd>${{ prestamo.montoprestamosolicitado|floatformat:2 }}</dd></div>
-            <div><dt>Total a pagar</dt><dd>${{ prestamo.montototalpagar|floatformat:2 }}</dd></div>
-            <div><dt>Saldo pendiente</dt><dd>${{ prestamo.saldopendiente|floatformat:2 }}</dd></div>
+            <div><dt>Monto solicitado</dt><dd class="money-cell text-start">${{ prestamo.montoprestamosolicitado|floatformat:2 }}</dd></div>
+            <div><dt>Total a pagar</dt><dd class="money-cell text-start">${{ prestamo.montototalpagar|floatformat:2 }}</dd></div>
+            <div><dt>Saldo pendiente</dt><dd class="money-cell text-start">${{ prestamo.saldopendiente|floatformat:2 }}</dd></div>
             <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ prestamo.estadoprestamo|estado_class }}">{{ prestamo.estadoprestamo }}</span></dd></div>
             <div><dt>Solicitud</dt><dd>{{ prestamo.fechasolicitud|date:"d/m/Y" }}</dd></div>
             <div><dt>Vencimiento</dt><dd>{{ prestamo.fechavencimiento|date:"d/m/Y" }}</dd></div>

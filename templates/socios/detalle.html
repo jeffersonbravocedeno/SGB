@@ -10,7 +10,7 @@
         <h1>{{ socio }}</h1>
         <p>{{ socio.cisocio }} · {{ socio.idtiposocio }}</p>
     </div>
-    <div class="d-flex gap-2">
+    <div class="page-actions">
         <a class="btn btn-outline-secondary" href="{% url 'socios:lista' %}">Volver</a>
         <a class="btn btn-primary" href="{% url 'socios:editar' socio.idsocio %}">Editar</a>
     </div>

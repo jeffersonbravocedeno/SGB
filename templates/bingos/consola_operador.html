@@ -11,7 +11,7 @@
         <h1>{{ partida.nombreronda }}</h1>
         <p>{{ partida.idbingo.titulobingo }} · Estado: <span data-realtime-estado>{{ partida.estadopartida|estado_partida_display }}</span></p>
     </div>
-    <div class="d-flex flex-wrap gap-2">
+    <div class="page-actions">
         {% include "bingos/includes/control_sonido.html" %}
         <a class="btn btn-outline-light" href="{% url 'bingos:partida_detalle' partida.idpartidabingo %}">Detalle</a>
         {% if partida.estadopartida == "Desempate" %}
@@ -209,7 +209,7 @@
     <div class="section-heading">
         <div>
             <h2>Validación de cartones</h2>
-            <p>Regla vigente: los 24 números del cartón deben haber sido extraídos; la casilla LIBRE cuenta automáticamente.</p>
+            <p>La cantidad y disposición de números requeridos depende del patrón configurado: {{ partida.get_patronganador_display }}. La casilla LIBRE se considera automáticamente.</p>
         </div>
         {% if not puede_validar_cartones %}
         <span class="badge rounded-pill text-bg-secondary">Disponible solo en En curso</span>
@@ -271,7 +271,7 @@
     </div>
     {% endif %}
 
-    <div class="d-flex justify-content-between align-items-center mt-4 mb-3">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-4 mb-3">
         <h3 class="section-subtitle mb-0">Participaciones híbridas de la ronda</h3>
         <span class="badge rounded-pill text-bg-primary">Cartón de Bingo</span>
     </div>
