@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Solicitudes de pago{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Finanzas</p>
+        <h1>Solicitudes de pago</h1>
+        <p>Solicitudes de pago de préstamos enviadas por socios.</p>
+    </div>
+</section>
+
+<section class="content-panel">
+    <div class="toolbar">
+        <div>
+            <h2>Solicitudes registradas</h2>
+            <p>{{ total }} resultado{{ total|pluralize }}</p>
+        </div>
+    </div>
+    <div class="table-responsive">
+        <table class="table modern-table align-middle">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Socio</th>
+                    <th>Préstamo</th>
+                    <th class="text-end">Monto</th>
+                    <th>Referencia</th>
+                    <th>Fecha</th>
+                    <th>Estado</th>
+                    <th class="text-end">Acción</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for solicitud in page_obj %}
+                <tr>
+                    <td>#{{ solicitud.idsolicitudpago }}</td>
+                    <td>{{ solicitud.idsocio }}</td>
+                    <td>{{ solicitud.idprestamo }}</td>
+                    <td class="money-cell">${{ solicitud.monto|floatformat:2 }}</td>
+                    <td>{{ solicitud.referencia }}</td>
+                    <td>{{ solicitud.fechasolicitud|date:"d/m/Y H:i" }}</td>
+                    <td><span class="badge rounded-pill {{ solicitud.estado|estado_class }}">{{ solicitud.estado }}</span></td>
+                    <td class="text-end"><div class="table-actions"><a class="btn btn-sm btn-outline-primary" href="{% url 'finanzas:solicitud_pago_prestamo_detalle' solicitud.idsolicitudpago %}">Ver detalle</a></div></td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="8"><div class="empty-state"><strong>No hay solicitudes de pago registradas</strong><span>Las solicitudes enviadas por socios aparecerán aquí.</span></div></td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% include "includes/pagination.html" %}
+</section>
+{% endblock %}

@@ -1,9 +1,9 @@
 from django import forms
 
-from apps.common.forms import FriendlyModelForm, validate_unique_field
+from apps.common.forms import FriendlyModelForm, apply_bootstrap, validate_unique_field
 from apps.configuracion.models import Tiposocio
 
-from .models import Cuentabancaria, Socio
+from .models import Cuentabancaria, Socio, SolicitudSocio
 
 
 class SocioForm(FriendlyModelForm):
@@ -93,6 +93,162 @@ class SocioForm(FriendlyModelForm):
         if value not in ("", None, "H", "M"):
             raise forms.ValidationError("Seleccione un sexo válido.")
         return value
+
+
+class SolicitudSocioForm(FriendlyModelForm):
+    date_fields = ("fechanacimientosocio",)
+    integrity_error_map = ()
+
+    class Meta:
+        model = SolicitudSocio
+        fields = (
+            "idtiposocio",
+            "primernombresocio",
+            "segundonombresocio",
+            "primerapellidosocio",
+            "segundoapellidosocio",
+            "cisocio",
+            "fechanacimientosocio",
+            "telefonopersonalsocio",
+            "telefonotrabajosocio",
+            "direcciondomiciliosocio",
+            "direcciontrabajosocio",
+            "sexosocio",
+            "observacion",
+        )
+        labels = {
+            "idtiposocio": "Tipo de socio",
+            "primernombresocio": "Primer nombre",
+            "segundonombresocio": "Segundo nombre",
+            "primerapellidosocio": "Primer apellido",
+            "segundoapellidosocio": "Segundo apellido",
+            "cisocio": "Cédula",
+            "fechanacimientosocio": "Fecha de nacimiento",
+            "telefonopersonalsocio": "Teléfono personal",
+            "telefonotrabajosocio": "Teléfono de trabajo",
+            "direcciondomiciliosocio": "Dirección de domicilio",
+            "direcciontrabajosocio": "Dirección de trabajo",
+            "sexosocio": "Sexo",
+            "observacion": "Observación",
+        }
+        widgets = {
+            "direcciondomiciliosocio": forms.Textarea(attrs={"rows": 2}),
+            "direcciontrabajosocio": forms.Textarea(attrs={"rows": 2}),
+            "observacion": forms.Textarea(attrs={"rows": 3}),
+        }
+        error_messages = {
+            "cisocio": {
+                "max_length": "La cédula no puede superar los 10 caracteres.",
+            }
+        }
+
+    def __init__(self, *args, tipo_socio_queryset=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if tipo_socio_queryset is None:
+            tipo_socio_queryset = Tiposocio.objects.order_by("nombretiposocio")
+        self.fields["idtiposocio"].queryset = tipo_socio_queryset
+        self.fields["idtiposocio"].required = False
+        self.fields["idtiposocio"].empty_label = "Se definirá en la aprobación"
+        self.fields["sexosocio"].widget = forms.Select(
+            choices=(
+                ("", "Sin especificar"),
+                ("H", "Hombre"),
+                ("M", "Mujer"),
+            )
+        )
+        self.fields["sexosocio"].widget.attrs["class"] = "form-select"
+
+    def clean_cisocio(self):
+        value = self.cleaned_data.get("cisocio")
+        return _texto_requerido(value)
+
+    def clean_primernombresocio(self):
+        value = self.cleaned_data.get("primernombresocio")
+        return _texto_requerido(value)
+
+    def clean_primerapellidosocio(self):
+        value = self.cleaned_data.get("primerapellidosocio")
+        return _texto_requerido(value)
+
+    def clean_segundoapellidosocio(self):
+        value = self.cleaned_data.get("segundoapellidosocio")
+        return _texto_requerido(value)
+
+    def clean_direcciondomiciliosocio(self):
+        value = self.cleaned_data.get("direcciondomiciliosocio")
+        return _texto_requerido(value)
+
+    def clean_sexosocio(self):
+        value = self.cleaned_data.get("sexosocio")
+        if value not in ("", None, "H", "M"):
+            raise forms.ValidationError("Seleccione un sexo válido.")
+        return value
+
+    def clean_observacion(self):
+        value = self.cleaned_data.get("observacion")
+        return value.strip() if value else None
+
+
+class AprobarSolicitudSocioForm(forms.Form):
+    idtiposocio = forms.ModelChoiceField(
+        queryset=Tiposocio.objects.none(),
+        label="Tipo de socio",
+        required=False,
+        help_text="Obligatorio si la solicitud no trae tipo de socio y se debe crear un socio nuevo.",
+    )
+    estadosocio = forms.ChoiceField(
+        label="Estado del socio",
+        required=False,
+        choices=(
+            ("Activo", "Activo"),
+            ("Inactivo", "Inactivo"),
+        ),
+        initial="Activo",
+    )
+    observacion = forms.CharField(
+        label="Observación",
+        required=False,
+        max_length=255,
+        widget=forms.Textarea(attrs={"rows": 3}),
+    )
+
+    def __init__(self, *args, tipo_socio_queryset=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if tipo_socio_queryset is None:
+            tipo_socio_queryset = Tiposocio.objects.order_by("nombretiposocio")
+        self.fields["idtiposocio"].queryset = tipo_socio_queryset
+        apply_bootstrap(self)
+
+    def clean_observacion(self):
+        value = self.cleaned_data.get("observacion")
+        return value.strip() if value else ""
+
+
+class RechazarSolicitudSocioForm(forms.Form):
+    motivorechazo = forms.CharField(
+        label="Motivo de rechazo",
+        max_length=255,
+        widget=forms.Textarea(attrs={"rows": 3}),
+        error_messages={"required": "Debe ingresar un motivo de rechazo."},
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        apply_bootstrap(self)
+
+    def clean_motivorechazo(self):
+        value = self.cleaned_data.get("motivorechazo")
+        value = value.strip() if value else ""
+        if not value:
+            raise forms.ValidationError("Debe ingresar un motivo de rechazo.")
+        return value
+
+
+def _texto_requerido(value):
+    value = value.strip() if value else ""
+    if not value:
+        raise forms.ValidationError("Este campo es obligatorio.")
+    return value
 
 
 class CuentaBancariaForm(FriendlyModelForm):

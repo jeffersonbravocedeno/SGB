@@ -4,20 +4,29 @@ from django.db import transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
+from apps.jugadores.models import Jugador
 from apps.socios.models import Socio
 
-from .models import Ahorro, PagoPrestamo, Prestamo, PrestamoGarante
+from .models import (
+    Ahorro,
+    PagoPrestamo,
+    Prestamo,
+    PrestamoGarante,
+    SolicitudPagoPrestamo,
+)
 
 
 PORCENTAJE_GARANTIA_PRESTAMO = Decimal("0.50")
-ESTADOS_PRESTAMO_SIN_SALDO_GARANTE = (
+ESTADOS_PRESTAMO_NO_PAGABLES = (
     "Liquidado",
     "Pagado",
+    "Finalizado",
     "Cerrado",
     "Cancelado",
     "Rechazado",
     "Anulado",
 )
+ESTADOS_PRESTAMO_SIN_SALDO_GARANTE = ESTADOS_PRESTAMO_NO_PAGABLES
 PRESTAMO_CAMPOS_PERMITIDOS = {
     "idsocio",
     "montoprestamosolicitado",
@@ -47,6 +56,10 @@ class PrestamoGarantiaError(ValueError):
 
 
 class PrestamoPagoError(ValueError):
+    pass
+
+
+class SolicitudPagoPrestamoError(ValueError):
     pass
 
 
@@ -159,11 +172,104 @@ def _texto_limpio_pago(valor):
     return str(valor).strip()
 
 
-def _estado_prestamo_es_final(estado):
-    estado_normalizado = str(estado or "").strip().lower()
-    return any(
-        estado_normalizado == estado_final.lower()
-        for estado_final in ESTADOS_PRESTAMO_SIN_SALDO_GARANTE
+def _texto_limpio_solicitud_pago(valor):
+    if valor is None:
+        return ""
+    return str(valor).strip()
+
+
+def _texto_requerido_solicitud_pago(valor, mensaje):
+    texto = _texto_limpio_solicitud_pago(valor)
+    if not texto:
+        raise SolicitudPagoPrestamoError(mensaje)
+    return texto
+
+
+def _normalizar_monto_solicitud_pago(valor):
+    try:
+        monto = _decimal_seguro(valor)
+    except (InvalidOperation, ValueError):
+        raise SolicitudPagoPrestamoError("El monto debe ser mayor que cero.") from None
+    if monto <= 0:
+        raise SolicitudPagoPrestamoError("El monto debe ser mayor que cero.")
+    return monto
+
+
+def _normalizar_saldo_solicitud_pago(valor):
+    try:
+        saldo = _decimal_seguro(valor)
+    except (InvalidOperation, ValueError):
+        raise SolicitudPagoPrestamoError("El préstamo no tiene saldo pendiente.") from None
+    if saldo <= 0:
+        raise SolicitudPagoPrestamoError("El préstamo no tiene saldo pendiente.")
+    return saldo
+
+
+def _id_entero_or_none(valor):
+    if valor is None or isinstance(valor, bool):
+        return None
+    if isinstance(valor, str):
+        valor = valor.strip()
+        if not valor:
+            return None
+    try:
+        return int(valor)
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+
+
+def _id_modelo(objeto, nombre_pk):
+    if objeto is None:
+        return None
+    valor = getattr(objeto, nombre_pk, None)
+    if valor is None:
+        valor = getattr(objeto, "pk", None)
+    return _id_entero_or_none(valor)
+
+
+def _id_relacion(objeto, nombre_relacion, nombre_pk):
+    valor = getattr(objeto, f"{nombre_relacion}_id", None)
+    if valor is not None:
+        return _id_entero_or_none(valor)
+    relacionado = getattr(objeto, nombre_relacion, None)
+    return _id_modelo(relacionado, nombre_pk)
+
+
+def _idsocio_jugador(jugador):
+    return _id_relacion(jugador, "idsocio", "idsocio")
+
+
+def _idsocio_prestamo(prestamo):
+    return _id_relacion(prestamo, "idsocio", "idsocio")
+
+
+def _observacion_pago_desde_solicitud(solicitud, observacion_admin):
+    partes = []
+    observacion_socio = _texto_limpio_solicitud_pago(solicitud.observacionsocio)
+    comprobante = _texto_limpio_solicitud_pago(solicitud.rutacomprobante)
+    observacion_admin = _texto_limpio_solicitud_pago(observacion_admin)
+    if observacion_socio:
+        partes.append(f"Socio: {observacion_socio}")
+    if comprobante:
+        partes.append(f"Comprobante: {comprobante}")
+    if observacion_admin:
+        partes.append(f"Admin: {observacion_admin}")
+    return " | ".join(partes)[:255]
+
+
+def _dato_aprobacion(datos_aprobacion, campo, default=""):
+    if datos_aprobacion is None:
+        return default
+    if hasattr(datos_aprobacion, "get"):
+        return datos_aprobacion.get(campo, default)
+    return getattr(datos_aprobacion, campo, default)
+
+
+def _prestamo_admite_pagos(prestamo):
+    estado_normalizado = str(prestamo.estadoprestamo or "").strip().lower()
+    return not any(
+        estado_normalizado == estado_no_pagable.lower()
+        for estado_no_pagable in ESTADOS_PRESTAMO_NO_PAGABLES
     )
 
 
@@ -375,10 +481,8 @@ def registrar_pago_prestamo(
         except Prestamo.DoesNotExist:
             raise PrestamoPagoError("Debe seleccionar un préstamo válido.") from None
 
-        if _estado_prestamo_es_final(prestamo_bloqueado.estadoprestamo):
-            raise PrestamoPagoError(
-                "No se pueden registrar pagos para un préstamo cerrado o liquidado."
-            )
+        if not _prestamo_admite_pagos(prestamo_bloqueado):
+            raise PrestamoPagoError("El préstamo no admite nuevos pagos.")
 
         saldo_pendiente = _normalizar_saldo_pendiente_pago(
             prestamo_bloqueado.saldopendiente
@@ -408,6 +512,219 @@ def registrar_pago_prestamo(
         prestamo_bloqueado.save(update_fields=update_fields)
 
     return pago
+
+
+def crear_solicitud_pago_prestamo(jugador, idprestamo, datos_limpios):
+    jugador_id = _id_modelo(jugador, "idjugador")
+    if jugador_id is None:
+        raise SolicitudPagoPrestamoError("Debe seleccionar un jugador válido.")
+
+    try:
+        prestamo_id = _idprestamo_desde_valor(idprestamo)
+    except PrestamoPagoError as exc:
+        raise SolicitudPagoPrestamoError(str(exc)) from None
+
+    datos_limpios = datos_limpios or {}
+    monto = _normalizar_monto_solicitud_pago(datos_limpios.get("monto"))
+    referencia = _texto_requerido_solicitud_pago(
+        datos_limpios.get("referencia"),
+        "Debe ingresar una referencia.",
+    )
+    rutacomprobante = (
+        _texto_limpio_solicitud_pago(datos_limpios.get("rutacomprobante")) or None
+    )
+    observacionsocio = (
+        _texto_limpio_solicitud_pago(datos_limpios.get("observacionsocio")) or None
+    )
+
+    with transaction.atomic():
+        try:
+            jugador_bloqueado = Jugador.objects.select_for_update().get(
+                idjugador=jugador_id
+            )
+        except Jugador.DoesNotExist:
+            raise SolicitudPagoPrestamoError(
+                "Debe seleccionar un jugador válido."
+            ) from None
+
+        socio_id = _idsocio_jugador(jugador_bloqueado)
+        if socio_id is None:
+            raise SolicitudPagoPrestamoError(
+                "El jugador no está vinculado a un socio."
+            )
+
+        try:
+            prestamo = Prestamo.objects.select_for_update().get(
+                idprestamo=prestamo_id
+            )
+        except Prestamo.DoesNotExist:
+            raise SolicitudPagoPrestamoError(
+                "Debe seleccionar un préstamo válido."
+            ) from None
+
+        if _idsocio_prestamo(prestamo) != socio_id:
+            raise SolicitudPagoPrestamoError(
+                "El préstamo no pertenece al socio autenticado."
+            )
+
+        if not _prestamo_admite_pagos(prestamo):
+            raise SolicitudPagoPrestamoError("El préstamo no admite nuevos pagos.")
+
+        saldo_pendiente = _normalizar_saldo_solicitud_pago(prestamo.saldopendiente)
+        if monto > saldo_pendiente:
+            raise SolicitudPagoPrestamoError(
+                "El monto no puede superar el saldo pendiente."
+            )
+
+        if SolicitudPagoPrestamo.objects.filter(
+            idprestamo=prestamo,
+            estado=SolicitudPagoPrestamo.ESTADO_PENDIENTE,
+        ).exists():
+            raise SolicitudPagoPrestamoError(
+                "Ya existe una solicitud de pago pendiente para este préstamo."
+            )
+
+        return SolicitudPagoPrestamo.objects.create(
+            idprestamo=prestamo,
+            idsocio_id=socio_id,
+            idjugador=jugador_bloqueado,
+            idmetodopago=datos_limpios.get("idmetodopago"),
+            monto=monto,
+            referencia=referencia,
+            rutacomprobante=rutacomprobante,
+            observacionsocio=observacionsocio,
+            estado=SolicitudPagoPrestamo.ESTADO_PENDIENTE,
+            fechasolicitud=timezone.now(),
+        )
+
+
+def aprobar_solicitud_pago_prestamo(
+    idsolicitudpago,
+    usuario_admin,
+    datos_aprobacion=None,
+):
+    observacion_admin = _texto_limpio_solicitud_pago(
+        _dato_aprobacion(datos_aprobacion, "observacionadmin", "")
+    )
+
+    with transaction.atomic():
+        try:
+            solicitud = SolicitudPagoPrestamo.objects.select_for_update().get(
+                idsolicitudpago=idsolicitudpago
+            )
+        except SolicitudPagoPrestamo.DoesNotExist:
+            raise SolicitudPagoPrestamoError(
+                "Debe seleccionar una solicitud válida."
+            ) from None
+
+        if solicitud.estado != SolicitudPagoPrestamo.ESTADO_PENDIENTE:
+            raise SolicitudPagoPrestamoError("La solicitud ya fue resuelta.")
+
+        try:
+            prestamo = Prestamo.objects.select_for_update().get(
+                idprestamo=solicitud.idprestamo_id
+            )
+        except Prestamo.DoesNotExist:
+            raise SolicitudPagoPrestamoError(
+                "Debe seleccionar un préstamo válido."
+            ) from None
+
+        try:
+            jugador = Jugador.objects.select_for_update().get(
+                idjugador=solicitud.idjugador_id
+            )
+        except Jugador.DoesNotExist:
+            raise SolicitudPagoPrestamoError(
+                "La solicitud no conserva una relación válida entre jugador, socio y préstamo."
+            ) from None
+
+        if (
+            solicitud.idjugador_id != jugador.pk
+            or solicitud.idsocio_id != _idsocio_jugador(jugador)
+            or _idsocio_prestamo(prestamo) != solicitud.idsocio_id
+            or prestamo.pk != solicitud.idprestamo_id
+        ):
+            raise SolicitudPagoPrestamoError(
+                "La solicitud no conserva una relación válida entre jugador, socio y préstamo."
+            )
+
+        if not _prestamo_admite_pagos(prestamo):
+            raise SolicitudPagoPrestamoError("El préstamo no admite nuevos pagos.")
+
+        monto = _normalizar_monto_solicitud_pago(solicitud.monto)
+        saldo_pendiente = _normalizar_saldo_solicitud_pago(prestamo.saldopendiente)
+        if monto > saldo_pendiente:
+            raise SolicitudPagoPrestamoError(
+                "El monto no puede superar el saldo pendiente."
+            )
+
+        try:
+            pago = registrar_pago_prestamo(
+                prestamo,
+                monto_pagado=monto,
+                metodo_pago=solicitud.idmetodopago
+                if solicitud.idmetodopago_id
+                else None,
+                numero_referencia=solicitud.referencia,
+                observacion=_observacion_pago_desde_solicitud(
+                    solicitud,
+                    observacion_admin,
+                ),
+            )
+        except PrestamoPagoError as exc:
+            raise SolicitudPagoPrestamoError(str(exc)) from None
+
+        solicitud.estado = SolicitudPagoPrestamo.ESTADO_APROBADA
+        solicitud.fecharespuesta = timezone.now()
+        solicitud.idusuarioadminrespuesta = usuario_admin
+        solicitud.observacionadmin = observacion_admin or None
+        solicitud.idpagoprestamoresultado = pago
+        solicitud.save(
+            update_fields=[
+                "estado",
+                "fecharespuesta",
+                "idusuarioadminrespuesta",
+                "observacionadmin",
+                "idpagoprestamoresultado",
+            ]
+        )
+
+    return solicitud, pago
+
+
+def rechazar_solicitud_pago_prestamo(idsolicitudpago, usuario_admin, motivo):
+    motivo_limpio = _texto_requerido_solicitud_pago(
+        motivo,
+        "Debe ingresar un motivo de rechazo.",
+    )
+
+    with transaction.atomic():
+        try:
+            solicitud = SolicitudPagoPrestamo.objects.select_for_update().get(
+                idsolicitudpago=idsolicitudpago
+            )
+        except SolicitudPagoPrestamo.DoesNotExist:
+            raise SolicitudPagoPrestamoError(
+                "Debe seleccionar una solicitud válida."
+            ) from None
+
+        if solicitud.estado != SolicitudPagoPrestamo.ESTADO_PENDIENTE:
+            raise SolicitudPagoPrestamoError("La solicitud ya fue resuelta.")
+
+        solicitud.estado = SolicitudPagoPrestamo.ESTADO_RECHAZADA
+        solicitud.fecharespuesta = timezone.now()
+        solicitud.idusuarioadminrespuesta = usuario_admin
+        solicitud.motivorechazo = motivo_limpio
+        solicitud.save(
+            update_fields=[
+                "estado",
+                "fecharespuesta",
+                "idusuarioadminrespuesta",
+                "motivorechazo",
+            ]
+        )
+
+    return solicitud
 
 
 def validar_garantes_prestamo(*, socio_deudor_id, monto_solicitado, garantes):

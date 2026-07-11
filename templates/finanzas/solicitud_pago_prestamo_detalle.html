@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Solicitud de pago{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Solicitudes de pago</p>
+        <h1>Solicitud #{{ solicitud.idsolicitudpago }}</h1>
+        <p>{{ solicitud.idsocio }} · {{ solicitud.estado }}</p>
+    </div>
+    <a class="btn btn-outline-secondary" href="{% url 'finanzas:solicitudes_pago_prestamo_lista' %}">Volver</a>
+</section>
+
+<section class="content-panel">
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Estado</h2>
+            <p>Resultado de revisión financiera.</p>
+        </div>
+        <dl class="detail-grid">
+            <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ solicitud.estado|estado_class }}">{{ solicitud.estado }}</span></dd></div>
+            <div><dt>Fecha solicitud</dt><dd>{{ solicitud.fechasolicitud|date:"d/m/Y H:i" }}</dd></div>
+            <div><dt>Fecha respuesta</dt><dd>{{ solicitud.fecharespuesta|date:"d/m/Y H:i"|default_dash }}</dd></div>
+            <div><dt>Admin respuesta</dt><dd>{{ solicitud.idusuarioadminrespuesta|default_dash }}</dd></div>
+            <div class="grid-full"><dt>Observación admin</dt><dd>{{ solicitud.observacionadmin|default_dash }}</dd></div>
+            <div class="grid-full"><dt>Motivo rechazo</dt><dd>{{ solicitud.motivorechazo|default_dash }}</dd></div>
+            <div class="grid-full"><dt>Pago resultado</dt><dd>{{ solicitud.idpagoprestamoresultado|default_dash }}</dd></div>
+        </dl>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Socio y jugador</h2>
+            <p>Cuenta que envió la solicitud.</p>
+        </div>
+        <dl class="detail-grid">
+            <div><dt>Socio</dt><dd>{{ solicitud.idsocio }}</dd></div>
+            <div><dt>Cédula</dt><dd>{{ solicitud.idsocio.cisocio|default_dash }}</dd></div>
+            <div><dt>Jugador</dt><dd>{{ solicitud.idjugador }}</dd></div>
+            <div><dt>Alias</dt><dd>{{ solicitud.idjugador.aliasjugador|default_dash }}</dd></div>
+            <div><dt>Correo</dt><dd>{{ solicitud.idjugador.correojugador|default_dash }}</dd></div>
+        </dl>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Préstamo y pago solicitado</h2>
+            <p>Datos declarados por el socio.</p>
+        </div>
+        <dl class="detail-grid">
+            <div><dt>Préstamo</dt><dd>{{ solicitud.idprestamo }}</dd></div>
+            <div><dt>Saldo actual</dt><dd class="money-cell text-start">${{ solicitud.idprestamo.saldopendiente|floatformat:2 }}</dd></div>
+            <div><dt>Monto solicitado</dt><dd class="money-cell text-start">${{ solicitud.monto|floatformat:2 }}</dd></div>
+            <div><dt>Referencia</dt><dd>{{ solicitud.referencia }}</dd></div>
+            <div><dt>Método</dt><dd>{{ solicitud.idmetodopago|default_dash }}</dd></div>
+            <div><dt>Comprobante</dt><dd>{{ solicitud.rutacomprobante|default_dash }}</dd></div>
+            <div class="grid-full"><dt>Observación socio</dt><dd>{{ solicitud.observacionsocio|default_dash }}</dd></div>
+        </dl>
+    </div>
+
+    {% if solicitud.idpagoprestamoresultado %}
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Pago resultado</h2>
+            <p>Pago registrado al aprobar la solicitud.</p>
+        </div>
+        <dl class="detail-grid">
+            <div><dt>Pago</dt><dd>{{ solicitud.idpagoprestamoresultado }}</dd></div>
+            <div><dt>Monto</dt><dd>${{ solicitud.idpagoprestamoresultado.montopagado|floatformat:2 }}</dd></div>
+            <div><dt>Fecha</dt><dd>{{ solicitud.idpagoprestamoresultado.fechapago|date:"d/m/Y H:i" }}</dd></div>
+            <div><dt>Método</dt><dd>{{ solicitud.idpagoprestamoresultado.idmetodopago|default_dash }}</dd></div>
+            <div><dt>Referencia</dt><dd>{{ solicitud.idpagoprestamoresultado.numeroreferencia|default_dash }}</dd></div>
+            <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ solicitud.idpagoprestamoresultado.estado|estado_class }}">{{ solicitud.idpagoprestamoresultado.estado }}</span></dd></div>
+        </dl>
+    </div>
+    {% endif %}
+
+    {% if solicitud.estado == "Pendiente" %}
+    <div class="form-section mb-0">
+        <div class="form-section-title">
+            <h2>Resolver solicitud</h2>
+            <p>Aprobación o rechazo administrativo.</p>
+        </div>
+        <div class="row g-4">
+            <div class="col-lg-6"><div class="decision-panel decision-panel--approve">
+                <form method="post" action="{% url 'finanzas:solicitud_pago_prestamo_aprobar' solicitud.idsolicitudpago %}" novalidate>
+                    {% csrf_token %}
+                    {% include "includes/form_errors.html" with form=aprobar_form %}
+                    {% include "includes/field.html" with field=aprobar_form.observacionadmin %}
+                    <div class="form-actions">
+                        <button class="btn btn-primary" type="submit">Aprobar</button>
+                    </div>
+                </form>
+            </div></div>
+            <div class="col-lg-6"><div class="decision-panel decision-panel--reject">
+                <form method="post" action="{% url 'finanzas:solicitud_pago_prestamo_rechazar' solicitud.idsolicitudpago %}" novalidate>
+                    {% csrf_token %}
+                    {% include "includes/form_errors.html" with form=rechazo_form %}
+                    {% include "includes/field.html" with field=rechazo_form.motivorechazo %}
+                    <div class="form-actions">
+                        <button class="btn btn-outline-danger" type="submit">Rechazar</button>
+                    </div>
+                </form>
+            </div></div>
+        </div>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}

@@ -6,7 +6,7 @@
 {% block content %}
 <section class="page-header">
     <div><p class="page-kicker">Préstamos</p><h1>Préstamo de {{ prestamo.idsocio }}</h1><p>Solicitud: {{ prestamo.fechasolicitud|date:"d/m/Y" }}</p></div>
-    <div class="d-flex gap-2"><a class="btn btn-outline-secondary" href="{% url 'finanzas:prestamos_lista' %}">Volver</a>{% if puede_registrar_pago %}<a class="btn btn-success" href="{% url 'finanzas:pago_nuevo' prestamo.idprestamo %}">Registrar pago</a>{% endif %}<a class="btn btn-primary" href="{% url 'finanzas:prestamo_editar' prestamo.idprestamo %}">Editar</a></div>
+    <div class="page-actions"><a class="btn btn-outline-secondary" href="{% url 'finanzas:prestamos_lista' %}">Volver</a>{% if puede_registrar_pago %}<a class="btn btn-success" href="{% url 'finanzas:pago_nuevo' prestamo.idprestamo %}">Registrar pago</a>{% endif %}<a class="btn btn-primary" href="{% url 'finanzas:prestamo_editar' prestamo.idprestamo %}">Editar</a></div>
 </section>
 <section class="content-panel">
     <div class="row g-4">

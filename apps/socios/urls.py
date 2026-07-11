@@ -7,6 +7,31 @@ app_name = "socios"
 
 urlpatterns = [
     path("", views.lista, name="lista"),
+    path("mi-panel/", views.portal_socio, name="portal_socio"),
+    path(
+        "mi-panel/prestamos/<int:idprestamo>/solicitar-pago/",
+        views.solicitar_pago_prestamo_socio,
+        name="solicitar_pago_prestamo_socio",
+    ),
+    path(
+        "mi-panel/solicitudes-pago/",
+        views.mis_solicitudes_pago_prestamo,
+        name="mis_solicitudes_pago_prestamo",
+    ),
+    path("mi-solicitud/", views.mi_solicitud_socio, name="mi_solicitud_socio"),
+    path("mi-solicitud/nueva/", views.solicitud_socio_nueva, name="solicitud_socio_nueva"),
+    path("solicitudes/", views.solicitudes_socio_lista, name="solicitudes_socio_lista"),
+    path("solicitudes/<int:idsolicitud>/", views.solicitud_socio_detalle, name="solicitud_socio_detalle"),
+    path(
+        "solicitudes/<int:idsolicitud>/aprobar/",
+        views.solicitud_socio_aprobar,
+        name="solicitud_socio_aprobar",
+    ),
+    path(
+        "solicitudes/<int:idsolicitud>/rechazar/",
+        views.solicitud_socio_rechazar,
+        name="solicitud_socio_rechazar",
+    ),
     path("nuevo/", views.nuevo, name="nuevo"),
     path("<int:idsocio>/", views.detalle, name="detalle"),
     path("<int:idsocio>/editar/", views.editar, name="editar"),

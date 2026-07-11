@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}SIAB | Solicitar ser socio{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Solicitud de socio</p>
+        <h1>Solicitar ser socio</h1>
+        <p>{{ jugador }}</p>
+    </div>
+</section>
+
+<form class="content-panel" method="post" novalidate>
+    {% csrf_token %}
+    {% include "includes/form_errors.html" with form=form %}
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Datos personales</h2>
+            <p>Identificación, nombres y fecha de nacimiento.</p>
+        </div>
+        <div class="row g-3">
+            {% for field in form %}
+            {% if field.name in "idtiposocio,primernombresocio,segundonombresocio,primerapellidosocio,segundoapellidosocio,cisocio,fechanacimientosocio,sexosocio" %}
+            <div class="col-md-6">
+                {% include "includes/field.html" with field=field %}
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Contacto y direcciones</h2>
+            <p>Teléfonos, ubicación y observación.</p>
+        </div>
+        <div class="row g-3">
+            {% for field in form %}
+            {% if field.name in "telefonopersonalsocio,telefonotrabajosocio,direcciondomiciliosocio,direcciontrabajosocio,observacion" %}
+            <div class="{% if 'direccion' in field.name or field.name == 'observacion' %}col-12{% else %}col-md-6{% endif %}">
+                {% include "includes/field.html" with field=field %}
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="form-actions">
+        <a class="btn btn-outline-secondary" href="{% url 'socios:mi_solicitud_socio' %}">Cancelar</a>
+        <button class="btn btn-primary" type="submit">Guardar solicitud</button>
+    </div>
+</form>
+{% endblock %}

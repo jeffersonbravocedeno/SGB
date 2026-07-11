@@ -11,15 +11,47 @@ register = template.Library()
 @register.filter
 def estado_class(value):
     estado = str(estado_partida_mostrar(value) or "").strip().upper()
-    if estado in {"ACTIVO", "VALIDADO", "AL DIA", "DISPONIBLE", "COMPLETADO", "EN CURSO"}:
+    if estado in {
+        "ACTIVO",
+        "ACTIVA",
+        "VALIDADO",
+        "VALIDADA",
+        "REGISTRADO",
+        "REGISTRADA",
+        "APROBADO",
+        "APROBADA",
+        "AL DIA",
+        "DISPONIBLE",
+        "COMPLETADO",
+        "COMPLETADA",
+        "EN CURSO",
+    }:
         return "text-bg-success"
-    if estado in {"PENDIENTE", "PROGRAMADO", "PROGRAMADA", "EN ESPERA"}:
+    if estado in {"PROGRAMADO", "PROGRAMADA", "EN ESPERA"}:
         return "text-bg-primary"
-    if estado in {"ATRASADO", "SUSPENDIDO", "PAUSADA", "DESEMPATE"}:
+    if estado in {"PENDIENTE", "ATRASADO", "SUSPENDIDO", "PAUSADA", "DESEMPATE"}:
         return "text-bg-warning"
-    if estado in {"RECHAZADO", "INACTIVO", "CERRADO", "CANCELADO", "CANCELADA"}:
+    if estado in {
+        "RECHAZADO",
+        "RECHAZADA",
+        "INACTIVO",
+        "INACTIVA",
+        "CANCELADO",
+        "CANCELADA",
+        "ANULADO",
+        "ANULADA",
+    }:
         return "text-bg-danger"
-    if estado in {"FINALIZADO", "FINALIZADA", "VENDIDO"}:
+    if estado in {
+        "FINALIZADO",
+        "FINALIZADA",
+        "LIQUIDADO",
+        "LIQUIDADA",
+        "CERRADO",
+        "CERRADA",
+        "VENDIDO",
+        "VENDIDA",
+    }:
         return "text-bg-secondary"
     return "text-bg-info"
 

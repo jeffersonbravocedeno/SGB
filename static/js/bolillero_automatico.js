@@ -199,7 +199,9 @@
     }
 
     function detectarMensajeError(documento) {
-        return limpiarTexto(documento.querySelector(".messages-wrap .alert-danger"));
+        return limpiarTexto(
+            documento.querySelector('.messages-wrap [data-message-level="error"]')
+        );
     }
 
     function procesarRespuestaHtml(contexto, html) {

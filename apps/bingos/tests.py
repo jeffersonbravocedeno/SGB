@@ -1,7 +1,7 @@
 import asyncio
 import json
 from contextlib import nullcontext
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
 from channels.layers import get_channel_layer
 from channels.testing import WebsocketCommunicator
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from django import forms
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser, User
@@ -70,6 +70,7 @@ from .reportes import (
     generar_excel_cartones_partida,
     generar_excel_resumen_bingo,
     generar_pdf_reporte_partida,
+    neutralizar_texto_excel,
 )
 from .services import (
     CASILLA_LIBRE,
@@ -822,6 +823,7 @@ class CartonMaestroBingoTests(SimpleTestCase):
         partidas=None,
         error_participacion=None,
         capturar_error=False,
+        bingo_bloqueado=None,
     ):
         partidas = self.partidas if partidas is None else partidas
 
@@ -861,7 +863,7 @@ class CartonMaestroBingoTests(SimpleTestCase):
                 side_effect=error_participacion,
             ) as crear_participacion_mock,
         ):
-            lock_bingo.return_value.get.return_value = self.bingo
+            lock_bingo.return_value.get.return_value = bingo_bloqueado or self.bingo
             consulta = lock_partidas.return_value.filter.return_value
             consulta.order_by.return_value = partidas
             try:
@@ -889,6 +891,33 @@ class CartonMaestroBingoTests(SimpleTestCase):
             "save": save_mock,
             "crear_participacion": crear_participacion_mock,
         }
+
+    def test_rechaza_bingo_finalizado_o_cancelado_despues_de_bloquearlo(self):
+        for estado in ("Finalizado", "Cancelado"):
+            with self.subTest(estado=estado), patch.object(
+                Jugador,
+                "save",
+            ) as jugador_save:
+                bingo_cerrado = Bingo(
+                    idbingo=self.bingo.pk,
+                    titulobingo=self.bingo.titulobingo,
+                    estadobingo=estado,
+                )
+                resultado = self._crear_sin_base(
+                    capturar_error=True,
+                    bingo_bloqueado=bingo_cerrado,
+                )
+
+                self.assertIsInstance(resultado["error"], CartonAsignacionError)
+                self.assertIn(
+                    "finalizado o cancelado",
+                    str(resultado["error"]),
+                )
+                resultado["lock_bingo"].return_value.get.assert_called_once_with(pk=7)
+                resultado["save"].assert_not_called()
+                resultado["crear_participacion"].assert_not_called()
+                resultado["matriz"].assert_not_called()
+                jugador_save.assert_not_called()
 
     def test_crea_un_maestro_y_una_participacion_por_partida(self):
         resultado = self._crear_sin_base()
@@ -2191,6 +2220,45 @@ class VentaCartonBingoInterfazTests(SimpleTestCase):
         carton_create.assert_not_called()
         participacion_create.assert_not_called()
 
+    def test_venta_administrativa_muestra_error_si_bingo_cerro_antes_del_post(self):
+        for estado in ("Finalizado", "Cancelado"):
+            with self.subTest(estado=estado):
+                request = self._request(
+                    method="post",
+                    data={"idjugador": "4", "preciopagado": "5.00"},
+                )
+                form = self._form_valido(request.POST)
+                error = (
+                    "No se puede vender un cartón porque el Bingo está "
+                    "finalizado o cancelado."
+                )
+                with patch(
+                    "apps.bingos.views.get_object_or_404",
+                    return_value=self.bingo,
+                ), patch(
+                    "apps.bingos.views.GenerarCartonBingoForm",
+                    return_value=form,
+                ), patch(
+                    "apps.bingos.views.crear_carton_maestro_para_bingo",
+                    side_effect=CartonAsignacionError(error),
+                ), patch(
+                    "apps.bingos.views.Partidabingo.objects.filter",
+                    return_value=[],
+                ), patch(
+                    "apps.bingos.views.Carton.objects.create"
+                ) as carton_create, patch(
+                    "apps.bingos.views.CartonPartidaBingo.objects.create"
+                ) as participacion_create, patch(
+                    "apps.bingos.views.render",
+                    return_value=HttpResponse(status=200),
+                ):
+                    response = bingo_carton_nuevo(request, self.bingo.pk)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(error, form.non_field_errors())
+                carton_create.assert_not_called()
+                participacion_create.assert_not_called()
+
     def test_cierre_financiero_en_venta_admin_redirige_con_mensaje(self):
         request = self._request(
             method="post",
@@ -2537,6 +2605,38 @@ class CompraDirectaCartonJugadorTests(SimpleTestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertContains(response, "Bingo no admite compras")
                 crear_mock.assert_not_called()
+
+    def test_compra_directa_muestra_error_si_bingo_cerro_antes_del_post(self):
+        error = (
+            "No se puede vender un cartón porque el Bingo está "
+            "finalizado o cancelado."
+        )
+        for estado in ("Finalizado", "Cancelado"):
+            with self.subTest(estado=estado):
+                request = self._request(
+                    method="post",
+                    data={"confirmar_compra": "on"},
+                )
+                with self._autorizar_jugador(), patch(
+                    "apps.bingos.views.get_object_or_404",
+                    return_value=self.bingo,
+                ), patch(
+                    "apps.bingos.views.Partidabingo.objects.filter",
+                    return_value=self.partidas,
+                ), patch(
+                    "apps.bingos.views.crear_carton_maestro_para_bingo",
+                    side_effect=CartonAsignacionError(error),
+                ), patch(
+                    "apps.bingos.views.Carton.objects.create"
+                ) as carton_create, patch(
+                    "apps.bingos.views.CartonPartidaBingo.objects.create"
+                ) as participacion_create:
+                    response = comprar_carton_bingo(request, self.bingo.pk)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, error)
+                carton_create.assert_not_called()
+                participacion_create.assert_not_called()
 
     def test_jugador_puede_comprar_varios_cartones_del_mismo_bingo(self):
         cartones = [
@@ -6819,6 +6919,27 @@ class PlantillasTiempoRealBingoTests(SimpleTestCase):
         self.assertIn("Extracción detenida: ya no quedan bolas disponibles", javascript)
         self.assertIn("beforeunload", javascript)
 
+    def test_javascript_bolillero_detiene_errores_http_y_funcionales(self):
+        javascript = Path("static/js/bolillero_automatico.js").read_text(
+            encoding="utf-8"
+        )
+        mensajes = Path("templates/includes/messages.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("if (!respuesta.ok)", javascript)
+        self.assertIn("El servidor respondió con error.", javascript)
+        self.assertIn('[data-message-level="error"]', javascript)
+        self.assertNotIn('.messages-wrap .alert-danger', javascript)
+        self.assertIn("detenerPorError(", javascript)
+        self.assertIn("contexto.activo = false", javascript)
+        self.assertIn("contexto.solicitudPendiente = false", javascript)
+        self.assertIn("finalizarSolicitud(contexto)", javascript)
+        self.assertIn("programarCuentaRegresiva(contexto)", javascript)
+        self.assertIn('data-message-level="{{ message.tags|default:', mensajes)
+        self.assertIn("message.tags == 'error'", mensajes)
+        self.assertIn("alert-danger", mensajes)
+
 
 class FakeReportQuerySet(list):
     def select_related(self, *fields):
@@ -7061,6 +7182,42 @@ class ReportesAdministrativosTests(SimpleTestCase):
         self.assertNotIn("Total recaudado", resumen)
         self.assertEqual(resumen["Cartones vendidos"], 2)
         self.assertEqual(resumen["Cartones disponibles"], 1)
+
+    def test_neutralizar_texto_excel_conserva_tipos_y_escapa_prefijos(self):
+        casos = {
+            "=SUM(A1:A2)": "'=SUM(A1:A2)",
+            "+CMD": "'+CMD",
+            "-1+2": "'-1+2",
+            "@usuario": "'@usuario",
+            "\tcomando": "'\tcomando",
+            "\rcomando": "'\rcomando",
+            "Texto normal": "Texto normal",
+        }
+        for valor, esperado in casos.items():
+            with self.subTest(valor=repr(valor)):
+                self.assertEqual(neutralizar_texto_excel(valor), esperado)
+
+        numero = Decimal("12.50")
+        fecha = date(2026, 7, 11)
+        self.assertIs(neutralizar_texto_excel(numero), numero)
+        self.assertIs(neutralizar_texto_excel(fecha), fecha)
+
+    def test_excel_neutraliza_datos_externos_sin_tocar_formula_interna(self):
+        self.partida.nombreronda = "=SUM(A1:A2)"
+        self.cartones[0].codigocarton = "+CMD"
+        self.cartones[0].idjugador.aliasjugador = "@usuario"
+
+        contenido = generar_excel_cartones_partida(self.partida, self.cartones)
+        worksheet = load_workbook(BytesIO(contenido))["Cartones"]
+
+        self.assertEqual(worksheet.cell(2, 3).value, "'+CMD")
+        self.assertEqual(worksheet.cell(2, 4).value, "'@usuario")
+        self.assertEqual(worksheet.cell(2, 13).value, "'=SUM(A1:A2)")
+
+        workbook = Workbook()
+        workbook.active["A1"] = "=SUM(A2:A3)"
+        self.assertEqual(workbook.active["A1"].data_type, "f")
+        self.assertEqual(workbook.active["A1"].value, "=SUM(A2:A3)")
 
     def test_excel_resumen_bingo_contiene_headers_resumen_y_no_privados(self):
         contenido = generar_excel_resumen_bingo(
@@ -9240,8 +9397,15 @@ class BingoFinanzasGastosOperativosVistaIntegrationTests(TestCase):
     databases = {"default"}
 
     BOOTSTRAP_TABLES = (
+        "tiposocio",
+        "socio",
+        "metodopago",
         "bingo",
         "jugador",
+        "prestamo",
+        "pago_prestamo",
+        "solicitud_socio",
+        "solicitud_pago_prestamo",
         "partidabingo",
         "carton",
         "carton_partida_bingo",

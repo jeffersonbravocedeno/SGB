@@ -39,6 +39,19 @@ class ReporteHibridoError(Exception):
     """Indica una relación inconsistente al construir un reporte híbrido."""
 
 
+CARACTERES_PELIGROSOS_EXCEL = ("=", "+", "-", "@", "\t", "\r")
+
+
+def neutralizar_texto_excel(valor):
+    if isinstance(valor, str) and valor.startswith(CARACTERES_PELIGROSOS_EXCEL):
+        return "'" + valor
+    return valor
+
+
+def _fila_excel_segura(valores):
+    return [neutralizar_texto_excel(valor) for valor in valores]
+
+
 def nombre_archivo_seguro(prefijo, identificador, extension):
     base = f"{prefijo}_{identificador}"
     base = re.sub(r"[^A-Za-z0-9_-]+", "_", str(base)).strip("_")
@@ -453,7 +466,7 @@ def generar_excel_cartones_partida(
         precio = _decimal(fila["precio_pagado"])
         estados[_estado_normalizado(fila["estado_carton"])] += 1
         worksheet.append(
-            [
+            _fila_excel_segura([
                 fila["tipo_etiqueta"],
                 fila["idcarton"],
                 fila["codigo_carton"],
@@ -468,7 +481,7 @@ def generar_excel_cartones_partida(
                 partida.idpartidabingo,
                 partida.nombreronda,
                 estado_partida_mostrar(partida.estadopartida),
-            ]
+            ])
         )
 
     resumen_row = worksheet.max_row + 2
@@ -481,7 +494,7 @@ def generar_excel_cartones_partida(
     for offset, (label, value) in enumerate(resumen):
         row = resumen_row + offset
         worksheet.cell(row=row, column=1, value=label)
-        worksheet.cell(row=row, column=2, value=value)
+        worksheet.cell(row=row, column=2, value=neutralizar_texto_excel(value))
 
     nota_row = worksheet.max_row + 2
     worksheet.cell(
@@ -554,7 +567,7 @@ def generar_excel_resumen_bingo(
         en_curso += 1 if estado == "En curso" else 0
         con_desempate += 1 if partida.haydesempate else 0
         filas_resumen_rondas.append(
-            [
+            _fila_excel_segura([
                 bingo.titulobingo,
                 partida.nombreronda,
                 estado,
@@ -567,7 +580,7 @@ def generar_excel_resumen_bingo(
                 _alias_ganador(partida) or "-",
                 _si_no(partida.haydesempate),
                 _formatear_bola(partida.bolamayordesempate) or "-",
-            ]
+            ])
         )
 
     workbook = Workbook()
@@ -601,7 +614,7 @@ def generar_excel_resumen_bingo(
     for offset, (label, value) in enumerate(resumen, start=4):
         row = offset
         worksheet.cell(row=row, column=1, value=label)
-        worksheet.cell(row=row, column=2, value=value)
+        worksheet.cell(row=row, column=2, value=neutralizar_texto_excel(value))
         worksheet.cell(row=row, column=1).font = Font(bold=True)
     worksheet.cell(row=5, column=2).number_format = FECHA_FORMAT
     worksheet.cell(row=7, column=2).number_format = MONEDA_FORMAT
@@ -685,7 +698,7 @@ def generar_excel_resumen_bingo(
     )
     for resumen in resumenes_maestros:
         inventario.append(
-            [
+            _fila_excel_segura([
                 resumen["idcarton"],
                 resumen["codigo_carton"],
                 _nombre_jugador(resumen["jugador"]),
@@ -696,7 +709,7 @@ def generar_excel_resumen_bingo(
                 resumen["rondas_ganadas"],
                 resumen["rondas_pendientes_activas"],
                 resumen["estados_participacion"],
-            ]
+            ])
         )
     _configurar_tabla_excel(
         inventario,
@@ -738,7 +751,7 @@ def generar_excel_resumen_bingo(
         partida = participacion.idpartida
         carton = participacion.idcarton
         participaciones.append(
-            [
+            _fila_excel_segura([
                 partida.nombreronda,
                 estado_partida_mostrar(partida.estadopartida),
                 _fecha_para_excel(partida.horainicio),
@@ -748,7 +761,7 @@ def generar_excel_resumen_bingo(
                 participacion.estado_participacion,
                 participacion.indicevictoria,
                 _fecha_para_excel(participacion.fechavalidacion),
-            ]
+            ])
         )
     _configurar_tabla_excel(
         participaciones,

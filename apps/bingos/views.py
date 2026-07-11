@@ -69,6 +69,7 @@ from .services import (
     RondaCreacionError,
     ValidacionCartonError,
     acciones_disponibles_consola,
+    bingo_permite_vender_cartones,
     confirmar_y_finalizar_desempate,
     cerrar_financieramente_bingo,
     construir_matriz_marcada_carton,
@@ -112,7 +113,6 @@ from .services import (
 
 logger = logging.getLogger(__name__)
 
-ESTADOS_BINGO_SIN_COMPRA = {"Finalizado", "Cancelado"}
 MENSAJE_CREACION_CARTON_DIRECTA_DESHABILITADA = (
     "Use la venta por Bingo para crear cartones y participaciones correctamente."
 )
@@ -126,7 +126,7 @@ MENSAJE_EDICION_CARTON_PARTIDA_DESHABILITADA = (
 
 
 def _estado_bingo_bloquea_compra(bingo):
-    return str(getattr(bingo, "estadobingo", "") or "").strip() in ESTADOS_BINGO_SIN_COMPRA
+    return not bingo_permite_vender_cartones(bingo)
 
 
 @require_GET

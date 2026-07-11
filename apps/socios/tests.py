@@ -1,27 +1,169 @@
-from datetime import datetime
+from contextlib import nullcontext
+from datetime import date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from django.contrib.auth.models import AnonymousUser
 from django.contrib.auth.models import User
-from django.http import HttpResponse
+from django.contrib.messages.storage.fallback import FallbackStorage
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError
+from django.http import Http404, HttpResponse
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase
+from django.urls import Resolver404, resolve, reverse
+
+from apps.configuracion.models import Tiposocio
+from apps.finanzas.forms import SolicitudPagoPrestamoForm
+from apps.finanzas.models import SolicitudPagoPrestamo
+from apps.finanzas.services import SolicitudPagoPrestamoError
+from apps.jugadores.models import Jugador
 
 from . import views as socios_views
-from .models import Socio
+from . import services as socios_services
+from .forms import (
+    AprobarSolicitudSocioForm,
+    RechazarSolicitudSocioForm,
+    SolicitudSocioForm,
+)
+from .models import Socio, SolicitudSocio
 
 
 def socio_stub(idsocio=1):
     return Socio(
         idsocio=idsocio,
+        idtiposocio=tipo_socio_stub(),
         primernombresocio="Socio",
         segundonombresocio="",
         primerapellidosocio="Prueba",
         segundoapellidosocio="",
         cisocio=str(idsocio).zfill(10),
+        fechanacimientosocio=date(1990, 1, 1),
+        direcciondomiciliosocio="Direccion",
         estadosocio="Activo",
     )
+
+
+def tipo_socio_stub(idtiposocio=1):
+    return Tiposocio(
+        idtiposocio=idtiposocio,
+        nombretiposocio=f"Tipo {idtiposocio}",
+        roltiposocio=f"tipo_{idtiposocio}",
+    )
+
+
+def jugador_stub(idjugador=1, socio=None):
+    return Jugador(
+        idjugador=idjugador,
+        idsocio=socio,
+        aliasjugador=f"jugador{idjugador}",
+        correojugador=f"jugador{idjugador}@example.com",
+        fecharegistrojugador=datetime(2026, 7, 10, 10, 0),
+        saldocreditojugador=Decimal("0.00"),
+        estadocuentajugador="Activo",
+    )
+
+
+def solicitud_socio_stub(
+    idsolicitud=1,
+    jugador=None,
+    tipo_socio=None,
+    estado=SolicitudSocio.ESTADO_PENDIENTE,
+):
+    return SolicitudSocio(
+        idsolicitud=idsolicitud,
+        idjugador=jugador or jugador_stub(),
+        idtiposocio=tipo_socio or tipo_socio_stub(),
+        primernombresocio="Maria",
+        segundonombresocio="",
+        primerapellidosocio="Perez",
+        segundoapellidosocio="Lopez",
+        cisocio="0912345678",
+        fechanacimientosocio=date(1995, 5, 20),
+        telefonopersonalsocio="0999999999",
+        telefonotrabajosocio="",
+        direcciondomiciliosocio="Av. Principal",
+        direcciontrabajosocio="",
+        sexosocio="M",
+        estado=estado,
+        fechasolicitud=datetime(2026, 7, 10, 10, 0),
+    )
+
+
+class FakeQuerySet(list):
+    def all(self):
+        return self
+
+    def order_by(self, *fields):
+        return self
+
+    def select_related(self, *fields):
+        return self
+
+    def annotate(self, *args, **kwargs):
+        return self
+
+    def filter(self, *args, **kwargs):
+        return self
+
+    def exists(self):
+        return bool(self)
+
+    def count(self):
+        return len(self)
+
+    def first(self):
+        return self[0] if self else None
+
+    def values_list(self, field_name, flat=False):
+        values = []
+        for obj in self:
+            value = getattr(obj, field_name, None)
+            if value is None and field_name.endswith("_id"):
+                related = getattr(obj, field_name[:-3], None)
+                if field_name == "idprestamo_id" and hasattr(related, "idprestamo"):
+                    value = related.idprestamo
+                elif field_name == "idsocio_id" and hasattr(related, "idsocio"):
+                    value = related.idsocio
+                elif field_name == "idjugador_id" and hasattr(related, "idjugador"):
+                    value = related.idjugador
+                else:
+                    value = getattr(related, "pk", related)
+            values.append(value if flat else (value,))
+        return values
+
+    def get(self, **kwargs):
+        for obj in self:
+            if _coincide_objeto(obj, kwargs):
+                return obj
+        if self:
+            return self[0]
+        raise LookupError("Objeto no encontrado en FakeQuerySet")
+
+
+class FakeModelChoiceQuerySet(FakeQuerySet):
+    def __init__(self, model, objects):
+        self.model = model
+        super().__init__(objects)
+
+
+class LockedSolicitudQuerySet(FakeQuerySet):
+    def select_related(self, *fields):
+        raise AssertionError(
+            "No se debe usar select_related despues de select_for_update en SolicitudSocio."
+        )
+
+
+def _coincide_objeto(obj, filtros):
+    for field_name, expected in filtros.items():
+        if field_name == "pk":
+            value = getattr(obj, "pk", None)
+        else:
+            value = getattr(obj, field_name, None)
+        if str(value) != str(expected):
+            return False
+    return True
 
 
 def ahorro_stub(monto, estado="Activo", tipo="Obligatorio"):
@@ -46,6 +188,30 @@ def aporte_stub(valor=Decimal("12.50")):
         fechaplanificadada=datetime(2026, 7, 8, 10, 30),
         fechaentregareal=None,
         estadoaporte="Al Dia",
+    )
+
+
+def prestamo_stub(idsocio, idprestamo=1, saldo="40.00", estado="Aprobado"):
+    return SimpleNamespace(
+        idprestamo=idprestamo,
+        idsocio=idsocio,
+        montoprestamosolicitado=Decimal("100.00"),
+        saldopendiente=Decimal(saldo),
+        fechasolicitud=date(2026, 7, 1),
+        fechavencimiento=date(2026, 12, 31),
+        estadoprestamo=estado,
+    )
+
+
+def pago_prestamo_stub(prestamo, monto="20.00"):
+    return SimpleNamespace(
+        idpagoprestamo=1,
+        idprestamo=prestamo,
+        idmetodopago="Transferencia",
+        fechapago=datetime(2026, 7, 10, 9, 0),
+        montopagado=Decimal(monto),
+        numeroreferencia="REF-001",
+        observacion="Pago registrado",
     )
 
 
@@ -181,3 +347,1280 @@ class SocioDetalleAhorrosTests(SimpleTestCase):
         self.assertIn("$12,50", html)
         self.assertIn("<th>Semana</th>", html)
         self.assertIn("<th>Regalo</th>", html)
+
+
+class SolicitudSocioModelMetadataTests(SimpleTestCase):
+    def test_modelo_solicitud_socio_no_es_gestionado(self):
+        self.assertFalse(SolicitudSocio._meta.managed)
+        self.assertEqual(SolicitudSocio._meta.db_table, "solicitud_socio")
+
+    def test_primary_key_es_autofield(self):
+        pk = SolicitudSocio._meta.pk
+
+        self.assertEqual(pk.name, "idsolicitud")
+        self.assertEqual(pk.column, "idsolicitud")
+        self.assertTrue(pk.primary_key)
+
+    def test_estados_aprobados(self):
+        self.assertEqual(
+            tuple(SolicitudSocio._meta.get_field("estado").choices),
+            (
+                ("Pendiente", "Pendiente"),
+                ("Aprobada", "Aprobada"),
+                ("Rechazada", "Rechazada"),
+            ),
+        )
+
+
+class SolicitudSocioFormTests(SimpleTestCase):
+    def _tipo_queryset(self):
+        return FakeModelChoiceQuerySet(Tiposocio, [tipo_socio_stub()])
+
+    def test_formulario_rechaza_campos_obligatorios_vacios(self):
+        form = SolicitudSocioForm(data={}, tipo_socio_queryset=self._tipo_queryset())
+
+        self.assertFalse(form.is_valid())
+        for field_name in (
+            "primernombresocio",
+            "primerapellidosocio",
+            "segundoapellidosocio",
+            "cisocio",
+            "fechanacimientosocio",
+            "direcciondomiciliosocio",
+        ):
+            self.assertIn(field_name, form.errors)
+
+    def test_formulario_limpia_textos_importantes(self):
+        form = SolicitudSocioForm(
+            data={
+                "idtiposocio": "",
+                "primernombresocio": "  Maria ",
+                "segundonombresocio": "",
+                "primerapellidosocio": " Perez ",
+                "segundoapellidosocio": " Lopez ",
+                "cisocio": " 0912345678 ",
+                "fechanacimientosocio": "1995-05-20",
+                "direcciondomiciliosocio": " Av. Principal ",
+                "sexosocio": "",
+                "observacion": "  revisar datos ",
+            },
+            tipo_socio_queryset=self._tipo_queryset(),
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["primernombresocio"], "Maria")
+        self.assertEqual(form.cleaned_data["cisocio"], "0912345678")
+        self.assertEqual(form.cleaned_data["observacion"], "revisar datos")
+
+    def test_formulario_rechazo_exige_motivo(self):
+        form = RechazarSolicitudSocioForm(data={"motivorechazo": "  "})
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("motivorechazo", form.errors)
+
+    def test_formularios_administrativos_respetan_limite_de_255(self):
+        observacion_valida = AprobarSolicitudSocioForm(
+            data={"observacion": "a" * 255},
+            tipo_socio_queryset=self._tipo_queryset(),
+        )
+        observacion_excedida = AprobarSolicitudSocioForm(
+            data={"observacion": "a" * 256},
+            tipo_socio_queryset=self._tipo_queryset(),
+        )
+        rechazo_valido = RechazarSolicitudSocioForm(
+            data={"motivorechazo": "r" * 255}
+        )
+        rechazo_excedido = RechazarSolicitudSocioForm(
+            data={"motivorechazo": "r" * 256}
+        )
+
+        self.assertTrue(observacion_valida.is_valid(), observacion_valida.errors)
+        self.assertFalse(observacion_excedida.is_valid())
+        self.assertIn("observacion", observacion_excedida.errors)
+        self.assertTrue(rechazo_valido.is_valid(), rechazo_valido.errors)
+        self.assertFalse(rechazo_excedido.is_valid())
+        self.assertIn("motivorechazo", rechazo_excedido.errors)
+
+
+class SolicitudSocioServicesTests(SimpleTestCase):
+    def _datos_solicitud(self, **overrides):
+        datos = {
+            "idtiposocio": tipo_socio_stub(),
+            "primernombresocio": " Maria ",
+            "segundonombresocio": "",
+            "primerapellidosocio": "Perez",
+            "segundoapellidosocio": "Lopez",
+            "cisocio": "0912345678",
+            "fechanacimientosocio": date(1995, 5, 20),
+            "telefonopersonalsocio": "0999999999",
+            "telefonotrabajosocio": "",
+            "direcciondomiciliosocio": "Av. Principal",
+            "direcciontrabajosocio": "",
+            "sexosocio": "M",
+            "observacion": "",
+        }
+        datos.update(overrides)
+        return datos
+
+    def test_jugador_no_socio_puede_crear_solicitud(self):
+        jugador = jugador_stub()
+        solicitud = solicitud_socio_stub(jugador=jugador)
+
+        with patch("apps.socios.services.transaction.atomic", return_value=nullcontext()), patch(
+            "apps.socios.services.Jugador.objects.select_for_update",
+            return_value=FakeQuerySet([jugador]),
+        ), patch(
+            "apps.socios.services.SolicitudSocio.objects.filter",
+            return_value=FakeQuerySet(),
+        ), patch(
+            "apps.socios.services.SolicitudSocio.objects.create",
+            return_value=solicitud,
+        ) as create_mock:
+            resultado = socios_services.crear_solicitud_socio(
+                jugador,
+                self._datos_solicitud(),
+            )
+
+        self.assertIs(resultado, solicitud)
+        self.assertEqual(create_mock.call_args.kwargs["estado"], "Pendiente")
+        self.assertIs(create_mock.call_args.kwargs["idjugador"], jugador)
+        self.assertEqual(create_mock.call_args.kwargs["cisocio"], "0912345678")
+
+    def test_jugador_socio_no_puede_crear_solicitud(self):
+        jugador = jugador_stub(socio=socio_stub())
+
+        with patch("apps.socios.services.transaction.atomic", return_value=nullcontext()), patch(
+            "apps.socios.services.Jugador.objects.select_for_update",
+            return_value=FakeQuerySet([jugador]),
+        ), patch("apps.socios.services.SolicitudSocio.objects.create") as create_mock:
+            with self.assertRaises(ValidationError) as context:
+                socios_services.crear_solicitud_socio(
+                    jugador,
+                    self._datos_solicitud(),
+                )
+
+        self.assertIn("El jugador ya está vinculado a un socio.", str(context.exception))
+        create_mock.assert_not_called()
+
+    def test_no_permite_duplicar_solicitud_pendiente(self):
+        jugador = jugador_stub()
+        pendiente = solicitud_socio_stub(jugador=jugador)
+
+        with patch("apps.socios.services.transaction.atomic", return_value=nullcontext()), patch(
+            "apps.socios.services.Jugador.objects.select_for_update",
+            return_value=FakeQuerySet([jugador]),
+        ), patch(
+            "apps.socios.services.SolicitudSocio.objects.filter",
+            return_value=FakeQuerySet([pendiente]),
+        ), patch("apps.socios.services.SolicitudSocio.objects.create") as create_mock:
+            with self.assertRaises(ValidationError) as context:
+                socios_services.crear_solicitud_socio(
+                    jugador,
+                    self._datos_solicitud(),
+                )
+
+        self.assertIn("Ya existe una solicitud pendiente", str(context.exception))
+        create_mock.assert_not_called()
+
+    def test_dos_jugadores_no_pueden_solicitar_con_la_misma_cedula(self):
+        jugador = jugador_stub(idjugador=2)
+        pendiente = solicitud_socio_stub(jugador=jugador_stub(idjugador=1))
+
+        with patch("apps.socios.services.transaction.atomic", return_value=nullcontext()), patch(
+            "apps.socios.services.Jugador.objects.select_for_update",
+            return_value=FakeQuerySet([jugador]),
+        ), patch(
+            "apps.socios.services.SolicitudSocio.objects.filter",
+            side_effect=[FakeQuerySet(), FakeQuerySet([pendiente])],
+        ), patch("apps.socios.services.SolicitudSocio.objects.create") as create_mock:
+            with self.assertRaisesMessage(
+                ValidationError,
+                "Ya existe una solicitud pendiente con esta cédula.",
+            ):
+                socios_services.crear_solicitud_socio(
+                    jugador,
+                    self._datos_solicitud(cisocio=" 0912345678 "),
+                )
+
+        create_mock.assert_not_called()
+
+    def test_integrity_error_se_convierte_en_error_controlado(self):
+        jugador = jugador_stub(idjugador=2)
+        pendiente = solicitud_socio_stub(jugador=jugador_stub(idjugador=1))
+
+        with patch("apps.socios.services.transaction.atomic", return_value=nullcontext()), patch(
+            "apps.socios.services.Jugador.objects.select_for_update",
+            return_value=FakeQuerySet([jugador]),
+        ), patch(
+            "apps.socios.services.SolicitudSocio.objects.filter",
+            side_effect=[FakeQuerySet(), FakeQuerySet(), FakeQuerySet([pendiente])],
+        ), patch(
+            "apps.socios.services.SolicitudSocio.objects.create",
+            side_effect=IntegrityError("índice parcial"),
+        ):
+            with self.assertRaisesMessage(
+                ValidationError,
+                "Ya existe una solicitud pendiente con esta cédula.",
+            ):
+                socios_services.crear_solicitud_socio(
+                    jugador,
+                    self._datos_solicitud(),
+                )
+
+    def test_admin_aprueba_y_crea_socio_si_cedula_no_existe(self):
+        admin = User(username="admin", is_staff=True)
+        jugador = jugador_stub()
+        solicitud = solicitud_socio_stub(jugador=jugador)
+
+        with self._patch_aprobacion(solicitud, jugador, socios=[]) as mocks:
+            resultado, socio = socios_services.aprobar_solicitud_socio(
+                solicitud.idsolicitud,
+                admin,
+            )
+
+        self.assertIs(resultado, solicitud)
+        self.assertEqual(socio.idsocio, 99)
+        self.assertIs(jugador.idsocio, socio)
+        self.assertEqual(solicitud.estado, "Aprobada")
+        self.assertIs(solicitud.idusuarioadminrespuesta, admin)
+        self.assertIs(solicitud.idsocioresultado, socio)
+        mocks["assign_pk"].assert_called_once_with(socio)
+        mocks["socio_save"].assert_called_once()
+        mocks["jugador_save"].assert_called_once()
+        mocks["solicitud_save"].assert_called_once()
+
+    def test_admin_aprueba_y_vincula_socio_existente(self):
+        admin = User(username="admin", is_staff=True)
+        jugador = jugador_stub()
+        solicitud = solicitud_socio_stub(jugador=jugador)
+        socio_existente = socio_stub(idsocio=50)
+        socio_existente.cisocio = solicitud.cisocio
+
+        with self._patch_aprobacion(solicitud, jugador, socios=[socio_existente]) as mocks:
+            _resultado, socio = socios_services.aprobar_solicitud_socio(
+                solicitud.idsolicitud,
+                admin,
+            )
+
+        self.assertIs(socio, socio_existente)
+        self.assertIs(jugador.idsocio, socio_existente)
+        self.assertEqual(solicitud.estado, "Aprobada")
+        mocks["assign_pk"].assert_not_called()
+        mocks["socio_save"].assert_not_called()
+        mocks["jugador_save"].assert_called_once()
+
+    def test_no_se_puede_aprobar_solicitud_ya_aprobada(self):
+        admin = User(username="admin", is_staff=True)
+        jugador = jugador_stub()
+        solicitud = solicitud_socio_stub(
+            jugador=jugador,
+            estado=SolicitudSocio.ESTADO_APROBADA,
+        )
+
+        with self._patch_aprobacion(solicitud, jugador, socios=[]) as mocks:
+            with self.assertRaises(ValidationError) as context:
+                socios_services.aprobar_solicitud_socio(
+                    solicitud.idsolicitud,
+                    admin,
+                )
+
+        self.assertIn("La solicitud ya fue resuelta.", str(context.exception))
+        mocks["socio_filter"].assert_not_called()
+        mocks["jugador_save"].assert_not_called()
+
+    def test_no_se_puede_aprobar_si_jugador_ya_fue_vinculado(self):
+        admin = User(username="admin", is_staff=True)
+        jugador_solicitud = jugador_stub()
+        jugador_bloqueado = jugador_stub(socio=socio_stub())
+        solicitud = solicitud_socio_stub(jugador=jugador_solicitud)
+
+        with self._patch_aprobacion(solicitud, jugador_bloqueado, socios=[]) as mocks:
+            with self.assertRaises(ValidationError) as context:
+                socios_services.aprobar_solicitud_socio(
+                    solicitud.idsolicitud,
+                    admin,
+                )
+
+        self.assertIn("jugador ya fue vinculado", str(context.exception))
+        mocks["socio_filter"].assert_not_called()
+        mocks["jugador_save"].assert_not_called()
+
+    def test_rechazar_deja_solicitud_rechazada_sin_modificar_jugador(self):
+        admin = User(username="admin", is_staff=True)
+        jugador = jugador_stub()
+        solicitud = solicitud_socio_stub(jugador=jugador)
+
+        with patch("apps.socios.services.transaction.atomic", return_value=nullcontext()), patch(
+            "apps.socios.services.SolicitudSocio.objects.select_for_update",
+            return_value=FakeQuerySet([solicitud]),
+        ), patch.object(SolicitudSocio, "save", autospec=True) as solicitud_save, patch.object(
+            Jugador,
+            "save",
+            autospec=True,
+        ) as jugador_save, patch.object(Socio, "save", autospec=True) as socio_save:
+            resultado = socios_services.rechazar_solicitud_socio(
+                solicitud.idsolicitud,
+                admin,
+                "No cumple requisitos",
+            )
+
+        self.assertIs(resultado, solicitud)
+        self.assertEqual(solicitud.estado, "Rechazada")
+        self.assertEqual(solicitud.motivorechazo, "No cumple requisitos")
+        self.assertIs(solicitud.idusuarioadminrespuesta, admin)
+        self.assertIsNone(jugador.idsocio_id)
+        solicitud_save.assert_called_once()
+        jugador_save.assert_not_called()
+        socio_save.assert_not_called()
+
+    def test_decisiones_preservan_observacion_original_del_aspirante(self):
+        admin = User(username="admin", is_staff=True)
+        jugador = jugador_stub()
+        solicitud_aprobada = solicitud_socio_stub(jugador=jugador)
+        solicitud_aprobada.observacion = "Observación original"
+
+        with self._patch_aprobacion(solicitud_aprobada, jugador, socios=[]):
+            socios_services.aprobar_solicitud_socio(
+                solicitud_aprobada.idsolicitud,
+                admin,
+                {"observacion": "Respuesta administrativa"},
+            )
+
+        solicitud_rechazada = solicitud_socio_stub(jugador=jugador)
+        solicitud_rechazada.observacion = "Observación original"
+        with patch("apps.socios.services.transaction.atomic", return_value=nullcontext()), patch(
+            "apps.socios.services.SolicitudSocio.objects.select_for_update",
+            return_value=FakeQuerySet([solicitud_rechazada]),
+        ), patch.object(SolicitudSocio, "save", autospec=True):
+            socios_services.rechazar_solicitud_socio(
+                solicitud_rechazada.idsolicitud,
+                admin,
+                "Motivo administrativo",
+            )
+
+        self.assertEqual(solicitud_aprobada.observacion, "Observación original")
+        self.assertEqual(solicitud_rechazada.observacion, "Observación original")
+        self.assertEqual(solicitud_rechazada.motivorechazo, "Motivo administrativo")
+
+    def test_no_se_puede_rechazar_solicitud_ya_aprobada(self):
+        admin = User(username="admin", is_staff=True)
+        solicitud = solicitud_socio_stub(estado=SolicitudSocio.ESTADO_APROBADA)
+
+        with patch("apps.socios.services.transaction.atomic", return_value=nullcontext()), patch(
+            "apps.socios.services.SolicitudSocio.objects.select_for_update",
+            return_value=FakeQuerySet([solicitud]),
+        ), patch.object(SolicitudSocio, "save", autospec=True) as solicitud_save:
+            with self.assertRaises(ValidationError) as context:
+                socios_services.rechazar_solicitud_socio(
+                    solicitud.idsolicitud,
+                    admin,
+                    "No cumple requisitos",
+                )
+
+        self.assertIn("La solicitud ya fue resuelta.", str(context.exception))
+        solicitud_save.assert_not_called()
+
+    def test_rechazar_exige_motivo(self):
+        admin = User(username="admin", is_staff=True)
+
+        with self.assertRaises(ValidationError) as context:
+            socios_services.rechazar_solicitud_socio(1, admin, "  ")
+
+        self.assertIn("Debe ingresar un motivo de rechazo.", str(context.exception))
+
+    def _patch_aprobacion(self, solicitud, jugador_bloqueado, socios):
+        patches = [
+            patch("apps.socios.services.transaction.atomic", return_value=nullcontext()),
+            patch(
+                "apps.socios.services.SolicitudSocio.objects.select_for_update",
+                return_value=LockedSolicitudQuerySet([solicitud]),
+            ),
+            patch(
+                "apps.socios.services.Jugador.objects.select_for_update",
+                return_value=FakeQuerySet([jugador_bloqueado]),
+            ),
+            patch(
+                "apps.socios.services.Socio.objects.filter",
+                return_value=FakeQuerySet(socios),
+            ),
+            patch(
+                "apps.socios.services.assign_next_integer_pk",
+                side_effect=lambda socio: setattr(socio, "idsocio", 99) or socio,
+            ),
+            patch.object(Socio, "save", autospec=True),
+            patch.object(Jugador, "save", autospec=True),
+            patch.object(SolicitudSocio, "save", autospec=True),
+        ]
+        return _PatchGroup(
+            patches,
+            (
+                "atomic",
+                "solicitud_select",
+                "jugador_select",
+                "socio_filter",
+                "assign_pk",
+                "socio_save",
+                "jugador_save",
+                "solicitud_save",
+            ),
+        )
+
+
+class _PatchGroup:
+    def __init__(self, patches, names):
+        self.patches = patches
+        self.names = names
+        self.mocks = {}
+
+    def __enter__(self):
+        for name, patcher in zip(self.names, self.patches):
+            self.mocks[name] = patcher.__enter__()
+        return self.mocks
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        for patcher in reversed(self.patches):
+            patcher.__exit__(exc_type, exc_value, traceback)
+
+
+class SolicitudSocioWebTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.jugador = jugador_stub()
+        self.admin = User(username="admin", is_staff=True)
+        self.admin.pk = 1
+
+    def _request(self, method, path, user=None, data=None):
+        request_method = getattr(self.factory, method.lower())
+        request = request_method(path, data or {})
+        request.user = AnonymousUser() if user is None else user
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def _usuario_jugador(self):
+        user = User(username=self.jugador.aliasjugador, is_staff=False)
+        user.pk = 10
+        return user
+
+    def test_jugador_no_socio_puede_acceder_a_mi_solicitud(self):
+        contexto = {}
+
+        def render_spy(_request, template, context):
+            contexto.update(context)
+            return HttpResponse(template)
+
+        with patch(
+            "apps.jugadores.services.obtener_jugador_autenticado",
+            return_value=self.jugador,
+        ), patch(
+            "apps.socios.views._ultima_solicitud_jugador",
+            return_value=None,
+        ), patch(
+            "apps.socios.views._jugador_tiene_solicitud_pendiente",
+            return_value=False,
+        ), patch("apps.socios.views.render", side_effect=render_spy):
+            response = socios_views.mi_solicitud_socio(
+                self._request(
+                    "get",
+                    reverse("socios:mi_solicitud_socio"),
+                    self._usuario_jugador(),
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(contexto["jugador"], self.jugador)
+        self.assertIsNone(contexto["solicitud"])
+
+    def test_jugador_no_socio_puede_crear_solicitud_por_post(self):
+        solicitud = solicitud_socio_stub(jugador=self.jugador)
+
+        with patch(
+            "apps.jugadores.services.obtener_jugador_autenticado",
+            return_value=self.jugador,
+        ), patch(
+            "apps.socios.views._jugador_tiene_solicitud_pendiente",
+            return_value=False,
+        ), patch(
+            "apps.socios.views.SolicitudSocioForm"
+        ) as form_class, patch(
+            "apps.socios.views.crear_solicitud_socio",
+            return_value=solicitud,
+        ) as crear_mock:
+            form = form_class.return_value
+            form.is_valid.return_value = True
+            form.cleaned_data = {"cisocio": solicitud.cisocio}
+
+            response = socios_views.solicitud_socio_nueva(
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_nueva"),
+                    self._usuario_jugador(),
+                    {"cisocio": solicitud.cisocio},
+                )
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("socios:mi_solicitud_socio"))
+        crear_mock.assert_called_once_with(self.jugador, form.cleaned_data)
+
+    def test_jugador_socio_no_puede_crear_solicitud(self):
+        socio = socio_stub()
+        jugador = jugador_stub(socio=socio)
+
+        with patch(
+            "apps.jugadores.services.obtener_jugador_autenticado",
+            return_value=jugador,
+        ), patch("apps.socios.views.crear_solicitud_socio") as crear_mock:
+            response = socios_views.solicitud_socio_nueva(
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_nueva"),
+                    self._usuario_jugador(),
+                    {},
+                )
+            )
+
+        self.assertEqual(response.status_code, 302)
+        crear_mock.assert_not_called()
+
+    def test_jugador_no_puede_aprobar_solicitud(self):
+        with self.assertRaises(Exception) as context:
+            socios_views.solicitud_socio_aprobar(
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_aprobar", args=[1]),
+                    self._usuario_jugador(),
+                    {},
+                ),
+                1,
+            )
+
+        self.assertEqual(context.exception.__class__.__name__, "PermissionDenied")
+
+    def test_admin_puede_listar_solicitudes(self):
+        solicitud = solicitud_socio_stub()
+        contexto = {}
+
+        def render_spy(_request, template, context):
+            contexto.update(context)
+            return HttpResponse(template)
+
+        with patch(
+            "apps.socios.views.SolicitudSocio.objects.select_related",
+            return_value=FakeQuerySet([solicitud]),
+        ), patch("apps.socios.views.paginate", return_value=[solicitud]), patch(
+            "apps.socios.views.render",
+            side_effect=render_spy,
+        ):
+            response = socios_views.solicitudes_socio_lista(
+                self._request(
+                    "get",
+                    reverse("socios:solicitudes_socio_lista"),
+                    self.admin,
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(contexto["total"], 1)
+
+    def test_admin_puede_ver_detalle(self):
+        solicitud = solicitud_socio_stub()
+        contexto = {}
+
+        def render_spy(_request, template, context):
+            contexto.update(context)
+            return HttpResponse(template)
+
+        with patch(
+            "apps.socios.views._obtener_solicitud_admin",
+            return_value=solicitud,
+        ), patch(
+            "apps.socios.views._contexto_solicitud_admin",
+            return_value={"solicitud": solicitud},
+        ), patch("apps.socios.views.render", side_effect=render_spy):
+            response = socios_views.solicitud_socio_detalle(
+                self._request(
+                    "get",
+                    reverse("socios:solicitud_socio_detalle", args=[1]),
+                    self.admin,
+                ),
+                1,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(contexto["solicitud"], solicitud)
+
+    def test_admin_puede_aprobar_por_post(self):
+        solicitud = solicitud_socio_stub()
+        socio = socio_stub()
+
+        with patch(
+            "apps.socios.views._obtener_solicitud_admin",
+            return_value=solicitud,
+        ), patch("apps.socios.views.AprobarSolicitudSocioForm") as form_class, patch(
+            "apps.socios.views.aprobar_solicitud_socio",
+            return_value=(solicitud, socio),
+        ) as aprobar_mock:
+            form = form_class.return_value
+            form.is_valid.return_value = True
+            form.cleaned_data = {"observacion": "Aprobada"}
+
+            response = socios_views.solicitud_socio_aprobar(
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_aprobar", args=[1]),
+                    self.admin,
+                    {"observacion": "Aprobada"},
+                ),
+                1,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        aprobar_mock.assert_called_once_with(
+            solicitud.idsolicitud,
+            self.admin,
+            form.cleaned_data,
+        )
+
+    def test_admin_puede_rechazar_por_post(self):
+        solicitud = solicitud_socio_stub()
+
+        with patch(
+            "apps.socios.views._obtener_solicitud_admin",
+            return_value=solicitud,
+        ), patch("apps.socios.views.RechazarSolicitudSocioForm") as form_class, patch(
+            "apps.socios.views.rechazar_solicitud_socio",
+            return_value=solicitud,
+        ) as rechazar_mock:
+            form = form_class.return_value
+            form.is_valid.return_value = True
+            form.cleaned_data = {"motivorechazo": "No cumple requisitos"}
+
+            response = socios_views.solicitud_socio_rechazar(
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_rechazar", args=[1]),
+                    self.admin,
+                    {"motivorechazo": "No cumple requisitos"},
+                ),
+                1,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        rechazar_mock.assert_called_once_with(
+            solicitud.idsolicitud,
+            self.admin,
+            "No cumple requisitos",
+        )
+
+    def test_get_aprobar_y_rechazar_no_modifica_estado(self):
+        solicitudes = (
+            (
+                socios_views.solicitud_socio_aprobar,
+                reverse("socios:solicitud_socio_aprobar", args=[1]),
+            ),
+            (
+                socios_views.solicitud_socio_rechazar,
+                reverse("socios:solicitud_socio_rechazar", args=[1]),
+            ),
+        )
+
+        for view, path in solicitudes:
+            with self.subTest(path=path), patch(
+                "apps.socios.views.aprobar_solicitud_socio"
+            ) as aprobar_mock, patch(
+                "apps.socios.views.rechazar_solicitud_socio"
+            ) as rechazar_mock:
+                response = view(self._request("get", path, self.admin), 1)
+
+                self.assertEqual(response.status_code, 405)
+                aprobar_mock.assert_not_called()
+                rechazar_mock.assert_not_called()
+
+    def test_usuario_no_autorizado_no_accede_a_vistas_admin(self):
+        usuario = User(username="normal", is_staff=False)
+        usuario.pk = 2
+        vistas = (
+            (
+                socios_views.solicitudes_socio_lista,
+                self._request(
+                    "get",
+                    reverse("socios:solicitudes_socio_lista"),
+                    usuario,
+                ),
+                (),
+            ),
+            (
+                socios_views.solicitud_socio_detalle,
+                self._request(
+                    "get",
+                    reverse("socios:solicitud_socio_detalle", args=[1]),
+                    usuario,
+                ),
+                (1,),
+            ),
+            (
+                socios_views.solicitud_socio_aprobar,
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_aprobar", args=[1]),
+                    usuario,
+                    {},
+                ),
+                (1,),
+            ),
+            (
+                socios_views.solicitud_socio_rechazar,
+                self._request(
+                    "post",
+                    reverse("socios:solicitud_socio_rechazar", args=[1]),
+                    usuario,
+                    {},
+                ),
+                (1,),
+            ),
+        )
+
+        for view, request, args in vistas:
+            with self.subTest(view=view.__name__):
+                with self.assertRaises(Exception) as context:
+                    view(request, *args)
+
+                self.assertEqual(context.exception.__class__.__name__, "PermissionDenied")
+
+
+class PortalSocioWebTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.socio = socio_stub(idsocio=10)
+        self.otro_socio = socio_stub(idsocio=20)
+        self.jugador = jugador_stub(idjugador=10, socio=self.socio)
+        self.usuario = User(username=self.jugador.aliasjugador, is_staff=False)
+        self.usuario.pk = 10
+
+    def _request(self, user=None):
+        request = self.factory.get(reverse("socios:portal_socio"))
+        request.user = AnonymousUser() if user is None else user
+        request.session = {}
+        return request
+
+    def _render_spy(self, contexto):
+        def render(_request, template, context):
+            contexto.update(context)
+            return HttpResponse(template)
+
+        return render
+
+    def _patch_jugador_autenticado(self, jugador=None):
+        return patch(
+            "apps.jugadores.services.obtener_jugador_autenticado",
+            return_value=jugador or self.jugador,
+        )
+
+    def _patch_datos_portal(
+        self,
+        *,
+        ahorros=None,
+        aportes=None,
+        prestamos=None,
+        pagos=None,
+        solicitudes_pendientes=None,
+    ):
+        ahorros = list(ahorros or [])
+        aportes = list(aportes or [])
+        prestamos = list(prestamos or [])
+        pagos = list(pagos or [])
+        solicitudes_pendientes = list(solicitudes_pendientes or [])
+
+        return _PatchGroup(
+            [
+                patch(
+                    "apps.socios.views.Ahorro.objects.filter",
+                    side_effect=lambda **kwargs: FakeQuerySet(
+                        [
+                            ahorro
+                            for ahorro in ahorros
+                            if getattr(ahorro, "idsocio", None) is kwargs.get("idsocio")
+                        ]
+                    ),
+                ),
+                patch(
+                    "apps.socios.views.Aportesemanal.objects.filter",
+                    side_effect=lambda **kwargs: FakeQuerySet(
+                        [
+                            aporte
+                            for aporte in aportes
+                            if getattr(aporte, "idsocio", None) is kwargs.get("idsocio")
+                        ]
+                    ),
+                ),
+                patch(
+                    "apps.socios.views.Prestamo.objects.filter",
+                    side_effect=lambda **kwargs: FakeQuerySet(
+                        [
+                            prestamo
+                            for prestamo in prestamos
+                            if getattr(prestamo, "idsocio", None) is kwargs.get("idsocio")
+                        ]
+                    ),
+                ),
+                patch(
+                    "apps.socios.views.PagoPrestamo.objects.filter",
+                    side_effect=lambda **kwargs: FakeQuerySet(
+                        [
+                            pago
+                            for pago in pagos
+                            if getattr(pago.idprestamo, "idsocio", None)
+                            is kwargs.get("idprestamo__idsocio")
+                        ]
+                    ),
+                ),
+                patch(
+                    "apps.socios.views.SolicitudPagoPrestamo.objects.filter",
+                    side_effect=lambda **kwargs: FakeQuerySet(
+                        [
+                            solicitud
+                            for solicitud in solicitudes_pendientes
+                            if getattr(solicitud, "idsocio", None) is kwargs.get("idsocio")
+                            and getattr(solicitud, "estado", None)
+                            == kwargs.get("estado")
+                        ]
+                    ),
+                ),
+            ],
+            (
+                "ahorros_filter",
+                "aportes_filter",
+                "prestamos_filter",
+                "pagos_filter",
+                "solicitudes_filter",
+            ),
+        )
+
+    def _abrir_portal(self, jugador=None, **datos):
+        contexto = {}
+        with self._patch_jugador_autenticado(jugador), self._patch_datos_portal(
+            **datos
+        ) as mocks, patch("apps.socios.views.render", side_effect=self._render_spy(contexto)):
+            response = socios_views.portal_socio(self._request(self.usuario))
+
+        return response, contexto, mocks
+
+    def test_jugador_con_socio_puede_entrar_a_portal_socio(self):
+        response, contexto, _mocks = self._abrir_portal()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(contexto["jugador"], self.jugador)
+        self.assertIs(contexto["socio"], self.socio)
+
+    def test_jugador_sin_socio_entra_y_recibe_contexto_para_solicitar(self):
+        jugador = jugador_stub(idjugador=11, socio=None)
+        contexto = {}
+
+        with self._patch_jugador_autenticado(jugador), patch(
+            "apps.socios.views.render",
+            side_effect=self._render_spy(contexto),
+        ):
+            response = socios_views.portal_socio(self._request(self.usuario))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(contexto["socio"])
+        self.assertIs(contexto["jugador"], jugador)
+
+    def test_usuario_no_autenticado_no_accede(self):
+        response = socios_views.portal_socio(self._request())
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response["Location"])
+
+    def test_usuario_que_no_es_jugador_no_accede(self):
+        usuario = User(username="normal", is_staff=False)
+        usuario.pk = 99
+
+        with patch("apps.jugadores.services.usuario_es_jugador", return_value=False):
+            with self.assertRaises(Exception) as context:
+                socios_views.portal_socio(self._request(usuario))
+
+        self.assertEqual(context.exception.__class__.__name__, "PermissionDenied")
+
+    def test_portal_no_acepta_id_de_socio_por_url(self):
+        with self.assertRaises(Resolver404):
+            resolve("/socios/mi-panel/10/")
+
+    def test_portal_muestra_prestamos_del_socio_vinculado(self):
+        prestamo = prestamo_stub(self.socio, idprestamo=1)
+        otro_prestamo = prestamo_stub(self.otro_socio, idprestamo=2)
+
+        _response, contexto, _mocks = self._abrir_portal(
+            prestamos=[prestamo, otro_prestamo],
+        )
+
+        self.assertEqual(contexto["prestamos"], [prestamo])
+        self.assertEqual(contexto["prestamos_activos"], [prestamo])
+        self.assertEqual(contexto["saldo_pendiente_total"], Decimal("40.00"))
+
+    def test_portal_muestra_ahorros_del_socio_vinculado(self):
+        ahorro = ahorro_stub("120.00", estado="Activo")
+        otro_ahorro = ahorro_stub("999.00", estado="Activo")
+        ahorro.idsocio = self.socio
+        otro_ahorro.idsocio = self.otro_socio
+
+        _response, contexto, _mocks = self._abrir_portal(
+            ahorros=[ahorro, otro_ahorro],
+        )
+
+        self.assertEqual(contexto["ahorros"], [ahorro])
+        self.assertEqual(contexto["total_ahorro_activo"], Decimal("120.00"))
+
+    def test_portal_muestra_aportes_del_socio_vinculado(self):
+        aporte = aporte_stub(Decimal("12.50"))
+        otro_aporte = aporte_stub(Decimal("99.00"))
+        aporte.idsocio = self.socio
+        otro_aporte.idsocio = self.otro_socio
+
+        _response, contexto, _mocks = self._abrir_portal(
+            aportes=[aporte, otro_aporte],
+        )
+
+        self.assertEqual(contexto["aportes"], [aporte])
+        self.assertEqual(contexto["aportes_registrados"], 1)
+
+    def test_portal_muestra_pagos_de_prestamos_del_socio_vinculado(self):
+        prestamo = prestamo_stub(self.socio, idprestamo=1)
+        otro_prestamo = prestamo_stub(self.otro_socio, idprestamo=2)
+        pago = pago_prestamo_stub(prestamo)
+        otro_pago = pago_prestamo_stub(otro_prestamo, monto="999.00")
+
+        _response, contexto, _mocks = self._abrir_portal(
+            prestamos=[prestamo, otro_prestamo],
+            pagos=[pago, otro_pago],
+        )
+
+        self.assertEqual(contexto["pagos_prestamo"], [pago])
+
+    def test_portal_no_muestra_datos_de_otro_socio(self):
+        ahorro = ahorro_stub("120.00", estado="Activo")
+        otro_ahorro = ahorro_stub("999.00", estado="Activo")
+        ahorro.idsocio = self.socio
+        otro_ahorro.idsocio = self.otro_socio
+        prestamo = prestamo_stub(self.socio, idprestamo=1)
+        otro_prestamo = prestamo_stub(self.otro_socio, idprestamo=2)
+        pago = pago_prestamo_stub(prestamo)
+        otro_pago = pago_prestamo_stub(otro_prestamo, monto="999.00")
+
+        _response, contexto, mocks = self._abrir_portal(
+            ahorros=[ahorro, otro_ahorro],
+            prestamos=[prestamo, otro_prestamo],
+            pagos=[pago, otro_pago],
+        )
+
+        self.assertNotIn(otro_ahorro, contexto["ahorros"])
+        self.assertNotIn(otro_prestamo, contexto["prestamos"])
+        self.assertNotIn(otro_pago, contexto["pagos_prestamo"])
+        mocks["ahorros_filter"].assert_called_once_with(idsocio=self.socio)
+        mocks["prestamos_filter"].assert_called_once_with(idsocio=self.socio)
+        mocks["pagos_filter"].assert_called_once_with(idprestamo__idsocio=self.socio)
+
+    def test_portal_marca_prestamo_apto_para_solicitar_pago(self):
+        prestamo = prestamo_stub(self.socio, idprestamo=1, saldo="40.00")
+
+        _response, contexto, _mocks = self._abrir_portal(prestamos=[prestamo])
+
+        self.assertTrue(contexto["prestamos"][0].puede_solicitar_pago)
+
+    def test_portal_oculta_solicitar_pago_si_hay_solicitud_pendiente(self):
+        prestamo = prestamo_stub(self.socio, idprestamo=1, saldo="40.00")
+        solicitud = SimpleNamespace(
+            idsocio=self.socio,
+            idprestamo=prestamo,
+            estado=SolicitudPagoPrestamo.ESTADO_PENDIENTE,
+        )
+
+        _response, contexto, _mocks = self._abrir_portal(
+            prestamos=[prestamo],
+            solicitudes_pendientes=[solicitud],
+        )
+
+        self.assertFalse(contexto["prestamos"][0].puede_solicitar_pago)
+
+
+class SolicitudPagoPrestamoSocioWebTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.socio = socio_stub(idsocio=10)
+        self.otro_socio = socio_stub(idsocio=20)
+        self.jugador = jugador_stub(idjugador=10, socio=self.socio)
+        self.usuario = User(username=self.jugador.aliasjugador, is_staff=False)
+        self.usuario.pk = 10
+        self.prestamo = prestamo_stub(self.socio, idprestamo=7, saldo="80.00")
+
+    def _request(self, method, path, data=None, user=None):
+        request_method = getattr(self.factory, method.lower())
+        request = request_method(path, data or {})
+        request.user = self.usuario if user is None else user
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def _patch_jugador_autenticado(self, jugador=None):
+        return patch(
+            "apps.jugadores.services.obtener_jugador_autenticado",
+            return_value=jugador or self.jugador,
+        )
+
+    def _render_spy(self, contexto):
+        def render(_request, template, context, *args, **kwargs):
+            contexto.update(context)
+            return HttpResponse(template, status=kwargs.get("status", 200))
+
+        return render
+
+    def _datos_post(self, **overrides):
+        datos = {
+            "monto": "25.00",
+            "idmetodopago": "",
+            "referencia": "REF-SOCIO-1",
+            "rutacomprobante": "",
+            "observacionsocio": "Pago desde portal",
+        }
+        datos.update(overrides)
+        return datos
+
+    def test_jugador_con_socio_accede_a_formulario_de_solicitud_pago(self):
+        contexto = {}
+        path = reverse(
+            "socios:solicitar_pago_prestamo_socio",
+            args=[self.prestamo.idprestamo],
+        )
+
+        with (
+            self._patch_jugador_autenticado(),
+            patch("apps.socios.views.get_object_or_404", return_value=self.prestamo),
+            patch("apps.socios.views.render", side_effect=self._render_spy(contexto)),
+        ):
+            response = socios_views.solicitar_pago_prestamo_socio(
+                self._request("get", path),
+                self.prestamo.idprestamo,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode(), "socios/solicitar_pago_prestamo_formulario.html")
+        self.assertIs(contexto["prestamo"], self.prestamo)
+        self.assertIsInstance(contexto["form"], SolicitudPagoPrestamoForm)
+
+    def test_jugador_sin_socio_no_puede_solicitar_pago(self):
+        jugador = jugador_stub(idjugador=11, socio=None)
+        path = reverse("socios:solicitar_pago_prestamo_socio", args=[7])
+
+        with (
+            self._patch_jugador_autenticado(jugador),
+            patch("apps.socios.views.get_object_or_404") as get_object,
+        ):
+            response = socios_views.solicitar_pago_prestamo_socio(
+                self._request("get", path),
+                7,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse("socios:mi_solicitud_socio"), response["Location"])
+        get_object.assert_not_called()
+
+    def test_socio_no_puede_solicitar_pago_de_prestamo_ajeno(self):
+        path = reverse("socios:solicitar_pago_prestamo_socio", args=[99])
+
+        with (
+            self._patch_jugador_autenticado(),
+            patch(
+                "apps.socios.views.get_object_or_404",
+                side_effect=Http404,
+            ) as get_object,
+        ):
+            with self.assertRaises(Http404):
+                socios_views.solicitar_pago_prestamo_socio(
+                    self._request("get", path),
+                    99,
+                )
+
+        self.assertEqual(get_object.call_args.kwargs["idprestamo"], 99)
+        self.assertIs(get_object.call_args.kwargs["idsocio"], self.socio)
+
+    def test_post_valido_crea_solicitud_pendiente(self):
+        path = reverse(
+            "socios:solicitar_pago_prestamo_socio",
+            args=[self.prestamo.idprestamo],
+        )
+        solicitud = SimpleNamespace(
+            idsolicitudpago=1,
+            idprestamo=self.prestamo,
+            idsocio=self.socio,
+            idjugador=self.jugador,
+            monto=Decimal("25.00"),
+            referencia="REF-SOCIO-1",
+            estado=SolicitudPagoPrestamo.ESTADO_PENDIENTE,
+            fechasolicitud=datetime(2026, 7, 10, 10, 0),
+        )
+
+        with (
+            self._patch_jugador_autenticado(),
+            patch("apps.socios.views.get_object_or_404", return_value=self.prestamo),
+            patch.object(SolicitudPagoPrestamo, "full_clean"),
+            patch(
+                "apps.socios.views.crear_solicitud_pago_prestamo",
+                return_value=solicitud,
+            ) as crear,
+        ):
+            response = socios_views.solicitar_pago_prestamo_socio(
+                self._request("post", path, self._datos_post()),
+                self.prestamo.idprestamo,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(
+            reverse("socios:mis_solicitudes_pago_prestamo"),
+            response["Location"],
+        )
+        crear.assert_called_once()
+        self.assertIs(crear.call_args.args[0], self.jugador)
+        self.assertEqual(crear.call_args.args[1], self.prestamo.idprestamo)
+        self.assertEqual(solicitud.estado, SolicitudPagoPrestamo.ESTADO_PENDIENTE)
+
+    def test_post_valido_no_modifica_saldo_pendiente(self):
+        saldo_original = self.prestamo.saldopendiente
+        path = reverse(
+            "socios:solicitar_pago_prestamo_socio",
+            args=[self.prestamo.idprestamo],
+        )
+
+        with (
+            self._patch_jugador_autenticado(),
+            patch("apps.socios.views.get_object_or_404", return_value=self.prestamo),
+            patch.object(SolicitudPagoPrestamo, "full_clean"),
+            patch(
+                "apps.socios.views.crear_solicitud_pago_prestamo",
+                return_value=SolicitudPagoPrestamo(
+                    estado=SolicitudPagoPrestamo.ESTADO_PENDIENTE
+                ),
+            ),
+        ):
+            socios_views.solicitar_pago_prestamo_socio(
+                self._request("post", path, self._datos_post()),
+                self.prestamo.idprestamo,
+            )
+
+        self.assertEqual(self.prestamo.saldopendiente, saldo_original)
+        self.assertNotIn("registrar_pago_prestamo", socios_views.__dict__)
+
+    def test_sobrepago_por_vista_se_rechaza(self):
+        contexto = {}
+        path = reverse(
+            "socios:solicitar_pago_prestamo_socio",
+            args=[self.prestamo.idprestamo],
+        )
+
+        with (
+            self._patch_jugador_autenticado(),
+            patch("apps.socios.views.get_object_or_404", return_value=self.prestamo),
+            patch.object(SolicitudPagoPrestamo, "full_clean"),
+            patch("apps.socios.views.crear_solicitud_pago_prestamo") as crear,
+            patch("apps.socios.views.render", side_effect=self._render_spy(contexto)),
+        ):
+            response = socios_views.solicitar_pago_prestamo_socio(
+                self._request("post", path, self._datos_post(monto="81.00")),
+                self.prestamo.idprestamo,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("monto", contexto["form"].errors)
+        crear.assert_not_called()
+
+    def test_error_del_servicio_no_crea_pago_directo(self):
+        contexto = {}
+        path = reverse(
+            "socios:solicitar_pago_prestamo_socio",
+            args=[self.prestamo.idprestamo],
+        )
+
+        with (
+            self._patch_jugador_autenticado(),
+            patch("apps.socios.views.get_object_or_404", return_value=self.prestamo),
+            patch.object(SolicitudPagoPrestamo, "full_clean"),
+            patch(
+                "apps.socios.views.crear_solicitud_pago_prestamo",
+                side_effect=SolicitudPagoPrestamoError(
+                    "El monto no puede superar el saldo pendiente."
+                ),
+            ),
+            patch("apps.socios.views.render", side_effect=self._render_spy(contexto)),
+        ):
+            response = socios_views.solicitar_pago_prestamo_socio(
+                self._request("post", path, self._datos_post()),
+                self.prestamo.idprestamo,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "El monto no puede superar el saldo pendiente.",
+            contexto["form"].non_field_errors(),
+        )
+        self.assertNotIn("registrar_pago_prestamo", socios_views.__dict__)
+
+    def test_socio_ve_solo_sus_solicitudes(self):
+        path = reverse("socios:mis_solicitudes_pago_prestamo")
+        otra_solicitud = SimpleNamespace(
+            idsolicitudpago=2,
+            idsocio=self.otro_socio,
+            idjugador=jugador_stub(20, self.otro_socio),
+        )
+        solicitud_propia = SimpleNamespace(
+            idsolicitudpago=1,
+            idsocio=self.socio,
+            idjugador=self.jugador,
+        )
+        solicitudes = [solicitud_propia, otra_solicitud]
+        contexto = {}
+
+        def filter_solicitudes(**kwargs):
+            return FakeQuerySet(
+                [
+                    solicitud
+                    for solicitud in solicitudes
+                    if solicitud.idsocio is kwargs.get("idsocio")
+                    and solicitud.idjugador is kwargs.get("idjugador")
+                ]
+            )
+
+        with (
+            self._patch_jugador_autenticado(),
+            patch(
+                "apps.socios.views.SolicitudPagoPrestamo.objects.filter",
+                side_effect=filter_solicitudes,
+            ) as solicitudes_filter,
+            patch("apps.socios.views.render", side_effect=self._render_spy(contexto)),
+        ):
+            response = socios_views.mis_solicitudes_pago_prestamo(
+                self._request("get", path),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(contexto["solicitudes"]), [solicitud_propia])
+        self.assertNotIn(otra_solicitud, contexto["solicitudes"])
+        solicitudes_filter.assert_called_once_with(
+            idsocio=self.socio,
+            idjugador=self.jugador,
+        )
+
+    def test_jugador_sin_socio_ve_enlace_a_solicitud_socio(self):
+        jugador = jugador_stub(idjugador=11, socio=None)
+        contexto = {}
+
+        with (
+            self._patch_jugador_autenticado(jugador),
+            patch("apps.socios.views.render", side_effect=self._render_spy(contexto)),
+        ):
+            response = socios_views.mis_solicitudes_pago_prestamo(
+                self._request("get", reverse("socios:mis_solicitudes_pago_prestamo")),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(contexto["socio"])
+        self.assertEqual(contexto["solicitudes"], [])

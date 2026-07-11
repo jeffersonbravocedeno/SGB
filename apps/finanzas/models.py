@@ -111,6 +111,80 @@ class PagoPrestamo(models.Model):
         verbose_name_plural = 'Pagos de prestamos'
 
 
+class SolicitudPagoPrestamo(models.Model):
+    ESTADO_PENDIENTE = 'Pendiente'
+    ESTADO_APROBADA = 'Aprobada'
+    ESTADO_RECHAZADA = 'Rechazada'
+    ESTADO_CHOICES = (
+        (ESTADO_PENDIENTE, 'Pendiente'),
+        (ESTADO_APROBADA, 'Aprobada'),
+        (ESTADO_RECHAZADA, 'Rechazada'),
+    )
+
+    idsolicitudpago = models.AutoField(
+        primary_key=True,
+        db_column='idsolicitudpago',
+    )
+    idprestamo = models.ForeignKey(
+        'finanzas.Prestamo',
+        models.DO_NOTHING,
+        db_column='idprestamo',
+    )
+    idsocio = models.ForeignKey(
+        'socios.Socio',
+        models.DO_NOTHING,
+        db_column='idsocio',
+    )
+    idjugador = models.ForeignKey(
+        'jugadores.Jugador',
+        models.DO_NOTHING,
+        db_column='idjugador',
+    )
+    idmetodopago = models.ForeignKey(
+        'configuracion.Metodopago',
+        models.DO_NOTHING,
+        db_column='idmetodopago',
+        blank=True,
+        null=True,
+    )
+    monto = models.DecimalField(max_digits=12, decimal_places=2)
+    referencia = models.CharField(max_length=80)
+    rutacomprobante = models.CharField(max_length=255, blank=True, null=True)
+    observacionsocio = models.TextField(blank=True, null=True)
+    estado = models.CharField(
+        max_length=20,
+        choices=ESTADO_CHOICES,
+        default=ESTADO_PENDIENTE,
+    )
+    fechasolicitud = models.DateTimeField()
+    fecharespuesta = models.DateTimeField(blank=True, null=True)
+    idusuarioadminrespuesta = models.ForeignKey(
+        'auth.User',
+        models.DO_NOTHING,
+        db_column='idusuarioadminrespuesta',
+        blank=True,
+        null=True,
+    )
+    motivorechazo = models.TextField(blank=True, null=True)
+    observacionadmin = models.TextField(blank=True, null=True)
+    idpagoprestamoresultado = models.ForeignKey(
+        'finanzas.PagoPrestamo',
+        models.DO_NOTHING,
+        db_column='idpagoprestamoresultado',
+        blank=True,
+        null=True,
+    )
+
+    def __str__(self):
+        return f'Solicitud pago prestamo {self.idsolicitudpago}'
+
+    class Meta:
+        managed = False
+        db_table = 'solicitud_pago_prestamo'
+        verbose_name = 'Solicitud de pago de prestamo'
+        verbose_name_plural = 'Solicitudes de pago de prestamos'
+
+
 class Ahorro(models.Model):
     idahorro = models.IntegerField(primary_key=True)
     idsocio = models.ForeignKey('socios.Socio', models.DO_NOTHING, db_column='idsocio')

@@ -1,18 +1,54 @@
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Q, Sum
+from django.db.models import Case, IntegerField, Q, Sum, Value, When
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.views.decorators.http import require_POST, require_http_methods
 
 from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate
-from apps.finanzas.models import Ahorro, Aportesemanal, Prestamo
+from apps.finanzas.forms import SolicitudPagoPrestamoForm
+from apps.finanzas.models import (
+    Ahorro,
+    Aportesemanal,
+    PagoPrestamo,
+    Prestamo,
+    SolicitudPagoPrestamo,
+)
+from apps.finanzas.services import (
+    SolicitudPagoPrestamoError,
+    crear_solicitud_pago_prestamo,
+)
+from apps.jugadores.services import jugador_required
 
-from .forms import CuentaBancariaForm, SocioForm
-from .models import Cuentabancaria, Socio
+from .forms import (
+    AprobarSolicitudSocioForm,
+    CuentaBancariaForm,
+    RechazarSolicitudSocioForm,
+    SocioForm,
+    SolicitudSocioForm,
+)
+from .models import Cuentabancaria, Socio, SolicitudSocio
+from .services import (
+    aprobar_solicitud_socio,
+    crear_solicitud_socio,
+    rechazar_solicitud_socio,
+)
+
+
+ESTADOS_PRESTAMO_INACTIVO = {
+    "liquidado",
+    "pagado",
+    "cerrado",
+    "cancelado",
+    "rechazado",
+    "anulado",
+    "finalizado",
+}
 
 
 @admin_required
@@ -41,6 +77,389 @@ def lista(request):
             "total": socios.count(),
         },
     )
+
+
+@jugador_required
+def portal_socio(request):
+    jugador = request.jugador
+    socio = jugador.idsocio
+    if socio is None:
+        return render(
+            request,
+            "socios/portal_socio.html",
+            {
+                "jugador": jugador,
+                "socio": None,
+            },
+        )
+
+    ahorros = list(
+        Ahorro.objects.filter(idsocio=socio)
+        .select_related("idbingo")
+        .order_by("-fechaahorro", "-idahorro")
+    )
+    aportes = list(
+        Aportesemanal.objects.filter(idsocio=socio)
+        .select_related("idregalo", "idpartida")
+        .order_by("-fechaplanificadada", "-idaporte")
+    )
+    prestamos = list(
+        Prestamo.objects.filter(idsocio=socio).order_by(
+            "-fechasolicitud",
+            "-idprestamo",
+        )
+    )
+    pagos_prestamo = list(
+        PagoPrestamo.objects.filter(idprestamo__idsocio=socio)
+        .select_related("idprestamo", "idmetodopago")
+        .order_by("-fechapago", "-idpagoprestamo")
+    )
+    prestamos_con_solicitud_pendiente = set(
+        SolicitudPagoPrestamo.objects.filter(
+            idsocio=socio,
+            estado=SolicitudPagoPrestamo.ESTADO_PENDIENTE,
+        ).values_list("idprestamo_id", flat=True)
+    )
+
+    total_ahorro_activo = sum(
+        (
+            _decimal_modelo(ahorro.montoahorro)
+            for ahorro in ahorros
+            if _estado_es(ahorro.estado, "Activo")
+        ),
+        Decimal("0"),
+    )
+    saldo_pendiente_total = sum(
+        (_decimal_modelo(prestamo.saldopendiente) for prestamo in prestamos),
+        Decimal("0"),
+    )
+    prestamos_activos = [
+        prestamo
+        for prestamo in prestamos
+        if _prestamo_es_activo(prestamo)
+    ]
+    for prestamo in prestamos:
+        prestamo.puede_solicitar_pago = _prestamo_permite_solicitar_pago(
+            prestamo,
+            prestamos_con_solicitud_pendiente,
+        )
+
+    return render(
+        request,
+        "socios/portal_socio.html",
+        {
+            "jugador": jugador,
+            "socio": socio,
+            "ahorros": ahorros,
+            "aportes": aportes,
+            "prestamos": prestamos,
+            "pagos_prestamo": pagos_prestamo,
+            "total_ahorro_activo": total_ahorro_activo,
+            "prestamos_activos": prestamos_activos,
+            "saldo_pendiente_total": saldo_pendiente_total,
+            "aportes_registrados": len(aportes),
+            "prestamos_con_solicitud_pendiente": prestamos_con_solicitud_pendiente,
+        },
+    )
+
+
+@jugador_required
+@require_http_methods(["GET", "POST"])
+def solicitar_pago_prestamo_socio(request, idprestamo):
+    jugador = request.jugador
+    socio = jugador.idsocio
+    if socio is None:
+        messages.info(request, "Debes estar vinculado a un socio para solicitar pagos.")
+        return redirect("socios:mi_solicitud_socio")
+
+    prestamo = get_object_or_404(
+        Prestamo.objects.select_related("idsocio"),
+        idprestamo=idprestamo,
+        idsocio=socio,
+    )
+
+    if request.method == "POST":
+        form = SolicitudPagoPrestamoForm(request.POST, prestamo=prestamo)
+        if form.is_valid():
+            try:
+                crear_solicitud_pago_prestamo(
+                    jugador,
+                    prestamo.idprestamo,
+                    form.cleaned_data,
+                )
+            except SolicitudPagoPrestamoError as exc:
+                form.add_error(None, str(exc))
+                messages.error(request, str(exc))
+            else:
+                messages.success(request, "Solicitud de pago enviada correctamente.")
+                return redirect("socios:mis_solicitudes_pago_prestamo")
+    else:
+        form = SolicitudPagoPrestamoForm(prestamo=prestamo)
+
+    return render(
+        request,
+        "socios/solicitar_pago_prestamo_formulario.html",
+        {
+            "form": form,
+            "jugador": jugador,
+            "socio": socio,
+            "prestamo": prestamo,
+        },
+    )
+
+
+@jugador_required
+def mis_solicitudes_pago_prestamo(request):
+    jugador = request.jugador
+    socio = jugador.idsocio
+    if socio is None:
+        return render(
+            request,
+            "socios/mis_solicitudes_pago_prestamo.html",
+            {
+                "jugador": jugador,
+                "socio": None,
+                "solicitudes": [],
+            },
+        )
+
+    solicitudes = (
+        SolicitudPagoPrestamo.objects.filter(idsocio=socio, idjugador=jugador)
+        .select_related("idprestamo", "idmetodopago", "idpagoprestamoresultado")
+        .order_by("-fechasolicitud", "-idsolicitudpago")
+    )
+    return render(
+        request,
+        "socios/mis_solicitudes_pago_prestamo.html",
+        {
+            "jugador": jugador,
+            "socio": socio,
+            "solicitudes": solicitudes,
+        },
+    )
+
+
+@jugador_required
+def mi_solicitud_socio(request):
+    jugador = request.jugador
+    solicitud = _ultima_solicitud_jugador(jugador)
+    return render(
+        request,
+        "socios/solicitud_socio_estado.html",
+        {
+            "jugador": jugador,
+            "socio": jugador.idsocio,
+            "solicitud": solicitud,
+            "tiene_solicitud_pendiente": _jugador_tiene_solicitud_pendiente(
+                jugador
+            ),
+        },
+    )
+
+
+@jugador_required
+@require_http_methods(["GET", "POST"])
+def solicitud_socio_nueva(request):
+    jugador = request.jugador
+    if jugador.idsocio_id is not None:
+        messages.info(request, "El jugador ya está vinculado a un socio.")
+        return redirect("socios:mi_solicitud_socio")
+
+    if _jugador_tiene_solicitud_pendiente(jugador):
+        messages.info(request, "Ya existe una solicitud pendiente para este jugador.")
+        return redirect("socios:mi_solicitud_socio")
+
+    if request.method == "POST":
+        form = SolicitudSocioForm(request.POST)
+        if form.is_valid():
+            try:
+                crear_solicitud_socio(jugador, form.cleaned_data)
+            except ValidationError as exc:
+                form.add_error(None, exc)
+            else:
+                messages.success(request, "Solicitud enviada correctamente.")
+                return redirect("socios:mi_solicitud_socio")
+    else:
+        form = SolicitudSocioForm()
+
+    return render(
+        request,
+        "socios/solicitud_socio_formulario.html",
+        {"form": form, "jugador": jugador},
+    )
+
+
+@admin_required
+def solicitudes_socio_lista(request):
+    solicitudes = (
+        SolicitudSocio.objects.select_related(
+            "idjugador",
+            "idtiposocio",
+            "idsocioresultado",
+            "idusuarioadminrespuesta",
+        )
+        .annotate(
+            prioridad_estado=Case(
+                When(estado=SolicitudSocio.ESTADO_PENDIENTE, then=Value(0)),
+                default=Value(1),
+                output_field=IntegerField(),
+            )
+        )
+        .order_by("prioridad_estado", "-fechasolicitud", "-idsolicitud")
+    )
+    return render(
+        request,
+        "socios/solicitudes_socio_lista.html",
+        {
+            "page_obj": paginate(request, solicitudes),
+            "total": solicitudes.count(),
+        },
+    )
+
+
+@admin_required
+def solicitud_socio_detalle(request, idsolicitud):
+    solicitud = _obtener_solicitud_admin(idsolicitud)
+    return render(
+        request,
+        "socios/solicitud_socio_detalle.html",
+        _contexto_solicitud_admin(solicitud),
+    )
+
+
+@admin_required
+@require_POST
+def solicitud_socio_aprobar(request, idsolicitud):
+    solicitud = _obtener_solicitud_admin(idsolicitud)
+    form = AprobarSolicitudSocioForm(request.POST)
+    if form.is_valid():
+        try:
+            solicitud, socio = aprobar_solicitud_socio(
+                solicitud.idsolicitud,
+                request.user,
+                form.cleaned_data,
+            )
+        except ValidationError as exc:
+            form.add_error(None, exc)
+        else:
+            messages.success(
+                request,
+                f"Solicitud aprobada. Socio vinculado: {socio}.",
+            )
+            return redirect(
+                "socios:solicitud_socio_detalle",
+                idsolicitud=solicitud.idsolicitud,
+            )
+
+    return render(
+        request,
+        "socios/solicitud_socio_detalle.html",
+        _contexto_solicitud_admin(solicitud, aprobar_form=form),
+        status=400,
+    )
+
+
+@admin_required
+@require_POST
+def solicitud_socio_rechazar(request, idsolicitud):
+    solicitud = _obtener_solicitud_admin(idsolicitud)
+    form = RechazarSolicitudSocioForm(request.POST)
+    if form.is_valid():
+        try:
+            solicitud = rechazar_solicitud_socio(
+                solicitud.idsolicitud,
+                request.user,
+                form.cleaned_data["motivorechazo"],
+            )
+        except ValidationError as exc:
+            form.add_error(None, exc)
+        else:
+            messages.success(request, "Solicitud rechazada correctamente.")
+            return redirect(
+                "socios:solicitud_socio_detalle",
+                idsolicitud=solicitud.idsolicitud,
+            )
+
+    return render(
+        request,
+        "socios/solicitud_socio_detalle.html",
+        _contexto_solicitud_admin(solicitud, rechazo_form=form),
+        status=400,
+    )
+
+
+def _ultima_solicitud_jugador(jugador):
+    return (
+        SolicitudSocio.objects.filter(idjugador=jugador)
+        .select_related("idtiposocio", "idsocioresultado")
+        .order_by("-fechasolicitud", "-idsolicitud")
+        .first()
+    )
+
+
+def _jugador_tiene_solicitud_pendiente(jugador):
+    return SolicitudSocio.objects.filter(
+        idjugador=jugador,
+        estado=SolicitudSocio.ESTADO_PENDIENTE,
+    ).exists()
+
+
+def _obtener_solicitud_admin(idsolicitud):
+    return get_object_or_404(
+        SolicitudSocio.objects.select_related(
+            "idjugador",
+            "idtiposocio",
+            "idsocioresultado",
+            "idusuarioadminrespuesta",
+        ),
+        idsolicitud=idsolicitud,
+    )
+
+
+def _contexto_solicitud_admin(
+    solicitud,
+    *,
+    aprobar_form=None,
+    rechazo_form=None,
+):
+    return {
+        "solicitud": solicitud,
+        "aprobar_form": aprobar_form or AprobarSolicitudSocioForm(
+            initial={
+                "idtiposocio": solicitud.idtiposocio_id,
+                "estadosocio": "Activo",
+            }
+        ),
+        "rechazo_form": rechazo_form or RechazarSolicitudSocioForm(),
+    }
+
+
+def _decimal_modelo(value):
+    try:
+        return Decimal(str(value or "0"))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0")
+
+
+def _estado_es(value, expected):
+    return str(value or "").strip().lower() == expected.lower()
+
+
+def _prestamo_es_activo(prestamo):
+    estado = str(prestamo.estadoprestamo or "").strip().lower()
+    return estado not in ESTADOS_PRESTAMO_INACTIVO
+
+
+def _prestamo_permite_solicitar_pago(prestamo, prestamos_con_solicitud_pendiente):
+    if not _prestamo_es_activo(prestamo):
+        return False
+    if prestamo.idprestamo in prestamos_con_solicitud_pendiente:
+        return False
+    try:
+        saldo = Decimal(str(prestamo.saldopendiente))
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    return saldo > 0
 
 
 @admin_required
