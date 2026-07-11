@@ -3,9 +3,10 @@ from decimal import Decimal, InvalidOperation
 
 from django.contrib import messages
 from django.db import DatabaseError, IntegrityError, transaction
-from django.db.models import Q, Sum
+from django.db.models import Case, IntegerField, Q, Sum, Value, When
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.views.decorators.http import require_POST
 
 from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
@@ -13,19 +14,31 @@ from apps.common.views import paginate, safe_count
 
 from .forms import (
     AhorroForm,
+    AprobarSolicitudPagoPrestamoForm,
     AporteSemanalForm,
     PagoPrestamoForm,
     PrestamoConGarantesForm,
     PrestamoEdicionForm,
     PrestamoForm,
+    RechazarSolicitudPagoPrestamoForm,
 )
-from .models import Ahorro, Aportesemanal, PagoPrestamo, Prestamo, PrestamoGarante
+from .models import (
+    Ahorro,
+    Aportesemanal,
+    PagoPrestamo,
+    Prestamo,
+    PrestamoGarante,
+    SolicitudPagoPrestamo,
+)
 from .services import (
     ESTADOS_PRESTAMO_SIN_SALDO_GARANTE,
     PrestamoGarantiaError,
     PrestamoPagoError,
+    SolicitudPagoPrestamoError,
+    aprobar_solicitud_pago_prestamo,
     crear_prestamo_con_garantes,
     registrar_pago_prestamo,
+    rechazar_solicitud_pago_prestamo,
 )
 
 
@@ -225,6 +238,135 @@ def pagos_lista(request):
             | Q(idprestamo__idsocio__primerapellidosocio__icontains=busqueda)
         )
     return render(request, "finanzas/pagos_lista.html", {"page_obj": paginate(request, pagos), "busqueda": busqueda, "total": pagos.count()})
+
+
+@admin_required
+def solicitudes_pago_prestamo_lista(request):
+    solicitudes = (
+        SolicitudPagoPrestamo.objects.select_related(
+            "idsocio",
+            "idprestamo",
+            "idjugador",
+            "idmetodopago",
+            "idpagoprestamoresultado",
+        )
+        .annotate(
+            prioridad_estado=Case(
+                When(
+                    estado=SolicitudPagoPrestamo.ESTADO_PENDIENTE,
+                    then=Value(0),
+                ),
+                default=Value(1),
+                output_field=IntegerField(),
+            )
+        )
+        .order_by("prioridad_estado", "-fechasolicitud", "-idsolicitudpago")
+    )
+    return render(
+        request,
+        "finanzas/solicitudes_pago_prestamo_lista.html",
+        {
+            "page_obj": paginate(request, solicitudes),
+            "total": solicitudes.count(),
+        },
+    )
+
+
+@admin_required
+def solicitud_pago_prestamo_detalle(request, idsolicitudpago):
+    solicitud = _obtener_solicitud_pago_admin(idsolicitudpago)
+    return render(
+        request,
+        "finanzas/solicitud_pago_prestamo_detalle.html",
+        _contexto_solicitud_pago_admin(solicitud),
+    )
+
+
+@admin_required
+@require_POST
+def solicitud_pago_prestamo_aprobar(request, idsolicitudpago):
+    form = AprobarSolicitudPagoPrestamoForm(request.POST)
+    if form.is_valid():
+        try:
+            solicitud, pago = aprobar_solicitud_pago_prestamo(
+                idsolicitudpago,
+                request.user,
+                form.cleaned_data,
+            )
+        except SolicitudPagoPrestamoError as exc:
+            messages.error(request, str(exc))
+        else:
+            messages.success(
+                request,
+                f"Solicitud aprobada. Pago registrado: {pago}.",
+            )
+            return redirect(
+                "finanzas:solicitud_pago_prestamo_detalle",
+                idsolicitudpago=solicitud.idsolicitudpago,
+            )
+    else:
+        messages.error(request, "No fue posible aprobar la solicitud.")
+
+    return redirect(
+        "finanzas:solicitud_pago_prestamo_detalle",
+        idsolicitudpago=idsolicitudpago,
+    )
+
+
+@admin_required
+@require_POST
+def solicitud_pago_prestamo_rechazar(request, idsolicitudpago):
+    form = RechazarSolicitudPagoPrestamoForm(request.POST)
+    if form.is_valid():
+        try:
+            solicitud = rechazar_solicitud_pago_prestamo(
+                idsolicitudpago,
+                request.user,
+                form.cleaned_data["motivorechazo"],
+            )
+        except SolicitudPagoPrestamoError as exc:
+            messages.error(request, str(exc))
+        else:
+            messages.success(request, "Solicitud rechazada correctamente.")
+            return redirect(
+                "finanzas:solicitud_pago_prestamo_detalle",
+                idsolicitudpago=solicitud.idsolicitudpago,
+            )
+    else:
+        messages.error(request, "Debe ingresar un motivo de rechazo.")
+
+    return redirect(
+        "finanzas:solicitud_pago_prestamo_detalle",
+        idsolicitudpago=idsolicitudpago,
+    )
+
+
+def _obtener_solicitud_pago_admin(idsolicitudpago):
+    return get_object_or_404(
+        SolicitudPagoPrestamo.objects.select_related(
+            "idsocio",
+            "idprestamo",
+            "idjugador",
+            "idmetodopago",
+            "idusuarioadminrespuesta",
+            "idpagoprestamoresultado",
+            "idpagoprestamoresultado__idmetodopago",
+        ),
+        idsolicitudpago=idsolicitudpago,
+    )
+
+
+def _contexto_solicitud_pago_admin(
+    solicitud,
+    *,
+    aprobar_form=None,
+    rechazo_form=None,
+):
+    return {
+        "solicitud": solicitud,
+        "aprobar_form": aprobar_form or AprobarSolicitudPagoPrestamoForm(),
+        "rechazo_form": rechazo_form or RechazarSolicitudPagoPrestamoForm(),
+    }
 
 
 def _prestamo_permite_registrar_pago(prestamo):

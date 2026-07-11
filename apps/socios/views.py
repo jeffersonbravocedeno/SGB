@@ -11,7 +11,18 @@ from django.views.decorators.http import require_POST, require_http_methods
 from apps.common.decorators import admin_required
 from apps.common.ids import save_new_model_form
 from apps.common.views import paginate
-from apps.finanzas.models import Ahorro, Aportesemanal, PagoPrestamo, Prestamo
+from apps.finanzas.forms import SolicitudPagoPrestamoForm
+from apps.finanzas.models import (
+    Ahorro,
+    Aportesemanal,
+    PagoPrestamo,
+    Prestamo,
+    SolicitudPagoPrestamo,
+)
+from apps.finanzas.services import (
+    SolicitudPagoPrestamoError,
+    crear_solicitud_pago_prestamo,
+)
 from apps.jugadores.services import jugador_required
 
 from .forms import (
@@ -36,6 +47,7 @@ ESTADOS_PRESTAMO_INACTIVO = {
     "cancelado",
     "rechazado",
     "anulado",
+    "finalizado",
 }
 
 
@@ -102,6 +114,12 @@ def portal_socio(request):
         .select_related("idprestamo", "idmetodopago")
         .order_by("-fechapago", "-idpagoprestamo")
     )
+    prestamos_con_solicitud_pendiente = set(
+        SolicitudPagoPrestamo.objects.filter(
+            idsocio=socio,
+            estado=SolicitudPagoPrestamo.ESTADO_PENDIENTE,
+        ).values_list("idprestamo_id", flat=True)
+    )
 
     total_ahorro_activo = sum(
         (
@@ -120,6 +138,11 @@ def portal_socio(request):
         for prestamo in prestamos
         if _prestamo_es_activo(prestamo)
     ]
+    for prestamo in prestamos:
+        prestamo.puede_solicitar_pago = _prestamo_permite_solicitar_pago(
+            prestamo,
+            prestamos_con_solicitud_pendiente,
+        )
 
     return render(
         request,
@@ -135,6 +158,83 @@ def portal_socio(request):
             "prestamos_activos": prestamos_activos,
             "saldo_pendiente_total": saldo_pendiente_total,
             "aportes_registrados": len(aportes),
+            "prestamos_con_solicitud_pendiente": prestamos_con_solicitud_pendiente,
+        },
+    )
+
+
+@jugador_required
+@require_http_methods(["GET", "POST"])
+def solicitar_pago_prestamo_socio(request, idprestamo):
+    jugador = request.jugador
+    socio = jugador.idsocio
+    if socio is None:
+        messages.info(request, "Debes estar vinculado a un socio para solicitar pagos.")
+        return redirect("socios:mi_solicitud_socio")
+
+    prestamo = get_object_or_404(
+        Prestamo.objects.select_related("idsocio"),
+        idprestamo=idprestamo,
+        idsocio=socio,
+    )
+
+    if request.method == "POST":
+        form = SolicitudPagoPrestamoForm(request.POST, prestamo=prestamo)
+        if form.is_valid():
+            try:
+                crear_solicitud_pago_prestamo(
+                    jugador,
+                    prestamo.idprestamo,
+                    form.cleaned_data,
+                )
+            except SolicitudPagoPrestamoError as exc:
+                form.add_error(None, str(exc))
+                messages.error(request, str(exc))
+            else:
+                messages.success(request, "Solicitud de pago enviada correctamente.")
+                return redirect("socios:mis_solicitudes_pago_prestamo")
+    else:
+        form = SolicitudPagoPrestamoForm(prestamo=prestamo)
+
+    return render(
+        request,
+        "socios/solicitar_pago_prestamo_formulario.html",
+        {
+            "form": form,
+            "jugador": jugador,
+            "socio": socio,
+            "prestamo": prestamo,
+        },
+    )
+
+
+@jugador_required
+def mis_solicitudes_pago_prestamo(request):
+    jugador = request.jugador
+    socio = jugador.idsocio
+    if socio is None:
+        return render(
+            request,
+            "socios/mis_solicitudes_pago_prestamo.html",
+            {
+                "jugador": jugador,
+                "socio": None,
+                "solicitudes": [],
+            },
+        )
+
+    solicitudes = (
+        SolicitudPagoPrestamo.objects.filter(idsocio=socio, idjugador=jugador)
+        .select_related("idprestamo", "idmetodopago", "idpagoprestamoresultado")
+        .order_by("-fechasolicitud", "-idsolicitudpago")
+    )
+    return render(
+        request,
+        "socios/mis_solicitudes_pago_prestamo.html",
+        {
+            "jugador": jugador,
+            "socio": socio,
+            "solicitudes": solicitudes,
         },
     )
 
@@ -348,6 +448,18 @@ def _estado_es(value, expected):
 def _prestamo_es_activo(prestamo):
     estado = str(prestamo.estadoprestamo or "").strip().lower()
     return estado not in ESTADOS_PRESTAMO_INACTIVO
+
+
+def _prestamo_permite_solicitar_pago(prestamo, prestamos_con_solicitud_pendiente):
+    if not _prestamo_es_activo(prestamo):
+        return False
+    if prestamo.idprestamo in prestamos_con_solicitud_pendiente:
+        return False
+    try:
+        saldo = Decimal(str(prestamo.saldopendiente))
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    return saldo > 0
 
 
 @admin_required

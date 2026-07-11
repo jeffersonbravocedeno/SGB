@@ -11,6 +11,7 @@ from django.db import models as django_models
 from django.http import HttpResponse
 from django.template.loader import render_to_string
 from django.test import RequestFactory, SimpleTestCase, override_settings
+from django.urls import reverse
 
 from apps.configuracion.models import Metodopago, Regalo
 from apps.jugadores.models import Jugador
@@ -1798,6 +1799,339 @@ class PrestamoConGarantesViewTests(SimpleTestCase):
             html,
         )
         self.assertNotIn('name="saldopendiente"', html)
+
+
+class SolicitudPagoPrestamoFinanzasWebTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.admin = User(username="admin", is_staff=True)
+        self.admin.pk = 1
+        self.usuario = User(username="normal", is_staff=False)
+        self.usuario.pk = 2
+        self.socio = socio_stub(1, "Socio Pago")
+        self.jugador = jugador_stub(1, self.socio)
+        self.prestamo = prestamo_solicitud_stub(
+            self.socio,
+            idprestamo=10,
+            saldo=Decimal("300.00"),
+        )
+        self.solicitud = solicitud_pago_prestamo_stub(
+            self.prestamo,
+            self.jugador,
+            idsolicitudpago=5,
+        )
+
+    def _request(self, method, path, user=None, data=None):
+        request_method = getattr(self.factory, method.lower())
+        request = request_method(path, data or {})
+        request.user = self.admin if user is None else user
+        request.session = {}
+        request._messages = FallbackStorage(request)
+        return request
+
+    def _render_spy(self, contexto):
+        def render(_request, template, context, *args, **kwargs):
+            contexto.update(context)
+            return HttpResponse(template, status=kwargs.get("status", 200))
+
+        return render
+
+    def test_admin_lista_solicitudes(self):
+        selected = MagicMock()
+        annotated = MagicMock()
+        ordered = MagicMock()
+        ordered.count.return_value = 1
+        selected.annotate.return_value = annotated
+        annotated.order_by.return_value = ordered
+        contexto = {}
+        request = self._request(
+            "get",
+            reverse("finanzas:solicitudes_pago_prestamo_lista"),
+        )
+
+        with (
+            patch(
+                "apps.finanzas.views.SolicitudPagoPrestamo.objects.select_related",
+                return_value=selected,
+            ) as select_related,
+            patch("apps.finanzas.views.paginate", return_value=["page"]) as paginate,
+            patch("apps.finanzas.views.render", side_effect=self._render_spy(contexto)),
+        ):
+            response = finanzas_views.solicitudes_pago_prestamo_lista(
+                request
+            )
+
+        self.assertEqual(response.status_code, 200)
+        select_related.assert_called_once_with(
+            "idsocio",
+            "idprestamo",
+            "idjugador",
+            "idmetodopago",
+            "idpagoprestamoresultado",
+        )
+        annotated.order_by.assert_called_once_with(
+            "prioridad_estado",
+            "-fechasolicitud",
+            "-idsolicitudpago",
+        )
+        paginate.assert_called_once_with(request, ordered)
+        self.assertEqual(contexto["page_obj"], ["page"])
+        self.assertEqual(contexto["total"], 1)
+
+    def test_admin_ve_detalle(self):
+        contexto = {}
+
+        with (
+            patch(
+                "apps.finanzas.views.get_object_or_404",
+                return_value=self.solicitud,
+            ) as get_object,
+            patch("apps.finanzas.views.render", side_effect=self._render_spy(contexto)),
+        ):
+            response = finanzas_views.solicitud_pago_prestamo_detalle(
+                self._request(
+                    "get",
+                    reverse(
+                        "finanzas:solicitud_pago_prestamo_detalle",
+                        args=[self.solicitud.idsolicitudpago],
+                    ),
+                ),
+                self.solicitud.idsolicitudpago,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        get_object.assert_called_once()
+        self.assertIs(contexto["solicitud"], self.solicitud)
+        self.assertIsInstance(contexto["aprobar_form"], AprobarSolicitudPagoPrestamoForm)
+        self.assertIsInstance(contexto["rechazo_form"], RechazarSolicitudPagoPrestamoForm)
+
+    def test_admin_aprueba_por_post(self):
+        pago = PagoPrestamo(idpagoprestamo=7)
+        path = reverse(
+            "finanzas:solicitud_pago_prestamo_aprobar",
+            args=[self.solicitud.idsolicitudpago],
+        )
+
+        with patch(
+            "apps.finanzas.views.aprobar_solicitud_pago_prestamo",
+            return_value=(self.solicitud, pago),
+        ) as aprobar:
+            response = finanzas_views.solicitud_pago_prestamo_aprobar(
+                self._request(
+                    "post",
+                    path,
+                    data={"observacionadmin": "Validado por finanzas"},
+                ),
+                self.solicitud.idsolicitudpago,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(
+            reverse(
+                "finanzas:solicitud_pago_prestamo_detalle",
+                args=[self.solicitud.idsolicitudpago],
+            ),
+            response["Location"],
+        )
+        aprobar.assert_called_once_with(
+            self.solicitud.idsolicitudpago,
+            self.admin,
+            {"observacionadmin": "Validado por finanzas"},
+        )
+
+    def test_al_aprobar_servicio_crea_pago_y_baja_saldo(self):
+        saldo_original = self.prestamo.saldopendiente
+        pago = PagoPrestamo(
+            idpagoprestamo=7,
+            idprestamo=self.prestamo,
+            montopagado=Decimal("100.00"),
+        )
+
+        def aprobar_side_effect(_idsolicitud, _usuario, _datos):
+            self.prestamo.saldopendiente = saldo_original - pago.montopagado
+            self.solicitud.estado = SolicitudPagoPrestamo.ESTADO_APROBADA
+            self.solicitud.idpagoprestamoresultado = pago
+            return self.solicitud, pago
+
+        with patch(
+            "apps.finanzas.views.aprobar_solicitud_pago_prestamo",
+            side_effect=aprobar_side_effect,
+        ):
+            response = finanzas_views.solicitud_pago_prestamo_aprobar(
+                self._request(
+                    "post",
+                    reverse(
+                        "finanzas:solicitud_pago_prestamo_aprobar",
+                        args=[self.solicitud.idsolicitudpago],
+                    ),
+                    data={"observacionadmin": ""},
+                ),
+                self.solicitud.idsolicitudpago,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.solicitud.estado, SolicitudPagoPrestamo.ESTADO_APROBADA)
+        self.assertIs(self.solicitud.idpagoprestamoresultado, pago)
+        self.assertEqual(self.prestamo.saldopendiente, Decimal("200.00"))
+
+    def test_admin_rechaza_por_post(self):
+        path = reverse(
+            "finanzas:solicitud_pago_prestamo_rechazar",
+            args=[self.solicitud.idsolicitudpago],
+        )
+
+        with patch(
+            "apps.finanzas.views.rechazar_solicitud_pago_prestamo",
+            return_value=self.solicitud,
+        ) as rechazar:
+            response = finanzas_views.solicitud_pago_prestamo_rechazar(
+                self._request("post", path, data={"motivorechazo": "Referencia inválida"}),
+                self.solicitud.idsolicitudpago,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        rechazar.assert_called_once_with(
+            self.solicitud.idsolicitudpago,
+            self.admin,
+            "Referencia inválida",
+        )
+
+    def test_al_rechazar_no_baja_saldo(self):
+        saldo_original = self.prestamo.saldopendiente
+
+        def rechazar_side_effect(_idsolicitud, _usuario, motivo):
+            self.solicitud.estado = SolicitudPagoPrestamo.ESTADO_RECHAZADA
+            self.solicitud.motivorechazo = motivo
+            return self.solicitud
+
+        with patch(
+            "apps.finanzas.views.rechazar_solicitud_pago_prestamo",
+            side_effect=rechazar_side_effect,
+        ):
+            response = finanzas_views.solicitud_pago_prestamo_rechazar(
+                self._request(
+                    "post",
+                    reverse(
+                        "finanzas:solicitud_pago_prestamo_rechazar",
+                        args=[self.solicitud.idsolicitudpago],
+                    ),
+                    data={"motivorechazo": "Referencia inválida"},
+                ),
+                self.solicitud.idsolicitudpago,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.solicitud.estado, SolicitudPagoPrestamo.ESTADO_RECHAZADA)
+        self.assertEqual(self.prestamo.saldopendiente, saldo_original)
+
+    def test_rechazar_exige_motivo(self):
+        with patch(
+            "apps.finanzas.views.rechazar_solicitud_pago_prestamo"
+        ) as rechazar:
+            response = finanzas_views.solicitud_pago_prestamo_rechazar(
+                self._request(
+                    "post",
+                    reverse(
+                        "finanzas:solicitud_pago_prestamo_rechazar",
+                        args=[self.solicitud.idsolicitudpago],
+                    ),
+                    data={"motivorechazo": "  "},
+                ),
+                self.solicitud.idsolicitudpago,
+            )
+
+        self.assertEqual(response.status_code, 302)
+        rechazar.assert_not_called()
+
+    def test_get_aprobar_rechazar_no_modifica_estado(self):
+        estado_original = self.solicitud.estado
+        vistas = (
+            (
+                finanzas_views.solicitud_pago_prestamo_aprobar,
+                reverse(
+                    "finanzas:solicitud_pago_prestamo_aprobar",
+                    args=[self.solicitud.idsolicitudpago],
+                ),
+                "apps.finanzas.views.aprobar_solicitud_pago_prestamo",
+            ),
+            (
+                finanzas_views.solicitud_pago_prestamo_rechazar,
+                reverse(
+                    "finanzas:solicitud_pago_prestamo_rechazar",
+                    args=[self.solicitud.idsolicitudpago],
+                ),
+                "apps.finanzas.views.rechazar_solicitud_pago_prestamo",
+            ),
+        )
+
+        for view, path, servicio_path in vistas:
+            with self.subTest(view=view.__name__), patch(servicio_path) as servicio:
+                response = view(
+                    self._request("get", path),
+                    self.solicitud.idsolicitudpago,
+                )
+
+                self.assertEqual(response.status_code, 405)
+                servicio.assert_not_called()
+                self.assertEqual(self.solicitud.estado, estado_original)
+
+    def test_usuario_no_autorizado_no_accede_a_vistas_admin(self):
+        vistas = (
+            (
+                finanzas_views.solicitudes_pago_prestamo_lista,
+                self._request(
+                    "get",
+                    reverse("finanzas:solicitudes_pago_prestamo_lista"),
+                    user=self.usuario,
+                ),
+                (),
+            ),
+            (
+                finanzas_views.solicitud_pago_prestamo_detalle,
+                self._request(
+                    "get",
+                    reverse(
+                        "finanzas:solicitud_pago_prestamo_detalle",
+                        args=[self.solicitud.idsolicitudpago],
+                    ),
+                    user=self.usuario,
+                ),
+                (self.solicitud.idsolicitudpago,),
+            ),
+            (
+                finanzas_views.solicitud_pago_prestamo_aprobar,
+                self._request(
+                    "post",
+                    reverse(
+                        "finanzas:solicitud_pago_prestamo_aprobar",
+                        args=[self.solicitud.idsolicitudpago],
+                    ),
+                    user=self.usuario,
+                    data={"observacionadmin": ""},
+                ),
+                (self.solicitud.idsolicitudpago,),
+            ),
+            (
+                finanzas_views.solicitud_pago_prestamo_rechazar,
+                self._request(
+                    "post",
+                    reverse(
+                        "finanzas:solicitud_pago_prestamo_rechazar",
+                        args=[self.solicitud.idsolicitudpago],
+                    ),
+                    user=self.usuario,
+                    data={"motivorechazo": "No válido"},
+                ),
+                (self.solicitud.idsolicitudpago,),
+            ),
+        )
+
+        for view, request, args in vistas:
+            with self.subTest(view=view.__name__):
+                with self.assertRaises(Exception) as context:
+                    view(request, *args)
+
+                self.assertEqual(context.exception.__class__.__name__, "PermissionDenied")
 
 
 class RegistrarPagoPrestamoTests(SimpleTestCase):

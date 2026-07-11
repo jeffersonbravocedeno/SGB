@@ -125,7 +125,7 @@
         </div>
         <div class="table-responsive">
             <table class="table modern-table align-middle">
-                <thead><tr><th>Monto solicitado</th><th>Saldo pendiente</th><th>Solicitud</th><th>Vencimiento</th><th>Estado</th></tr></thead>
+                <thead><tr><th>Monto solicitado</th><th>Saldo pendiente</th><th>Solicitud</th><th>Vencimiento</th><th>Estado</th><th class="text-end">Acción</th></tr></thead>
                 <tbody>
                     {% for prestamo in prestamos %}
                     <tr>
@@ -134,9 +134,16 @@
                         <td>{{ prestamo.fechasolicitud|date:"d/m/Y" }}</td>
                         <td>{{ prestamo.fechavencimiento|date:"d/m/Y" }}</td>
                         <td><span class="badge rounded-pill {{ prestamo.estadoprestamo|estado_class }}">{{ prestamo.estadoprestamo }}</span></td>
+                        <td class="text-end">
+                            {% if prestamo.puede_solicitar_pago %}
+                            <a class="btn btn-sm btn-outline-primary" href="{% url 'socios:solicitar_pago_prestamo_socio' prestamo.idprestamo %}">Solicitar pago</a>
+                            {% else %}
+                            <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
                     </tr>
                     {% empty %}
-                    <tr><td colspan="5" class="text-muted">No hay préstamos registrados.</td></tr>
+                    <tr><td colspan="6" class="text-muted">No hay préstamos registrados.</td></tr>
                     {% endfor %}
                 </tbody>
             </table>

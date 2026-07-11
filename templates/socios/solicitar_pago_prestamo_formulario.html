@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% load siab_tags %}
+
+{% block title %}SIAB | Solicitar pago de préstamo{% endblock %}
+
+{% block content %}
+<section class="page-header">
+    <div>
+        <p class="page-kicker">Portal del socio</p>
+        <h1>Solicitar pago de préstamo</h1>
+        <p>{{ socio }} · Préstamo #{{ prestamo.idprestamo }}</p>
+    </div>
+    <a class="btn btn-outline-secondary" href="{% url 'socios:portal_socio' %}">Cancelar</a>
+</section>
+
+<form class="content-panel" method="post" novalidate>
+    {% csrf_token %}
+    <div class="form-section">
+        <div class="form-section-title">
+            <h2>Datos del préstamo</h2>
+            <p>Saldo pendiente: ${{ prestamo.saldopendiente|floatformat:2 }}</p>
+        </div>
+        <dl class="detail-grid">
+            <div><dt>Préstamo</dt><dd>#{{ prestamo.idprestamo }}</dd></div>
+            <div><dt>Socio</dt><dd>{{ prestamo.idsocio }}</dd></div>
+            <div><dt>Monto solicitado</dt><dd>${{ prestamo.montoprestamosolicitado|floatformat:2 }}</dd></div>
+            <div><dt>Total a pagar</dt><dd>${{ prestamo.montototalpagar|floatformat:2 }}</dd></div>
+            <div><dt>Saldo pendiente</dt><dd>${{ prestamo.saldopendiente|floatformat:2 }}</dd></div>
+            <div><dt>Estado</dt><dd><span class="badge rounded-pill {{ prestamo.estadoprestamo|estado_class }}">{{ prestamo.estadoprestamo }}</span></dd></div>
+            <div><dt>Solicitud</dt><dd>{{ prestamo.fechasolicitud|date:"d/m/Y" }}</dd></div>
+            <div><dt>Vencimiento</dt><dd>{{ prestamo.fechavencimiento|date:"d/m/Y" }}</dd></div>
+        </dl>
+    </div>
+
+    <div class="form-section mb-0">
+        <div class="form-section-title">
+            <h2>Datos del pago</h2>
+            <p>La solicitud quedará pendiente de revisión administrativa.</p>
+        </div>
+        {% include "includes/form_errors.html" with form=form %}
+        <div class="row g-3">
+            <div class="col-md-6">{% include "includes/field.html" with field=form.monto %}</div>
+            <div class="col-md-6">{% include "includes/field.html" with field=form.idmetodopago %}</div>
+            <div class="col-md-6">{% include "includes/field.html" with field=form.referencia %}</div>
+            <div class="col-md-6">{% include "includes/field.html" with field=form.rutacomprobante %}</div>
+            <div class="col-12">{% include "includes/field.html" with field=form.observacionsocio %}</div>
+        </div>
+        <div class="form-actions">
+            <a class="btn btn-outline-secondary" href="{% url 'socios:portal_socio' %}">Cancelar</a>
+            <button class="btn btn-primary" type="submit">Enviar solicitud</button>
+        </div>
+    </div>
+</form>
+{% endblock %}

@@ -10,6 +10,7 @@
     <nav class="sidebar-nav" aria-label="Menú de jugador">
         <a class="{% if request.resolver_match.url_name == 'mis_cartones' or request.resolver_match.url_name == 'mi_carton_detalle' %}active{% endif %}" href="{% url 'bingos:mis_cartones' %}">Mis cartones</a>
         <a class="{% if request.resolver_match.url_name == 'portal_socio' %}active{% endif %}" href="{% url 'socios:portal_socio' %}">Mi panel de socio</a>
+        <a class="{% if request.resolver_match.url_name == 'mis_solicitudes_pago_prestamo' or request.resolver_match.url_name == 'solicitar_pago_prestamo_socio' %}active{% endif %}" href="{% url 'socios:mis_solicitudes_pago_prestamo' %}">Mis solicitudes de pago</a>
         <a class="{% if request.resolver_match.url_name == 'mi_solicitud_socio' or request.resolver_match.url_name == 'solicitud_socio_nueva' %}active{% endif %}" href="{% url 'socios:mi_solicitud_socio' %}">Mi solicitud de socio</a>
     </nav>
     {% endif %}
@@ -22,6 +23,7 @@
         <a class="{% if request.resolver_match.app_name == 'jugadores' %}active{% endif %}" href="{% url 'jugadores:lista' %}">Jugadores</a>
         <a class="{% if request.resolver_match.app_name == 'bingos' %}active{% endif %}" href="{% url 'bingos:lista' %}">Bingos</a>
         <a class="{% if request.resolver_match.app_name == 'finanzas' %}active{% endif %}" href="{% url 'finanzas:dashboard' %}">Finanzas</a>
+        <a class="{% if request.resolver_match.url_name == 'solicitudes_pago_prestamo_lista' or request.resolver_match.url_name == 'solicitud_pago_prestamo_detalle' %}active{% endif %}" href="{% url 'finanzas:solicitudes_pago_prestamo_lista' %}">Solicitudes de pago</a>
         <a class="{% if request.resolver_match.app_name == 'configuracion' %}active{% endif %}" href="{% url 'configuracion:dashboard' %}">Configuración</a>
     </nav>
     {% endif %}
@@ -43,6 +45,7 @@
             {% if request.user|has_group:"Jugador" and not request.user.is_staff and not request.user.is_superuser %}
             <a class="{% if request.resolver_match.url_name == 'mis_cartones' or request.resolver_match.url_name == 'mi_carton_detalle' %}active{% endif %}" href="{% url 'bingos:mis_cartones' %}">Mis cartones</a>
             <a class="{% if request.resolver_match.url_name == 'portal_socio' %}active{% endif %}" href="{% url 'socios:portal_socio' %}">Mi panel de socio</a>
+            <a class="{% if request.resolver_match.url_name == 'mis_solicitudes_pago_prestamo' or request.resolver_match.url_name == 'solicitar_pago_prestamo_socio' %}active{% endif %}" href="{% url 'socios:mis_solicitudes_pago_prestamo' %}">Mis solicitudes de pago</a>
             <a class="{% if request.resolver_match.url_name == 'mi_solicitud_socio' or request.resolver_match.url_name == 'solicitud_socio_nueva' %}active{% endif %}" href="{% url 'socios:mi_solicitud_socio' %}">Mi solicitud de socio</a>
             {% endif %}
             {% if request.user.is_staff or request.user.is_superuser %}
@@ -52,6 +55,7 @@
             <a class="{% if request.resolver_match.app_name == 'jugadores' %}active{% endif %}" href="{% url 'jugadores:lista' %}">Jugadores</a>
             <a class="{% if request.resolver_match.app_name == 'bingos' %}active{% endif %}" href="{% url 'bingos:lista' %}">Bingos</a>
             <a class="{% if request.resolver_match.app_name == 'finanzas' %}active{% endif %}" href="{% url 'finanzas:dashboard' %}">Finanzas</a>
+            <a class="{% if request.resolver_match.url_name == 'solicitudes_pago_prestamo_lista' or request.resolver_match.url_name == 'solicitud_pago_prestamo_detalle' %}active{% endif %}" href="{% url 'finanzas:solicitudes_pago_prestamo_lista' %}">Solicitudes de pago</a>
             <a class="{% if request.resolver_match.app_name == 'configuracion' %}active{% endif %}" href="{% url 'configuracion:dashboard' %}">Configuración</a>
             {% endif %}
         </nav>
